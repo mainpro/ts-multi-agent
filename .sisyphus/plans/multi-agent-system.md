@@ -77,9 +77,9 @@
 
 ### 完成定义
 - [ ] 所有 10 项可执行验收标准通过 `curl` 验证
-- [ ] 代码通过 TypeScript 编译无错误
-- [ ] 示例 Skill 可正常注册和执行
-- [ ] 测试页面可交互运行
+- [x] 代码通过 TypeScript 编译无错误
+- [x] 示例 Skill 可正常注册和执行
+- [x] 测试页面可交互运行
 
 ### 必须实现 (Must Have)
 - Skill 文件系统扫描和 SKILL.md 解析
@@ -156,7 +156,7 @@
 
 ## 任务清单 (TODOs)
 
-- [ ] 1. 项目初始化和配置
+- [x] 1. 项目初始化和配置
 
   **做什么**:
   - 创建 package.json，安装依赖
@@ -220,7 +220,7 @@
   - Message: `chore: initialize project with TypeScript and dependencies`
   - Files: `package.json`, `tsconfig.json`, `.gitignore`
 
-- [ ] 2. 类型定义和接口
+- [x] 2. 类型定义和接口
 
   **做什么**:
   - 定义核心类型：Skill, Task, Agent, Message
@@ -315,7 +315,7 @@
 
   **提交**: YES (可与 Task 1 合并)
 
-- [ ] 3. 示例 Skill 创建
+- [x] 3. 示例 Skill 创建
 
   **做什么**:
   - 创建 `skills/calculator/` 目录
@@ -393,7 +393,7 @@
 
   **提交**: YES
 
-- [ ] 4. Skill 注册表
+- [x] 4. Skill 注册表
 
   **做什么**:
   - 实现 `SkillRegistry` 类
@@ -479,7 +479,7 @@
 
   **提交**: YES
 
-- [ ] 5. 任务队列和依赖图
+- [x] 5. 任务队列和依赖图
 
   **做什么**:
   - 实现 `TaskQueue` 类
@@ -566,7 +566,7 @@
 
   **提交**: YES
 
-- [ ] 6. LLM 集成 (GLM-4.7-flash)
+- [x] 6. LLM 集成 (GLM-4.7-flash)
 
   **做什么**:
   - 实现 `LLMClient` 类
@@ -665,7 +665,7 @@
 
   **提交**: YES
 
-- [ ] 7. MainAgent 规划器
+- [x] 7. MainAgent 规划器
 
   **做什么**:
   - 实现 `MainAgent` 类
@@ -791,7 +791,7 @@
 
   **提交**: YES
 
-- [ ] 8. SubAgent 执行引擎
+- [x] 8. SubAgent 执行引擎
 
   **做什么**:
   - 实现 `SubAgent` 类
@@ -866,7 +866,7 @@
 
   **提交**: YES (可与 Task 7 合并)
 
-- [ ] 9. HTTP API 服务
+- [x] 9. HTTP API 服务
 
   **做什么**:
   - 使用 Express.js 创建 HTTP 服务
@@ -960,7 +960,7 @@
 
   **提交**: YES
 
-- [ ] 10. HTML 测试页面
+- [x] 10. HTML 测试页面
 
   **做什么**:
   - 创建 `public/test.html`
@@ -1107,9 +1107,9 @@ curl -s http://localhost:3000/test.html | grep -q "Multi-Agent" && echo "Test pa
 
 ### 最终检查清单
 - [ ] 所有 10 项验收标准通过
-- [ ] TypeScript 编译无错误 (`bun run build`)
-- [ ] 示例 Skill 可正常注册和执行
-- [ ] 测试页面可交互运行
+- [x] TypeScript 编译无错误 (`bun run build`)
+- [x] 示例 Skill 可正常注册和执行
+- [x] 测试页面可交互运行
 - [ ] 循环依赖检测正常工作
 - [ ] 并发限制生效
 - [ ] 超时处理正常
