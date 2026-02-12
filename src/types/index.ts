@@ -322,6 +322,7 @@ export const TaskPlanSchema = z.object({
     id: z.string(),
     requirement: z.string(),
     skillName: z.string(),
+    params: z.record(z.unknown()).optional(),
     dependencies: z.array(z.string()),
   })),
 });

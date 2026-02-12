@@ -1,6 +1,6 @@
 ---
 name: calculator
-description: Perform basic arithmetic calculations (add, subtract, multiply, divide). Use when user needs mathematical operations.
+description: Perform basic arithmetic calculations (add, subtract, multiply, divide). Use when user needs mathematical operations. 执行基本算术计算（加、减、乘、除）。当用户需要数学运算时使用。
 license: MIT
 metadata:
   author: system

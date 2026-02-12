@@ -175,8 +175,11 @@ export class LLMClient {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
+        console.log(`LLM request attempt ${attempt + 1}/${this.maxRetries}`);
+        
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
+          console.log('LLM request timeout');
           controller.abort();
         }, this.timeoutMs);
 
@@ -194,12 +197,15 @@ export class LLMClient {
           requestBody.response_format = responseFormat;
         }
 
+        console.log('Sending LLM request to:', `${this.baseUrl}/chat/completions`);
+        console.log('Request body:', JSON.stringify(requestBody, null, 2));
+
         const response = await fetch(
           `${this.baseUrl}/chat/completions`,
           {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              Authorization: `Bearer ${this.apiKey}`, // Use full API key
               'Content-Type': 'application/json',
             },
             body: JSON.stringify(requestBody),
@@ -208,11 +214,14 @@ export class LLMClient {
         );
 
         clearTimeout(timeoutId);
+        console.log('LLM request response status:', response.status);
 
         const data = (await response.json()) as GLMResponse;
+        console.log('LLM request response data:', JSON.stringify(data, null, 2));
 
         // Check for API error in response body
         if (data.error) {
+          console.log('LLM API error:', data.error);
           throw this.classifyError(response.status, {
             message: data.error.message,
             code: data.error.code,
@@ -220,21 +229,27 @@ export class LLMClient {
         }
 
         if (!response.ok) {
+          console.log('LLM request not ok:', response.status);
           throw this.classifyError(response.status);
         }
 
+        console.log('LLM request successful');
         return data;
       } catch (error) {
+        console.log('LLM request error:', error);
+        
         if (error instanceof LLMError) {
           lastError = error;
 
           // Don't retry on invalid key or non-retryable errors
           if (error.type === 'INVALID_KEY') {
+            console.log('Invalid API key, throwing error');
             throw error;
           }
 
           // Check if this is the last attempt
           if (attempt === this.maxRetries - 1) {
+            console.log('Last attempt failed, throwing error');
             throw error;
           }
         } else if (error instanceof Error) {
@@ -248,6 +263,7 @@ export class LLMClient {
 
             // Check if this is the last attempt
             if (attempt === this.maxRetries - 1) {
+              console.log('Request timeout, throwing error');
               throw lastError;
             }
           } else {
@@ -260,6 +276,7 @@ export class LLMClient {
 
             // Check if this is the last attempt
             if (attempt === this.maxRetries - 1) {
+              console.log('Network error, throwing error');
               throw lastError;
             }
           }
@@ -272,17 +289,20 @@ export class LLMClient {
           );
 
           if (attempt === this.maxRetries - 1) {
+            console.log('Unknown error, throwing error');
             throw lastError;
           }
         }
 
         // Wait before retrying (exponential backoff)
         const delay = this.getRetryDelay(attempt);
+        console.log(`Waiting ${delay}ms before retrying`);
         await this.sleep(delay);
       }
     }
 
     // This should never be reached, but just in case
+    console.log('All retry attempts failed');
     throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
   }
 

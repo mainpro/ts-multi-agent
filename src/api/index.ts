@@ -207,20 +207,6 @@ export function createAPIServer(
 
         const taskId = randomUUID();
 
-        // Create initial task (not added to queue, will be processed by MainAgent)
-        const task: Task = {
-          id: taskId,
-          requirement,
-          status: 'pending',
-          dependencies: [],
-          dependents: [],
-          createdAt: new Date(),
-          retryCount: 0,
-        };
-
-        // Track task in registry (not in execution queue)
-        (taskQueue as any).tasks.set(taskId, task);
-
         // Start processing asynchronously via MainAgent
         processTaskAsync(taskId, requirement);
 
@@ -407,30 +393,49 @@ export function createAPIServer(
   );
 
   async function processTaskAsync(taskId: string, requirement: string): Promise<void> {
-    try {
-      const result = await mainAgent.processRequirement(requirement);
+    // Create task and add to queue for tracking
+    const task: Task = {
+      id: taskId,
+      requirement,
+      status: 'pending',
+      dependencies: [],
+      dependents: [],
+      createdAt: new Date(),
+      retryCount: 0,
+    };
 
-      const task = taskQueue.getTask(taskId);
-      if (task && result.success) {
-        task.status = 'completed';
-        task.result = result.data;
-        task.completedAt = new Date();
-      } else if (task && !result.success) {
-        task.status = 'failed';
-        task.error = result.error;
-        task.completedAt = new Date();
+    // Add task to queue for tracking
+    taskQueue.addTask(task);
+
+    try {
+      console.log(`Processing task ${taskId} with requirement: ${requirement}`);
+      const result = await mainAgent.processRequirement(requirement);
+      console.log(`Processing task ${taskId} completed with result:`, result);
+
+      const updatedTask = taskQueue.getTask(taskId);
+      if (updatedTask && result.success) {
+        updatedTask.status = 'completed';
+        updatedTask.result = result.data;
+        updatedTask.completedAt = new Date();
+        console.log(`Task ${taskId} updated to completed`);
+      } else if (updatedTask && !result.success) {
+        updatedTask.status = 'failed';
+        updatedTask.error = result.error;
+        updatedTask.completedAt = new Date();
+        console.log(`Task ${taskId} updated to failed with error:`, result.error);
       }
     } catch (error) {
       console.error(`Error processing task ${taskId}:`, error);
-      const task = taskQueue.getTask(taskId);
-      if (task) {
-        task.status = 'failed';
-        task.error = {
+      const updatedTask = taskQueue.getTask(taskId);
+      if (updatedTask) {
+        updatedTask.status = 'failed';
+        updatedTask.error = {
           type: 'FATAL',
           message: error instanceof Error ? error.message : 'Unknown error',
           code: 'PROCESSING_ERROR',
         };
-        task.completedAt = new Date();
+        updatedTask.completedAt = new Date();
+        console.log(`Task ${taskId} updated to failed with error:`, updatedTask.error);
       }
     }
   }

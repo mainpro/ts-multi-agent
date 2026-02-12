@@ -266,6 +266,11 @@ export class TaskQueue {
         continue;
       }
 
+      // Skip tasks without skillName (they are just for tracking)
+      if (!task.skillName) {
+        continue;
+      }
+
       const allDepsCompleted = task.dependencies.every(depId => {
         const dep = this.tasks.get(depId);
         return dep && dep.status === 'completed';
@@ -284,6 +289,11 @@ export class TaskQueue {
   private hasReadyTasks(): boolean {
     for (const task of this.tasks.values()) {
       if (task.status !== 'pending') {
+        continue;
+      }
+
+      // Skip tasks without skillName (they are just for tracking)
+      if (!task.skillName) {
         continue;
       }
 

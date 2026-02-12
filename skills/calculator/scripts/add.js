@@ -35,7 +35,29 @@ function add(a, b) {
 
 // Execute if called directly
 if (require.main === module) {
-  const [,, a, b] = process.argv;
+  let a, b;
+  
+  // Try to read params from environment variable (used by SubAgent)
+  if (process.env.SKILL_PARAMS) {
+    try {
+      const params = JSON.parse(process.env.SKILL_PARAMS);
+      a = params.a;
+      b = params.b;
+    } catch (error) {
+      console.error(JSON.stringify({
+        error: 'Invalid SKILL_PARAMS: ' + error.message,
+        code: 'INVALID_PARAMS'
+      }));
+      process.exit(1);
+    }
+  }
+  
+  // Fallback to command line arguments
+  if (a === undefined || b === undefined) {
+    const [,, cliA, cliB] = process.argv;
+    a = cliA;
+    b = cliB;
+  }
   
   if (a === undefined || b === undefined) {
     console.error(JSON.stringify({
