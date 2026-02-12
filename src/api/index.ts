@@ -134,6 +134,52 @@ export function createAPIServer(
   // ============================================================================
 
   /**
+   * List all tasks
+   * GET /tasks
+   */
+  app.get(
+    '/tasks',
+    (req: Request<{}, {}, {}, { status?: string }>, res: Response<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> } | ApiError>) => {
+      try {
+        const { status } = req.query;
+        const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed'];
+
+        // Validate status filter if provided
+        if (status && !validStatuses.includes(status as TaskStatus)) {
+          res.status(400).json({
+            error: 'Bad Request',
+            message: `Invalid status filter. Must be one of: ${validStatuses.join(', ')}`,
+            code: 'INVALID_STATUS_FILTER',
+          });
+          return;
+        }
+
+        // Get tasks (filtered by status if provided)
+        const tasks = status
+          ? taskQueue.getTasksByStatus(status as TaskStatus)
+          : taskQueue.getAllTasks();
+
+        // Format response
+        const formattedTasks = tasks.map((task) => ({
+          id: task.id,
+          status: task.status,
+          requirement: task.requirement,
+          createdAt: task.createdAt.toISOString(),
+        }));
+
+        res.json({ tasks: formattedTasks });
+      } catch (error) {
+        console.error('Error listing tasks:', error);
+        res.status(500).json({
+          error: 'Internal Server Error',
+          message: 'Failed to list tasks',
+          code: 'INTERNAL_ERROR',
+        });
+      }
+    }
+  );
+
+  /**
    * Submit a new task
    * POST /tasks
    */
@@ -405,6 +451,7 @@ export function startAPIServer(
     console.log(`📋 Available endpoints:`);
     console.log(`   GET    /health`);
     console.log(`   GET    /skills`);
+    console.log(`   GET    /tasks`);
     console.log(`   POST   /tasks`);
     console.log(`   GET    /tasks/:id`);
     console.log(`   GET    /tasks/:id/result`);

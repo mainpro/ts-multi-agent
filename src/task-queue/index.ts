@@ -17,9 +17,65 @@ export class TaskQueue {
   private executor: TaskExecutor;
   private timeoutHandles: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private isProcessing = false;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private cleanupIntervalMs: number;
+  private retentionTimeMs: number;
 
-  constructor(executor: TaskExecutor) {
+  constructor(executor: TaskExecutor, cleanupIntervalMs?: number, retentionTimeMs?: number) {
     this.executor = executor;
+    this.cleanupIntervalMs = cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
+    this.retentionTimeMs = retentionTimeMs ?? CONFIG.TASK_RETENTION_TIME_MS;
+
+    this.startCleanupInterval();
+  }
+
+  /**
+   * Start the periodic cleanup interval
+   */
+  private startCleanupInterval(): void {
+    this.cleanupInterval = setInterval(() => {
+      this.cleanup();
+    }, this.cleanupIntervalMs);
+  }
+
+  /**
+   * Stop the cleanup interval
+   */
+  private stopCleanupInterval(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+  }
+
+  /**
+   * Clean up completed and failed tasks older than retention time
+   */
+  private cleanup(): void {
+    const now = new Date().getTime();
+
+    for (const [taskId, task] of this.tasks.entries()) {
+      if (task.status !== 'completed' && task.status !== 'failed') {
+        continue;
+      }
+
+      if (task.completedAt && (now - task.completedAt.getTime()) > this.retentionTimeMs) {
+        this.clearTaskTimeout(taskId);
+
+        for (const otherTask of this.tasks.values()) {
+          const index = otherTask.dependencies.indexOf(taskId);
+          if (index > -1) {
+            otherTask.dependencies.splice(index, 1);
+          }
+          const depIndex = otherTask.dependents.indexOf(taskId);
+          if (depIndex > -1) {
+            otherTask.dependents.splice(depIndex, 1);
+          }
+        }
+
+        this.tasks.delete(taskId);
+      }
+    }
   }
 
   /**
@@ -97,6 +153,8 @@ export class TaskQueue {
   }
 
   clear(): void {
+    this.stopCleanupInterval();
+
     for (const [, handle] of this.timeoutHandles) {
       clearTimeout(handle);
     }

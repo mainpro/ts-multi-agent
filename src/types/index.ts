@@ -194,6 +194,10 @@ export const CONFIG = {
   LLM_BASE_URL: 'https://open.bigmodel.cn/api/paas/v4',
   /** LLM temperature */
   LLM_TEMPERATURE: 0.7,
+  /** Task cleanup interval (5 minutes) */
+  TASK_CLEANUP_INTERVAL_MS: 300000,
+  /** Task retention time (1 hour) */
+  TASK_RETENTION_TIME_MS: 3600000,
 } as const;
 
 // ============================================================================
