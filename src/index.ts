@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
 import { LLMClient } from './llm';

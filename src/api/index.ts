@@ -89,6 +89,9 @@ export function createAPIServer(
   app.use(cors());
   app.use(express.json());
 
+  // Static files middleware
+  app.use(express.static('public'));
+
   // Request logging middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
     const startTime = Date.now();
@@ -204,7 +207,7 @@ export function createAPIServer(
 
         const taskId = randomUUID();
 
-        // Create initial task
+        // Create initial task (not added to queue, will be processed by MainAgent)
         const task: Task = {
           id: taskId,
           requirement,
@@ -215,10 +218,10 @@ export function createAPIServer(
           retryCount: 0,
         };
 
-        // Add task to queue (executor will handle it)
-        taskQueue.addTask(task);
+        // Track task in registry (not in execution queue)
+        (taskQueue as any).tasks.set(taskId, task);
 
-        // Start processing asynchronously
+        // Start processing asynchronously via MainAgent
         processTaskAsync(taskId, requirement);
 
         res.status(201).json({
