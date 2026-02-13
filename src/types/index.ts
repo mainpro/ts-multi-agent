@@ -164,7 +164,7 @@ export interface TaskPlan {
   /** Whether the requirement needs clarification */
   needsClarification?: boolean;
   /** Prompt for clarifying the requirement */
-  clarificationPrompt?: string;
+  clarificationPrompt?: string | null;
   /** List of tasks in the plan */
   tasks: Array<{
     id: string;
@@ -324,7 +324,7 @@ export const TaskPlanSchema = z.object({
   id: z.string(),
   requirement: z.string(),
   needsClarification: z.boolean().optional(),
-  clarificationPrompt: z.string().optional(),
+  clarificationPrompt: z.string().optional().nullable(),
   tasks: z.array(z.object({
     id: z.string(),
     requirement: z.string(),

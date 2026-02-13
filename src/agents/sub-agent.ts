@@ -307,6 +307,9 @@ ${scriptsInfo}
       const ext = path.extname(scriptPath);
       
       switch (ext) {
+        case '.ts':
+          execArgs = ['tsx', [scriptPath], { env, timeout: CONFIG.TASK_TIMEOUT_MS }];
+          break;
         case '.js':
           execArgs = ['node', [scriptPath], { env, timeout: CONFIG.TASK_TIMEOUT_MS }];
           break;
@@ -403,7 +406,11 @@ ${scriptsInfo}
       const ext = path.extname(scriptPath);
       
       switch (ext) {
-        case '.js':
+        
+        case '.ts':
+          execArgs = ['tsx', [scriptPath], { env, timeout: CONFIG.TASK_TIMEOUT_MS }];
+          break;
+case '.js':
           execArgs = ['node', [scriptPath], { env, timeout: CONFIG.TASK_TIMEOUT_MS }];
           break;
         case '.py':
