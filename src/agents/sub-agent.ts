@@ -3,6 +3,7 @@ import { LLMClient } from '../llm';
 import { Task, TaskResult, TaskError, Skill, CONFIG } from '../types';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { z } from 'zod';
 
 /**
  * SubAgent - Skill execution engine
@@ -58,7 +59,9 @@ export class SubAgent {
         };
       }
 
-      const result = await this.runSkill(skill, task.params);
+      const params = await this.generateParams(task.requirement, skill);
+
+      const result = await this.runSkill(skill, params);
 
       return {
         success: true,
@@ -70,6 +73,50 @@ export class SubAgent {
         success: false,
         error: taskError,
       };
+    }
+  }
+
+  private async generateParams(
+    requirement: string, 
+    skill: Skill
+  ): Promise<Record<string, unknown>> {
+    let scriptsInfo = 'No scripts available';
+    if (skill.scriptsDir) {
+      try {
+        const fs = await import('fs');
+        const files = fs.readdirSync(skill.scriptsDir);
+        scriptsInfo = files.map(f => `- ${f}`).join('\n');
+      } catch {
+        // ignore
+      }
+    }
+
+    const prompt = `分析用户需求，生成技能执行参数。
+
+用户需求: ${requirement}
+
+技能名称: ${skill.name}
+技能描述: ${skill.description}
+技能说明:
+${skill.body}
+
+可用脚本:
+${scriptsInfo}
+
+请生成执行该需求所需的参数。返回 JSON 格式，只包含必要的参数。
+
+例如，如果技能支持 "list" 和 "get" 操作，根据需求判断应该使用什么操作。`;
+
+    try {
+      const result = await this.llm.generateStructured(
+        prompt,
+        z.record(z.unknown()),
+        "你是一个参数生成助手。根据技能说明和用户需求，生成正确的执行参数。只返回 JSON 对象，不要其他文字。"
+      );
+      return result;
+    } catch (error) {
+      console.warn('Failed to generate params, using empty params:', error);
+      return {};
     }
   }
 
@@ -414,7 +461,6 @@ export class SubAgent {
     }
 
     // Look for script references in the skill body
-    const bodyLower = skill.body.toLowerCase();
     const operationLower = operation.toLowerCase();
     
     // Patterns to match script references

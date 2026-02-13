@@ -161,11 +161,16 @@ export interface TaskPlan {
   id: string;
   /** Original requirement */
   requirement: string;
+  /** Whether the requirement needs clarification */
+  needsClarification?: boolean;
+  /** Prompt for clarifying the requirement */
+  clarificationPrompt?: string;
   /** List of tasks in the plan */
   tasks: Array<{
     id: string;
     requirement: string;
     skillName: string;
+    params?: Record<string, unknown>;
     dependencies: string[];
   }>;
 }
@@ -318,6 +323,8 @@ export const RequirementAnalysisSchema = z.object({
 export const TaskPlanSchema = z.object({
   id: z.string(),
   requirement: z.string(),
+  needsClarification: z.boolean().optional(),
+  clarificationPrompt: z.string().optional(),
   tasks: z.array(z.object({
     id: z.string(),
     requirement: z.string(),
