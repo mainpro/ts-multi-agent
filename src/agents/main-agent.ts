@@ -15,9 +15,20 @@ import {
   SkillMetadata,
 } from '../types';
 
+/** Skill discovery result with metadata */
+interface SkillDiscoveryResult {
+  skills: SkillMetadata[];
+  needsClarification: boolean;
+  clarificationOptions?: string[];
+  confidence?: number;
+}
+
 const SkillDiscoverySchema = z.object({
   selectedSkills: z.array(z.string()),
   reasoning: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  needsClarification: z.boolean().optional(),
+  clarificationOptions: z.array(z.string()).optional(),
 });
 
 export class MainAgent {
@@ -35,32 +46,60 @@ export class MainAgent {
 
   async processRequirement(requirement: string): Promise<TaskResult> {
     try {
-      console.log(`Processing requirement: ${requirement}`);
+      console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
       
+      console.log(`[MainAgent] 🔍 步骤 1/4: 分析用户需求...`);
       const analysis = await this.analyzeRequirement(requirement);
-      console.log('Requirement analysis completed:', analysis);
+      console.log(`[MainAgent] ✅ 需求分析完成 - 意图: ${analysis.intent}, 实体: ${analysis.entities?.join(', ') || '无'}`);
       
-      const relevantSkills = await this.discoverSkills(analysis);
+      console.log(`[MainAgent] 🔍 步骤 2/4: 匹配技能...`);
+      const discoveryResult = await this.discoverSkills(analysis);
+      console.log(`[MainAgent] ✅ 技能匹配完成 - 找到 ${discoveryResult.skills.length} 个相关技能: ${discoveryResult.skills.map(s => s.name).join(', ')}`);
+      
+      const relevantSkills = discoveryResult.skills;
       console.log('Relevant skills found:', relevantSkills.map(s => s.name));
 
-      if (relevantSkills.length === 0) {
+      // Handle needsClarification from skill discovery
+      if (discoveryResult.needsClarification) {
         const allSkills = this.skillRegistry.getAllMetadata();
         const skillsList = allSkills.length > 0 
-          ? '\n\n系统当前具备的技能：\n' + allSkills.map(skill => `- ${skill.name}: ${skill.description}`).join('\n')
-          : '\n\n系统当前没有可用的技能。';
+          ? allSkills.map((skill: SkillMetadata) => `• ${skill.name}: ${skill.description}`).join('\n')
+          : '暂无功能'; // 不询问更多信息，只展示可用功能
+        
+        const message = `抱歉，无法处理该请求。\n\n当前系统支持：\n${skillsList}`;
         
         return {
-          success: false,
-          error: {
-            type: 'FATAL',
-            message: 'No suitable skills found for this requirement' + skillsList,
-            code: 'NO_SKILLS',
+          success: true,
+          data: {
+            message,
+            availableSkills: allSkills.map((s: SkillMetadata) => ({ name: s.name, description: s.description })),
           },
         };
       }
 
+      if (relevantSkills.length === 0) {
+        const allSkills = this.skillRegistry.getAllMetadata();
+        const skillsList = allSkills.length > 0 
+          ? allSkills.map((skill: SkillMetadata) => `• ${skill.name}: ${skill.description}`).join('\n')
+          : '暂无功能';
+        
+        const message = `抱歉，无法处理该请求。\n\n当前系统支持：\n${skillsList}`;
+        
+        return {
+          success: true,
+          data: {
+            message,
+            availableSkills: allSkills.map((s: SkillMetadata) => ({ name: s.name, description: s.description })),
+          },
+        };
+      }
+
+      console.log(`[MainAgent] 🔍 步骤 3/4: 创建任务计划...`);
       const plan = await this.createPlan(requirement, analysis, relevantSkills);
-      console.log('Task plan created:', JSON.stringify(plan, null, 2));
+      console.log(`[MainAgent] ✅ 任务计划创建完成 - 共 ${plan.tasks.length} 个任务`);
+      plan.tasks.forEach((task, idx) => {
+        console.log(`[MainAgent]   任务 ${idx + 1}: [${task.skillName}] ${task.requirement}`);
+      });
       
       if (plan.needsClarification) {
         return {
@@ -73,6 +112,7 @@ export class MainAgent {
         };
       }
       
+      console.log(`[MainAgent] 🔍 步骤 4/4: 执行任务 (监控中...)`);
       return await this.monitorAndReplan(plan);
     } catch (error) {
       console.error('Error processing requirement:', error);
@@ -109,24 +149,30 @@ What needs to be done? Identify key entities and the primary intent.`;
     );
   }
 
-  async discoverSkills(analysis: RequirementAnalysis): Promise<SkillMetadata[]> {
+  async discoverSkills(analysis: RequirementAnalysis): Promise<SkillDiscoveryResult> {
     const allSkills = this.skillRegistry.getAllMetadata();
 
     if (allSkills.length === 0) {
-      return [];
+      return { skills: [], needsClarification: false };
     }
 
     const systemPrompt = `You are a skill matching assistant. Given a requirement analysis and available skills, select the most relevant skills.
 
 Important:
+- 你必须用中文回复
 - Match both English and Chinese inputs to skills
 - Be precise in skill names - use exactly the names from the available skills list
 - Select skills based on the actual content of the requirement and the capabilities of each skill
+- Rate your confidence (0-1) that the selected skills are correct
+- If the requirement is ambiguous or no skills match well, set needsClarification to true and provide clarificationOptions in Chinese
 
 Respond in JSON format:
 {
-  "selectedSkills": ["skill-name-1", "skill-name-2"],
-  "reasoning": "Brief explanation of why these skills were selected"
+  "selectedSkills": ["skill-name-1"],
+  "reasoning": "Brief explanation",
+  "confidence": 0.8,
+  "needsClarification": false,
+  "clarificationOptions": ["option1", "option2"]
 }`;
 
     const entities = Array.isArray(analysis.entities) ? analysis.entities.join(', ') : (analysis.entities || 'None');
@@ -151,12 +197,17 @@ Which skills are most relevant for this requirement? Return only the skill names
 
     const selectedSkills = allSkills.filter((skill) => result.selectedSkills.includes(skill.name));
 
-    // If no skills were selected, return all available skills
-    if (selectedSkills.length === 0) {
-      return allSkills;
-    }
-
-    return selectedSkills;
+    // Fast-fail: If no skills selected or low confidence, return empty with metadata
+    const needsClarification = result.needsClarification || 
+      selectedSkills.length === 0 || 
+      (result.confidence !== undefined && result.confidence < 0.5);
+    
+    return {
+      skills: selectedSkills,
+      needsClarification,
+      clarificationOptions: result.clarificationOptions,
+      confidence: result.confidence,
+    };
   }
 
   async createPlan(
@@ -300,6 +351,7 @@ Guidelines:
   }
 
   private submitPlanTasks(plan: TaskPlan): void {
+    console.log(`[MainAgent] 📤 向任务队列提交 ${plan.tasks.length} 个任务`);
     for (const taskDef of plan.tasks) {
       // Generate unique task ID by combining plan ID and task ID
       const uniqueTaskId = `${plan.id}-${taskDef.id}`;
@@ -361,6 +413,7 @@ Guidelines:
               result: t.result,
             }));
 
+          console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${tasksWithSkill.length})`);
           return {
             success: true,
             data: {

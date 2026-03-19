@@ -1,9 +1,17 @@
 {
-  "active_plan": "/Users/dipu/exercise/ts-multi-agent/.sisyphus/plans/implement-progressive-disclosure.md",
-  "started_at": "2026-02-13T02:57:29.465Z",
+  "active_plan": "/Users/dipu/exercise/ts-multi-agent/.sisyphus/plans/progressive-disclosure-skill.md",
+  "started_at": "2026-03-19T06:26:40.317Z",
   "session_ids": [
-    "ses_3ab62e060ffecw2ygAvkWq30Xx"
+    "ses_301766417ffeDwCRWuZtgXnffF",
+    "ses_2fb389200ffeExuvLsogKdM2Ha",
+    "ses_2fb355979ffeWSifg9sn8B4b3y",
+    "ses_2fb35ee0effep1zIkcFAWglOLq",
+    "ses_2fb35ae33ffeX6E9PoEhF8k1oI",
+    "ses_2fb330f27ffexV11dxBJp1JTl9",
+    "ses_2fb3277a7ffeJvJ7ybOMBjkve2",
+    "ses_2fb32bd57ffesfW1GV4j3Tvlx5"
   ],
-  "plan_name": "implement-progressive-disclosure",
+  "plan_name": "progressive-disclosure-skill",
+  "worktree_path": "/Users/dipu/exercise/ts-multi-agent",
   "agent": "atlas"
 }

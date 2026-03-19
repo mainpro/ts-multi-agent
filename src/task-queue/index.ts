@@ -12,6 +12,7 @@ type TaskExecutor = (task: Task) => Promise<unknown>;
  * - State machine: pending → running → completed/failed
  */
 export class TaskQueue {
+  private readonly MAX_RESULT_SIZE = 1024 * 1024; // 1MB
   private tasks: Map<string, Task> = new Map();
   private running: Set<string> = new Set();
   private executor: TaskExecutor;
@@ -20,6 +21,14 @@ export class TaskQueue {
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private cleanupIntervalMs: number;
   private retentionTimeMs: number;
+
+  private metrics = {
+    tasksCompleted: 0,
+    tasksFailed: 0,
+    tasksTimedOut: 0,
+    averageExecutionTime: 0,
+    totalExecutionTime: 0
+  };
 
   constructor(executor: TaskExecutor, cleanupIntervalMs?: number, retentionTimeMs?: number) {
     this.executor = executor;
@@ -131,6 +140,10 @@ export class TaskQueue {
 
   getRunningCount(): number {
     return this.running.size;
+  }
+
+  getMetrics() {
+    return { ...this.metrics };
   }
 
   isRunning(taskId: string): boolean {
@@ -266,11 +279,6 @@ export class TaskQueue {
         continue;
       }
 
-      // Skip tasks without skillName (they are just for tracking)
-      if (!task.skillName) {
-        continue;
-      }
-
       const allDepsCompleted = task.dependencies.every(depId => {
         const dep = this.tasks.get(depId);
         return dep && dep.status === 'completed';
@@ -292,11 +300,6 @@ export class TaskQueue {
         continue;
       }
 
-      // Skip tasks without skillName (they are just for tracking)
-      if (!task.skillName) {
-        continue;
-      }
-
       const allDepsCompleted = task.dependencies.every(depId => {
         const dep = this.tasks.get(depId);
         return dep && dep.status === 'completed';
@@ -315,11 +318,7 @@ export class TaskQueue {
     task.startedAt = new Date();
     this.running.add(task.id);
 
-    const timeoutHandle = setTimeout(() => {
-      this.handleTaskTimeout(task.id);
-    }, CONFIG.TASK_TIMEOUT_MS);
-    
-    this.timeoutHandles.set(task.id, timeoutHandle);
+    const startTime = Date.now();
 
     try {
       const result = await Promise.race([
@@ -327,17 +326,25 @@ export class TaskQueue {
         this.createTimeoutPromise()
       ]);
 
-      this.clearTaskTimeout(task.id);
-      this.completeTask(task.id, result);
+      const executionTime = Date.now() - startTime;
+      console.log(`[TaskQueue] Task ${task.id} completed in ${executionTime}ms`);
+      this.completeTask(task.id, result, executionTime);
     } catch (error) {
-      this.clearTaskTimeout(task.id);
+      const executionTime = Date.now() - startTime;
+      const isTimeout = error instanceof Error && error.message.includes('timed out');
+      
+      if (isTimeout) {
+        console.warn(`[TaskQueue] Task ${task.id} timed out after ${executionTime}ms`);
+      } else {
+        console.warn(`[TaskQueue] Task ${task.id} failed after ${executionTime}ms`);
+      }
 
       const taskError: TaskError = {
         type: 'RETRYABLE',
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
       };
-      this.failTask(task.id, taskError);
+      this.failTask(task.id, taskError, isTimeout);
     } finally {
       this.running.delete(task.id);
       this.processQueue();
@@ -345,27 +352,11 @@ export class TaskQueue {
   }
 
   private createTimeoutPromise(): Promise<never> {
-    return new Promise(() => {
-      // Never resolves - actual timeout handled by setTimeout in executeTask
+    return new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Task timed out after ${CONFIG.TASK_TIMEOUT_MS}ms`));
+      }, CONFIG.TASK_TIMEOUT_MS);
     });
-  }
-
-  private handleTaskTimeout(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'running') {
-      return;
-    }
-
-    this.timeoutHandles.delete(taskId);
-
-    this.failTask(taskId, {
-      type: 'RETRYABLE',
-      message: `Task timed out after ${CONFIG.TASK_TIMEOUT_MS}ms`,
-      code: 'TIMEOUT'
-    });
-
-    this.running.delete(taskId);
-    this.processQueue();
   }
 
   private clearTaskTimeout(taskId: string): void {
@@ -376,20 +367,33 @@ export class TaskQueue {
     }
   }
 
-  private completeTask(taskId: string, result: unknown): void {
+  private completeTask(taskId: string, result: unknown, executionTime: number): void {
     const task = this.tasks.get(taskId);
     if (!task) {
       return;
+    }
+
+    const resultSize = JSON.stringify(result).length;
+    if (resultSize > this.MAX_RESULT_SIZE) {
+      console.warn(`[TaskQueue] Task ${taskId} result exceeds size limit (${resultSize} bytes)`);
+      result = {
+        warning: 'Result truncated due to size limit',
+        partialResult: JSON.stringify(result).substring(0, 1000) + '...'
+      };
     }
 
     task.status = 'completed';
     task.result = result;
     task.completedAt = new Date();
 
+    this.metrics.tasksCompleted++;
+    this.metrics.totalExecutionTime += executionTime;
+    this.metrics.averageExecutionTime = this.metrics.totalExecutionTime / this.metrics.tasksCompleted;
+
     this.notifyDependents(taskId);
   }
 
-  private failTask(taskId: string, error: TaskError): void {
+  private failTask(taskId: string, error: TaskError, isTimeout: boolean = false): void {
     const task = this.tasks.get(taskId);
     if (!task) {
       return;
@@ -398,6 +402,12 @@ export class TaskQueue {
     task.status = 'failed';
     task.error = error;
     task.completedAt = new Date();
+
+    if (isTimeout) {
+      this.metrics.tasksTimedOut++;
+    } else {
+      this.metrics.tasksFailed++;
+    }
 
     this.failDependents(taskId, error);
   }

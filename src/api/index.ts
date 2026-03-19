@@ -226,6 +226,81 @@ export function createAPIServer(
   );
 
   /**
+   * Submit a new task with streaming
+   * POST /tasks/stream
+   */
+  app.post(
+    '/tasks/stream',
+    async (
+      req: Request<{}, {}, SubmitTaskRequest>,
+      res: Response<ApiError>
+    ) => {
+      const { requirement } = req.body;
+
+      // Validate request
+      if (!requirement || typeof requirement !== 'string') {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: 'Missing or invalid "requirement" field',
+          code: 'INVALID_REQUEST',
+        });
+        return;
+      }
+
+      // Set SSE headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      const sendEvent = (event: string, data: unknown) => {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        sendEvent('start', { message: '开始处理您的请求...' });
+
+        const originalLog = console.log;
+        let stepCount = 0;
+        console.log = (...args: unknown[]) => {
+          const msg = args.join(' ');
+          // Capture MainAgent and SubAgent process messages
+          if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]')) {
+            stepCount++;
+            sendEvent('step', { 
+              step: stepCount, 
+              message: msg,
+              agent: msg.includes('[MainAgent]') ? 'MainAgent' : 'SubAgent',
+              timestamp: new Date().toISOString()
+            });
+          }
+          originalLog.apply(console, args);
+        };
+
+        try {
+          const result = await mainAgent.processRequirement(requirement);
+          
+          if (result.success) {
+            sendEvent('complete', result.data);
+          } else {
+            sendEvent('error', result.error);
+          }
+        } finally {
+          console.log = originalLog;
+        }
+
+      } catch (error) {
+        sendEvent('error', { 
+          message: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      } finally {
+        res.end();
+      }
+    }
+  );
+
+  /**
    * Get task status
    * GET /tasks/:id
    */

@@ -36,6 +36,9 @@ export class SubAgent {
    */
   async execute(task: Task): Promise<TaskResult> {
     try {
+      console.log(`[SubAgent] 🔧 开始执行任务 [${task.id}] - 技能: ${task.skillName}`);
+      console.log(`[SubAgent] 📝 任务需求: "${task.requirement}"`);
+      
       if (!task.skillName) {
         return {
           success: false,
@@ -47,6 +50,7 @@ export class SubAgent {
         };
       }
 
+      console.log(`[SubAgent] 📦 加载技能: ${task.skillName}`);
       const skill = await this.skillRegistry.loadFullSkill(task.skillName);
       if (!skill) {
         return {
@@ -59,16 +63,21 @@ export class SubAgent {
         };
       }
 
+      console.log(`[SubAgent] ⚙️  步骤 1/2: 生成执行参数...`);
       const params = await this.generateParams(task.requirement, skill);
+      console.log(`[SubAgent] ✅ 参数生成完成: ${JSON.stringify(params)}`);
 
+      console.log(`[SubAgent] ⚙️  步骤 2/2: 执行技能...`);
       const result = await this.runSkill(skill, params);
 
+      console.log(`[SubAgent] ✅ 任务 [${task.id}] 执行成功`);
       return {
         success: true,
         data: result,
       };
     } catch (error) {
       const taskError = this.classifyError(error);
+      console.log(`[SubAgent] ❌ 任务 [${task.id}] 执行失败: ${taskError.message}`);
       return {
         success: false,
         error: taskError,
@@ -80,42 +89,33 @@ export class SubAgent {
     requirement: string, 
     skill: Skill
   ): Promise<Record<string, unknown>> {
-    let scriptsInfo = 'No scripts available';
-    if (skill.scriptsDir) {
-      try {
-        const fs = await import('fs');
-        const files = fs.readdirSync(skill.scriptsDir);
-        scriptsInfo = files.map(f => `- ${f}`).join('\n');
-      } catch {
-        // ignore
-      }
-    }
-
     const prompt = `分析用户需求，生成技能执行参数。
 
 用户需求: ${requirement}
 
 技能名称: ${skill.name}
 技能描述: ${skill.description}
-技能说明:
+
+技能完整说明（包括脚本和参考资料使用指引）：
 ${skill.body}
 
-可用脚本:
-${scriptsInfo}
+请仔细阅读技能说明，根据其中的执行步骤和分支逻辑，判断需要执行什么操作。
+只返回必要的参数（如 operation, operands 等）。
 
-请生成执行该需求所需的参数。返回 JSON 格式，只包含必要的参数。
-
-例如，如果技能支持 "list" 和 "get" 操作，根据需求判断应该使用什么操作。`;
+关键原则：
+- 如果技能说明提到需要特定脚本/操作，应该生成对应的 operation 参数
+- 如果技能说明有分支条件（IF/THEN），根据需求判断走哪个分支
+- 不要假设所有 scripts 都必须被列出，只使用技能说明中指引的`;
 
     try {
       const result = await this.llm.generateStructured(
         prompt,
         z.record(z.unknown()),
-        "你是一个参数生成助手。根据技能说明和用户需求，生成正确的执行参数。只返回 JSON 对象，不要其他文字。"
+        "你是一个参数生成助手。根据技能说明和用户需求，生成正确的执行参数。只返回 JSON 对象。"
       );
       return result;
     } catch (error) {
-      console.warn('Failed to generate params, using empty params:', error);
+      console.warn('Failed to generate params:', error);
       return {};
     }
   }
@@ -612,8 +612,38 @@ case '.js':
     skill: Skill,
     params?: Record<string, unknown>
   ): Promise<unknown> {
-    const systemPrompt = `You are executing the "${skill.name}" skill.\n\nSkill Description: ${skill.description}\n\nSkill Documentation:\n${skill.body}`;
-    const userPrompt = `Execute this skill with the following parameters:\n${JSON.stringify(params || {}, null, 2)}\n\nProvide your response as valid JSON.`;
+    // 构建增强的系统提示，让 LLM 自主决定如何使用资源
+    let systemPrompt = `You are executing the "${skill.name}" skill.
+
+Skill Description: ${skill.description}
+
+Skill Documentation:
+${skill.body}`;
+
+    // 如果有 references 目录，提供可用列表
+    // 但是否读取由 LLM 根据 SKILL.md 自主决定
+    if (skill.referencesDir) {
+      try {
+        const refs = await this.listReferences(skill);
+        if (refs.length > 0) {
+          systemPrompt += `
+
+Available References:
+If you need to read documentation for implementation details, the following files are available:
+${refs.map(f => `- ${f}`).join('\n')}
+
+Note: Whether to read references depends on the skill documentation above. 
+If the documentation says "See references/X.md for details", you should load it if needed.`;
+        }
+      } catch {
+        // ignore errors in listing references
+      }
+    }
+
+    const userPrompt = `Execute this skill with the following parameters:
+${JSON.stringify(params || {}, null, 2)}
+
+请根据技能文档中的执行步骤执行。如果文档中提到需要读取参考资料（references），请自主决定是否需要加载。`;
 
     try {
       const response = await this.llm.generateText(userPrompt, systemPrompt);
@@ -745,6 +775,57 @@ case '.js':
       message: String(error),
       code: 'UNKNOWN_ERROR',
     };
+  }
+
+  /**
+   * Load a reference file on-demand
+   * 
+   * 提供读取 references 目录中文件的能力
+   * 是否读取由 SKILL.md + LLM 决定，代码只负责读取
+   * 
+   * @param skill - The Skill containing references
+   * @param filename - Reference filename (e.g., "README.md", "advanced.md")
+   * @returns Reference content or null if not found
+   */
+  async loadReference(skill: Skill, filename: string): Promise<string | null> {
+    if (!skill.referencesDir) {
+      console.log(`[SubAgent] 📖 尝试加载 references，但 skill "${skill.name}" 没有 references 目录`);
+      return null;
+    }
+
+    const fullPath = path.join(skill.referencesDir, filename);
+    
+    try {
+      const content = await fs.readFile(fullPath, 'utf-8');
+      console.log(`[SubAgent] 📖 已加载 reference: ${filename} (${content.length} chars)`);
+      return content;
+    } catch (error) {
+      console.warn(`[SubAgent] 📖 无法加载 reference "${filename}":`, error);
+      return null;
+    }
+  }
+
+  /**
+   * List available references in a skill
+   * 
+   * @param skill - The Skill
+   * @returns Array of reference file names
+   */
+  async listReferences(skill: Skill): Promise<string[]> {
+    if (!skill.referencesDir) {
+      return [];
+    }
+
+    try {
+      const files = await fs.readdir(skill.referencesDir);
+      const mdFiles = files.filter(f => 
+        f.endsWith('.md') || f.endsWith('.txt') || f.endsWith('.json')
+      );
+      console.log(`[SubAgent] 📚 Skill "${skill.name}" 可用的 references: ${mdFiles.join(', ')}`);
+      return mdFiles;
+    } catch {
+      return [];
+    }
   }
 }
 

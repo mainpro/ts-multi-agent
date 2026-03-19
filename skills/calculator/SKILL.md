@@ -4,7 +4,7 @@ description: Perform basic arithmetic calculations (add, subtract, multiply, div
 license: MIT
 metadata:
   author: system
-  version: "1.0.0"
+  version: "2.0.0"
   category: math
   tags:
     - arithmetic
@@ -14,63 +14,86 @@ metadata:
 
 # Calculator Skill
 
-This skill performs basic arithmetic operations including addition, subtraction, multiplication, and division.
+## Quick Reference (RIF)
 
-## Usage
+**Operations**: `add`, `subtract`, `multiply`, `divide`
+**Usage**: `{ "operation": "add", "a": 10, "b": 5 }`
+**Scripts**: `scripts/add.js`
 
-Call the calculator with an operation and two operands:
+## Execution Steps
 
+### Step 1: Identify Operation
+
+根据需求判断需要哪个操作：
+
+| 需求关键词 | Operation | Script |
+|-----------|-----------|--------|
+| 加、plus、+、求和、和 | `add` | `scripts/add.js` |
+| 减、minus、-、差 | `subtract` | `scripts/subtract.js` |
+| 乘、times、×、积 | `multiply` | `scripts/multiply.js` |
+| 除、divide、÷、商 | `divide` | `scripts/divide.js` |
+
+### Step 2: Validate Input (分支逻辑)
+
+**IF operation == "divide" AND b == 0:**
+  → 返回错误 `{ "error": "Division by zero", "code": "DIVISION_BY_ZERO" }`
+  → **不需要执行任何 script**
+
+**IF a 或 b 不是数字:**
+  → 返回错误 `{ "error": "Invalid input", "code": "INVALID_INPUT" }`
+  → **不需要执行任何 script**
+
+**ELSE:**
+  → 继续执行 Step 3
+
+### Step 3: Execute Operation
+
+根据 operation 执行对应 script：
+
+- `add` → 执行 `scripts/add.js`，参数 `{ "a": <值>, "b": <值> }`
+- `subtract` → 执行 `scripts/subtract.js`，参数 `{ "a": <值>, "b": <值> }`
+- `multiply` → 执行 `scripts/multiply.js`，参数 `{ "a": <值>, "b": <值> }`
+- `divide` → 执行 `scripts/divide.js`，参数 `{ "a": <值>, "b": <值> }`
+
+### Step 4: Return Result
+
+返回 JSON 格式结果：
 ```json
 {
   "operation": "add",
   "a": 10,
-  "b": 5
+  "b": 5,
+  "result": 15
 }
 ```
 
-## Operations
+## References
 
-- `add`: Addition (a + b)
-- `subtract`: Subtraction (a - b)
-- `multiply`: Multiplication (a * b)
-- `divide`: Division (a / b) - throws error if b is 0
+**详细文档**: See [references/README.md](references/README.md)
+- **何时读取**: 当需要了解脚本接口规范或错误代码时
+- **内容**: 脚本实现细节、错误处理规范
+
+## Error Handling
+
+| 错误条件 | 处理方式 | 需要读取 References |
+|---------|---------|------------------|
+| 非数字输入 | 返回 INVALID_INPUT 错误 | ❌ 不需要 |
+| 除以零 | 返回 DIVISION_BY_ZERO 错误 | ❌ 不需要 |
+| 未知操作 | 返回 UNKNOWN_OPERATION 错误 | ❌ 不需要 |
+| 需要了解脚本实现 | 读取 references/README.md | ✅ 需要 |
 
 ## Examples
 
 ### Addition
-```json
-{ "operation": "add", "a": 10, "b": 5 }
-// Result: 15
+```
+Input: "Calculate 10 + 5"
+Params: { "operation": "add", "a": 10, "b": 5 }
+Output: { "result": 15 }
 ```
 
-### Subtraction
-```json
-{ "operation": "subtract", "a": 10, "b": 5 }
-// Result: 5
+### Division by Zero
 ```
-
-### Multiplication
-```json
-{ "operation": "multiply", "a": 10, "b": 5 }
-// Result: 50
+Input: "Calculate 10 / 0"
+Params: { "operation": "divide", "a": 10, "b": 0 }
+Output: { "error": "Division by zero", "code": "DIVISION_BY_ZERO" }
 ```
-
-### Division
-```json
-{ "operation": "divide", "a": 10, "b": 5 }
-// Result: 2
-```
-
-## Scripts
-
-See [scripts/add.js](scripts/add.js) for the addition implementation.
-
-## References
-
-- [README.md](references/README.md) - Implementation details and architecture
-
-## Error Handling
-
-- Division by zero returns an error
-- Invalid operations return an error
-- Non-numeric inputs return an error
