@@ -1,6 +1,6 @@
 import { Task, TaskStatus, TaskError, CONFIG } from '../types';
 
-type TaskExecutor = (task: Task) => Promise<unknown>;
+type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
 /**
  * TaskQueue manages task scheduling, execution, and dependency resolution
@@ -279,6 +279,11 @@ export class TaskQueue {
         continue;
       }
 
+      // Skip tasks without skillName - these are tracking tasks, not execution tasks
+      if (!task.skillName) {
+        continue;
+      }
+
       const allDepsCompleted = task.dependencies.every(depId => {
         const dep = this.tasks.get(depId);
         return dep && dep.status === 'completed';
@@ -297,6 +302,11 @@ export class TaskQueue {
   private hasReadyTasks(): boolean {
     for (const task of this.tasks.values()) {
       if (task.status !== 'pending') {
+        continue;
+      }
+
+      // Skip tasks without skillName - these are tracking tasks, not execution tasks
+      if (!task.skillName) {
         continue;
       }
 
@@ -319,20 +329,34 @@ export class TaskQueue {
     this.running.add(task.id);
 
     const startTime = Date.now();
+    const controller = new AbortController();
+
+    const timeoutHandle = setTimeout(() => {
+      controller.abort();
+    }, CONFIG.TASK_TIMEOUT_MS);
+    this.timeoutHandles.set(task.id, timeoutHandle);
 
     try {
-      const result = await Promise.race([
-        this.executor(task),
-        this.createTimeoutPromise()
-      ]);
+      console.log(`[TaskQueue] 🔄 开始执行任务: ${task.id}`);
+      const result = await this.executor(task, controller.signal);
+      console.log(`[TaskQueue] ✅ executor 返回成功: ${task.id}`);
+
+      clearTimeout(timeoutHandle);
+      this.timeoutHandles.delete(task.id);
 
       const executionTime = Date.now() - startTime;
       console.log(`[TaskQueue] Task ${task.id} completed in ${executionTime}ms`);
       this.completeTask(task.id, result, executionTime);
     } catch (error) {
+      console.log(`[TaskQueue] ❌ executor 抛出异常: ${task.id}`, error);
+      clearTimeout(timeoutHandle);
+      this.timeoutHandles.delete(task.id);
+
       const executionTime = Date.now() - startTime;
-      const isTimeout = error instanceof Error && error.message.includes('timed out');
-      
+      const isTimeout = error instanceof Error && (
+        error.name === 'AbortError' || error.message.includes('timed out')
+      );
+
       if (isTimeout) {
         console.warn(`[TaskQueue] Task ${task.id} timed out after ${executionTime}ms`);
       } else {
@@ -349,14 +373,6 @@ export class TaskQueue {
       this.running.delete(task.id);
       this.processQueue();
     }
-  }
-
-  private createTimeoutPromise(): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(() => {
-        reject(new Error(`Task timed out after ${CONFIG.TASK_TIMEOUT_MS}ms`));
-      }, CONFIG.TASK_TIMEOUT_MS);
-    });
   }
 
   private clearTaskTimeout(taskId: string): void {

@@ -11,6 +11,7 @@ function createMockTask(overrides: Partial<Task> = {}): Task {
     dependents: [],
     createdAt: new Date(),
     retryCount: 0,
+    skillName: 'test-skill', // Add default skillName for tests
     ...overrides,
   };
 }
@@ -21,12 +22,12 @@ describe('TaskQueue', () => {
   let queue: TaskQueue;
   let mockExecutor: ReturnType<typeof mock>;
 
-  beforeEach(() => {
-    mockExecutor = mock(async (_task: Task) => {
-      return { success: true };
-    });
-    queue = new TaskQueue(mockExecutor);
+beforeEach(() => {
+    mockExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+    return { success: true };
   });
+  queue = new TaskQueue(mockExecutor);
+});
 
   describe('constructor', () => {
     it('should create queue with executor', () => {
@@ -145,12 +146,12 @@ describe('TaskQueue', () => {
       expect(result).toBe(false);
     });
 
-    it('should return false for running task', async () => {
-      const slowExecutor = mock(async () => {
-        await delay(500);
-        return { success: true };
-      });
-      const slowQueue = new TaskQueue(slowExecutor);
+it('should return false for running task', async () => {
+  const slowExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+    await delay(500);
+    return { success: true };
+  });
+  const slowQueue = new TaskQueue(slowExecutor);
       const task = createMockTask({ id: 'task-1' });
       slowQueue.addTask(task);
       
@@ -160,12 +161,12 @@ describe('TaskQueue', () => {
       expect(result).toBe(false);
     });
 
-    it('should cancel pending task', async () => {
-      const slowExecutor = mock(async () => {
-        await delay(5000);
-        return { success: true };
-      });
-      const pendingQueue = new TaskQueue(slowExecutor);
+it('should cancel pending task', async () => {
+  const slowExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+    await delay(5000);
+    return { success: true };
+  });
+  const pendingQueue = new TaskQueue(slowExecutor);
       const blockingTask = createMockTask({ id: 'blocking-task' });
       const pendingTask = createMockTask({ id: 'pending-task', dependencies: ['blocking-task'] });
       pendingQueue.addTask(blockingTask);
@@ -206,7 +207,7 @@ describe('TaskQueue', () => {
 
   describe('task execution', () => {
     it('should execute task and mark as completed', async () => {
-      mockExecutor = mock(async () => ({ result: 'success' }));
+      mockExecutor = mock(async (_task: Task, _signal?: AbortSignal) => ({ result: 'success' }));
       queue = new TaskQueue(mockExecutor);
       
       const task = createMockTask({ id: 'task-1' });
@@ -217,11 +218,11 @@ describe('TaskQueue', () => {
       expect(mockExecutor).toHaveBeenCalled();
     });
 
-    it('should handle task failure', async () => {
-      mockExecutor = mock(async () => {
-        throw new Error('Task failed');
-      });
-      queue = new TaskQueue(mockExecutor);
+it('should handle task failure', async () => {
+  mockExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+    throw new Error('Task failed');
+  });
+  queue = new TaskQueue(mockExecutor);
       
       const task = createMockTask({ id: 'task-1' });
       queue.addTask(task);
@@ -232,11 +233,11 @@ describe('TaskQueue', () => {
       expect(failedTask?.status).toBe('failed');
     });
 
-    it('should propagate failure to dependents', async () => {
-      mockExecutor = mock(async () => {
-        throw new Error('Task failed');
-      });
-      queue = new TaskQueue(mockExecutor);
+it('should propagate failure to dependents', async () => {
+  mockExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+    throw new Error('Task failed');
+  });
+  queue = new TaskQueue(mockExecutor);
       
       const task1 = createMockTask({ id: 'task-1' });
       const task2 = createMockTask({ id: 'task-2', dependencies: ['task-1'] });
@@ -251,17 +252,17 @@ describe('TaskQueue', () => {
     });
   });
 
-  describe('concurrency control', () => {
-    it('should respect max concurrent limit', async () => {
-      const executingTasks: string[] = [];
-      const slowExecutor = mock(async (task: Task) => {
-        executingTasks.push(task.id);
-        await delay(200);
-        executingTasks.splice(executingTasks.indexOf(task.id), 1);
-        return { success: true };
-      });
-      
-      const slowQueue = new TaskQueue(slowExecutor);
+describe('concurrency control', () => {
+  it('should respect max concurrent limit', async () => {
+    const executingTasks: string[] = [];
+    const slowExecutor = mock(async (task: Task, _signal?: AbortSignal) => {
+      executingTasks.push(task.id);
+      await delay(200);
+      executingTasks.splice(executingTasks.indexOf(task.id), 1);
+      return { success: true };
+    });
+
+    const slowQueue = new TaskQueue(slowExecutor);
       
       for (let i = 0; i < 7; i++) {
         slowQueue.addTask(createMockTask({ id: `task-${i}` }));
@@ -273,54 +274,54 @@ describe('TaskQueue', () => {
     });
   });
 
-  describe('dependency management', () => {
-    it('should wait for dependencies before executing', async () => {
-      const executionOrder: string[] = [];
-      const executor = mock(async (task: Task) => {
-        executionOrder.push(task.id);
-        return { success: true };
-      });
-      
-      queue = new TaskQueue(executor);
-      
-      const task1 = createMockTask({ id: 'task-1' });
-      const task2 = createMockTask({ id: 'task-2', dependencies: ['task-1'] });
-      
-      queue.addTask(task2);
-      queue.addTask(task1);
-      
-      await delay(200);
-      
-      expect(executionOrder[0]).toBe('task-1');
+describe('dependency management', () => {
+  it('should wait for dependencies before executing', async () => {
+    const executionOrder: string[] = [];
+    const executor = mock(async (task: Task, _signal?: AbortSignal) => {
+      executionOrder.push(task.id);
+      return { success: true };
     });
 
-    it('should execute independent tasks concurrently', async () => {
-      const executionOrder: string[] = [];
-      const executor = mock(async (task: Task) => {
-        executionOrder.push(task.id);
-        await delay(50);
-        return { success: true };
-      });
-      
-      queue = new TaskQueue(executor);
-      
-      queue.addTask(createMockTask({ id: 'task-1' }));
-      queue.addTask(createMockTask({ id: 'task-2' }));
-      
-      await delay(100);
-      
-      expect(executionOrder).toHaveLength(2);
-    });
+    queue = new TaskQueue(executor);
+
+    const task1 = createMockTask({ id: 'task-1' });
+    const task2 = createMockTask({ id: 'task-2', dependencies: ['task-1'] });
+
+    queue.addTask(task2);
+    queue.addTask(task1);
+
+    await delay(200);
+
+    expect(executionOrder[0]).toBe('task-1');
   });
 
-  describe('timeout handling', () => {
-    it('should handle task timeout', async () => {
-      const slowExecutor = mock(async () => {
-        await delay(35000);
-        return { success: true };
-      });
-      
-      const slowQueue = new TaskQueue(slowExecutor);
+  it('should execute independent tasks concurrently', async () => {
+    const executionOrder: string[] = [];
+    const executor = mock(async (task: Task, _signal?: AbortSignal) => {
+      executionOrder.push(task.id);
+      await delay(50);
+      return { success: true };
+    });
+
+    queue = new TaskQueue(executor);
+
+    queue.addTask(createMockTask({ id: 'task-1' }));
+    queue.addTask(createMockTask({ id: 'task-2' }));
+
+    await delay(100);
+
+    expect(executionOrder).toHaveLength(2);
+  });
+});
+
+describe('timeout handling', () => {
+  it('should handle task timeout', async () => {
+    const slowExecutor = mock(async (_task: Task, _signal?: AbortSignal) => {
+      await delay(35000);
+      return { success: true };
+    });
+
+    const slowQueue = new TaskQueue(slowExecutor);
       const task = createMockTask({ id: 'task-1' });
       slowQueue.addTask(task);
       

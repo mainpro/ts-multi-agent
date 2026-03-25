@@ -3,37 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>多智能体系统 - 聊天测试</title>
+  <title>多智能体协作系统 - AI助手</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-primary: #0a0e14;
-      --bg-secondary: #0d1117;
-      --bg-tertiary: #161b22;
-      --bg-panel: #111820;
-      --bg-input: #0a0e14;
-      --accent-cyan: #00f5d4;
-      --accent-cyan-dim: rgba(0, 245, 212, 0.12);
-      --accent-cyan-glow: rgba(0, 245, 212, 0.4);
-      --accent-purple: #a78bfa;
-      --accent-purple-dim: rgba(167, 139, 250, 0.12);
-      --accent-orange: #fb923c;
-      --accent-orange-dim: rgba(251, 146, 60, 0.12);
-      --accent-green: #4ade80;
-      --accent-green-dim: rgba(74, 222, 128, 0.12);
-      --accent-red: #f87171;
-      --accent-red-dim: rgba(248, 113, 113, 0.12);
-      --text-primary: #e6edf3;
-      --text-secondary: #8b949e;
-      --text-muted: #484f58;
-      --border-color: #21262d;
-      --border-glow: rgba(0, 245, 212, 0.3);
-      --user-msg-bg: linear-gradient(135deg, #1e3a5f, #1a365d);
-      --ai-msg-bg: #161b22;
-      --shadow-cyan: 0 0 30px rgba(0, 245, 212, 0.2);
-      --shadow-purple: 0 0 30px rgba(167, 139, 250, 0.2);
+      --primary-color: #2563eb;
+      --primary-hover: #1d4ed8;
+      --bg-primary: #fafafa;
+      --bg-secondary: #f3f4f6;
+      --bg-message-user: #2563eb;
+      --bg-message-ai: #ffffff;
+      --bg-sidebar: #ffffff;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --text-light: #9ca3af;
+      --border-color: #e5e7eb;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --transition: all 0.2s ease;
     }
 
     * {
@@ -42,371 +36,404 @@
       box-sizing: border-box;
     }
 
-    body {
-      font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+    html, body {
+      height: 100%;
+      font-family: 'Noto Sans SC', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       background: var(--bg-primary);
       color: var(--text-primary);
-      height: 100vh;
+      line-height: 1.6;
+    }
+
+    .app-container {
       display: flex;
-      flex-direction: column;
+      height: 100vh;
       overflow: hidden;
     }
 
-    /* Header */
-    header {
-      background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
-      border-bottom: 1px solid var(--border-color);
-      padding: 14px 24px;
+    .sidebar {
+      width: 380px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-color);
       display: flex;
-      align-items: center;
-      justify-content: space-between;
+      flex-direction: column;
       flex-shrink: 0;
-      position: relative;
-      z-index: 100;
+      overflow-y: auto;
     }
 
-    header::after {
-      content: '';
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--accent-cyan-dim), transparent);
-    }
-
-    .header-left {
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid var(--border-color);
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      background: var(--bg-sidebar);
+      z-index: 10;
     }
 
-    .logo {
+    .sidebar-logo {
       width: 40px;
       height: 40px;
-      background: linear-gradient(135deg, var(--accent-cyan), #00c9a7);
+      background: linear-gradient(135deg, var(--primary-color), #3b82f6);
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      color: var(--bg-primary);
-      font-size: 1.2rem;
-      box-shadow: var(--shadow-cyan);
-      animation: pulse-glow 3s ease-in-out infinite;
+      color: white;
+      font-weight: 600;
+      font-size: 18px;
     }
 
-    @keyframes pulse-glow {
-      0%, 100% { box-shadow: 0 0 20px rgba(0, 245, 212, 0.3); }
-      50% { box-shadow: 0 0 35px rgba(0, 245, 212, 0.5); }
+    .sidebar-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
     }
 
-    .header-title {
-      font-size: 1.3rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--accent-cyan), #00c9a7);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+    .sidebar-subtitle {
+      font-size: 12px;
+      color: var(--text-light);
+      margin-top: 2px;
     }
 
-    .header-status {
+    .thinking-container {
+      padding: 16px;
+    }
+
+    .thinking-section {
+      margin-bottom: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      background: var(--bg-primary);
+      overflow: hidden;
+    }
+
+    .thinking-section.active {
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .thinking-section.completed {
+      border-color: #10b981;
+    }
+
+    .thinking-section-header {
       display: flex;
       align-items: center;
       gap: 10px;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-    }
-
-    .status-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--text-muted);
-      transition: all 0.3s ease;
-    }
-
-    .status-dot.connected {
-      background: var(--accent-cyan);
-      box-shadow: 0 0 12px var(--accent-cyan);
-      animation: status-pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes status-pulse {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.2); opacity: 0.8; }
-    }
-
-    .status-dot.error {
-      background: var(--accent-red);
-      box-shadow: 0 0 12px var(--accent-red);
-    }
-
-    /* Main Content Area */
-    .main-content {
-      flex: 1;
-      display: flex;
-      overflow: hidden;
-    }
-
-    /* Chat Container */
-    .chat-container {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      scroll-behavior: smooth;
-      background: radial-gradient(ellipse at top, rgba(0, 245, 212, 0.02) 0%, transparent 50%);
-    }
-
-    /* Timeline Panel */
-    .timeline-panel {
-      width: 380px;
-      background: var(--bg-panel);
-      border-left: 1px solid var(--border-color);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      transition: width 0.3s ease;
-    }
-
-    .timeline-panel.collapsed {
-      width: 0;
-      border-left: none;
-    }
-
-    .timeline-header {
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      padding: 12px 14px;
       background: var(--bg-secondary);
+      cursor: pointer;
+      transition: var(--transition);
     }
 
-    .timeline-title {
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    .thinking-section-header:hover {
+      background: #e5e7eb;
     }
 
-    .timeline-title-icon {
-      font-size: 1.1rem;
-    }
-
-    .timeline-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px;
-    }
-
-    /* Timeline Steps */
-    .timeline-step {
-      position: relative;
-      padding-left: 36px;
-      padding-bottom: 28px;
-      opacity: 0.5;
-      transition: all 0.4s ease;
-    }
-
-    .timeline-step:last-child {
-      padding-bottom: 0;
-    }
-
-    .timeline-step.active {
-      opacity: 1;
-    }
-
-    .timeline-step.completed {
-      opacity: 0.8;
-    }
-
-    .timeline-step-indicator {
-      position: absolute;
-      left: 0;
-      top: 0;
+    .thinking-section-icon {
       width: 24px;
       height: 24px;
       border-radius: 50%;
-      background: var(--bg-tertiary);
-      border: 2px solid var(--border-color);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.7rem;
-      transition: all 0.4s ease;
+      font-size: 12px;
+      background: white;
+      border: 2px solid var(--border-color);
+      flex-shrink: 0;
     }
 
-    .timeline-step.active .timeline-step-indicator {
-      border-color: var(--accent-cyan);
-      background: var(--accent-cyan-dim);
-      box-shadow: 0 0 15px var(--accent-cyan-glow);
+    .thinking-section.active .thinking-section-icon {
+      border-color: var(--primary-color);
+      background: var(--primary-color);
+      color: white;
+      animation: pulse 2s infinite;
     }
 
-    .timeline-step.completed .timeline-step-indicator {
-      border-color: var(--accent-green);
-      background: var(--accent-green-dim);
+    .thinking-section.completed .thinking-section-icon {
+      border-color: #10b981;
+      background: #10b981;
+      color: white;
     }
 
-    .timeline-step-indicator .step-icon {
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+      50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+    }
+
+    .thinking-section-title {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .thinking-section-expand {
+      font-size: 12px;
+      color: var(--text-light);
+      transition: transform 0.3s ease;
+    }
+
+    .thinking-section.expanded .thinking-section-expand {
+      transform: rotate(180deg);
+    }
+
+    .thinking-section-content {
+      max-height: 0;
+      overflow: hidden;
       opacity: 0;
-      transition: opacity 0.3s ease;
-    }
-
-    .timeline-step.active .step-icon-check,
-    .timeline-step.completed .step-icon-number {
-      display: none;
-    }
-
-    .timeline-step.active .step-icon-number,
-    .timeline-step.completed .step-icon-check {
-      display: none;
-    }
-
-    .timeline-step-line {
-      position: absolute;
-      left: 11px;
-      top: 28px;
-      width: 2px;
-      height: calc(100% - 28px);
-      background: var(--border-color);
-      transition: background 0.4s ease;
-    }
-
-    .timeline-step:last-child .timeline-step-line {
-      display: none;
-    }
-
-    .timeline-step.completed .timeline-step-line,
-    .timeline-step.active .timeline-step-line {
-      background: linear-gradient(180deg, var(--accent-cyan), var(--border-color));
-    }
-
-    .timeline-step-content {
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 14px 16px;
       transition: all 0.3s ease;
     }
 
-    .timeline-step.active .timeline-step-content {
-      border-color: var(--accent-cyan-dim);
-      background: linear-gradient(135deg, var(--bg-tertiary), rgba(0, 245, 212, 0.05));
+    .thinking-section.expanded .thinking-section-content {
+      max-height: 500px;
+      opacity: 1;
     }
 
-    .timeline-step-title {
-      font-size: 0.9rem;
-      font-weight: 600;
+    .thinking-details {
+      padding: 12px 14px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .thinking-detail-item {
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+
+    .thinking-detail-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .thinking-detail-label {
+      color: var(--text-light);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .thinking-detail-value {
       color: var(--text-primary);
-      margin-bottom: 8px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .timeline-step-badge {
-      font-size: 0.7rem;
-      padding: 2px 8px;
-      border-radius: 10px;
-      background: var(--accent-cyan-dim);
-      color: var(--accent-cyan);
-      font-weight: 500;
-    }
-
-    .timeline-step-desc {
-      font-size: 0.8rem;
-      color: var(--text-secondary);
       line-height: 1.5;
     }
 
-    .timeline-step-detail {
-      margin-top: 10px;
-      padding: 10px 12px;
-      background: var(--bg-primary);
-      border-radius: 6px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      max-height: 80px;
+    .thinking-log {
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      background: #f8fafc;
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      max-height: 150px;
       overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
-    .timeline-step-detail::-webkit-scrollbar {
-      width: 4px;
-    }
-
-    .timeline-step-detail::-webkit-scrollbar-thumb {
-      background: var(--border-color);
-      border-radius: 2px;
-    }
-
-    /* SubAgent Tasks in Timeline */
     .subtask-list {
-      margin-top: 10px;
+      margin-top: 8px;
     }
 
     .subtask-item {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 6px 10px;
-      background: var(--bg-primary);
-      border-radius: 6px;
-      margin-top: 6px;
-      font-size: 0.75rem;
-      transition: all 0.3s ease;
+      padding: 8px 10px;
+      background: white;
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      font-size: 12px;
+      border-left: 3px solid var(--border-color);
     }
 
     .subtask-item.pending {
-      opacity: 0.5;
+      border-left-color: var(--text-light);
     }
 
     .subtask-item.running {
-      background: var(--accent-orange-dim);
-      border-left: 2px solid var(--accent-orange);
+      border-left-color: var(--primary-color);
+      background: rgba(37, 99, 235, 0.05);
     }
 
     .subtask-item.completed {
-      background: var(--accent-green-dim);
-      border-left: 2px solid var(--accent-green);
+      border-left-color: #10b981;
+      background: rgba(16, 185, 129, 0.05);
     }
 
     .subtask-item.failed {
-      background: var(--accent-red-dim);
-      border-left: 2px solid var(--accent-red);
+      border-left-color: #ef4444;
+      background: rgba(239, 68, 68, 0.05);
     }
 
-    .subtask-status {
-      font-size: 0.8rem;
+    .subtask-icon {
+      font-size: 14px;
     }
 
     .subtask-name {
       flex: 1;
       color: var(--text-secondary);
-      font-family: 'JetBrains Mono', monospace;
     }
 
-    /* Messages */
+    .subtask-status {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--bg-secondary);
+      color: var(--text-light);
+    }
+
+    .subtask-item.running .subtask-status {
+      background: rgba(37, 99, 235, 0.1);
+      color: var(--primary-color);
+    }
+
+    .subtask-item.completed .subtask-status {
+      background: rgba(16, 185, 129, 0.1);
+      color: #10b981;
+    }
+
+    .subtask-item.failed .subtask-status {
+      background: rgba(239, 68, 68, 0.1);
+      color: #ef4444;
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .chat-header {
+      padding: 16px 24px;
+      background: var(--bg-sidebar);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .chat-header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .chat-header-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .chat-header-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: blink 2s infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .welcome-screen {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 40px;
+    }
+
+    .welcome-icon {
+      width: 80px;
+      height: 80px;
+      background: linear-gradient(135deg, var(--primary-color), #3b82f6);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 40px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .welcome-title {
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 12px;
+    }
+
+    .welcome-subtitle {
+      font-size: 16px;
+      color: var(--text-secondary);
+      margin-bottom: 32px;
+    }
+
+    .suggestion-chips {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      max-width: 600px;
+    }
+
+    .suggestion-chip {
+      padding: 10px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      font-size: 14px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .suggestion-chip:hover {
+      background: var(--bg-message-user);
+      color: white;
+      border-color: var(--bg-message-user);
+    }
+
     .message {
       display: flex;
-      gap: 14px;
+      gap: 12px;
       max-width: 85%;
-      animation: messageIn 0.4s ease;
+      animation: messageIn 0.3s ease;
     }
 
     @keyframes messageIn {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .message.ai {
-      align-self: flex-start;
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .message.user {
@@ -415,588 +442,363 @@
     }
 
     .message-avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 12px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.2rem;
+      font-size: 16px;
       flex-shrink: 0;
     }
 
-    .message.ai .message-avatar {
-      background: linear-gradient(135deg, var(--accent-cyan-dim), var(--accent-purple-dim));
-      border: 1px solid var(--accent-cyan-dim);
-      box-shadow: var(--shadow-cyan);
+    .message.user .message-avatar {
+      background: var(--bg-message-user);
+      color: white;
     }
 
-    .message.user .message-avatar {
-      background: var(--bg-tertiary);
+    .message.ai .message-avatar {
+      background: var(--bg-secondary);
       border: 1px solid var(--border-color);
     }
 
     .message-content {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 4px;
     }
 
     .message-bubble {
-      font-size: 0.95rem;
       padding: 14px 18px;
-      border-radius: 14px;
-      line-height: 1.7;
-      white-space: pre-wrap;
-      word-break: break-word;
-      transition: all 0.3s ease;
-    }
-
-    .message.ai .message-bubble {
-      background: var(--ai-msg-bg);
-      border: 1px solid var(--border-color);
-      border-top-left-radius: 4px;
+      border-radius: var(--radius-lg);
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 100%;
+      word-wrap: break-word;
     }
 
     .message.user .message-bubble {
-      background: var(--user-msg-bg);
-      border: 1px solid rgba(0, 245, 212, 0.2);
-      border-top-right-radius: 4px;
+      background: var(--bg-message-user);
+      color: white;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.ai .message-bubble {
+      background: var(--bg-message-ai);
+      border: 1px solid var(--border-color);
+      border-bottom-left-radius: 4px;
+      box-shadow: var(--shadow-sm);
     }
 
     .message-time {
-      font-size: 0.7rem;
-      color: var(--text-muted);
+      font-size: 12px;
+      color: var(--text-light);
+      padding: 0 4px;
     }
 
     .message.user .message-time {
       text-align: right;
     }
 
-    /* Skill Chips */
-    .skill-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 10px;
-    }
-
-    .skill-chip {
-      background: linear-gradient(135deg, var(--bg-tertiary), var(--bg-secondary));
-      border: 1px solid var(--border-color);
-      border-radius: 20px;
-      padding: 6px 14px;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      transition: all 0.2s ease;
-    }
-
-    .skill-chip:hover {
-      border-color: var(--accent-purple);
-      color: var(--accent-purple);
-      background: var(--accent-purple-dim);
-      transform: translateY(-2px);
-    }
-
-    /* Results Display */
-    .result-item {
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 14px;
-      margin-top: 10px;
-    }
-
-    .result-header {
+    .thinking-indicator {
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-bottom: 10px;
-    }
-
-    .result-skill {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      color: var(--accent-cyan);
-      background: var(--accent-cyan-dim);
-      padding: 4px 10px;
-      border-radius: 6px;
-    }
-
-    .result-status {
-      font-size: 0.75rem;
-      padding: 3px 10px;
-      border-radius: 6px;
-    }
-
-    .result-status.success {
-      background: var(--accent-green-dim);
-      color: var(--accent-green);
-    }
-
-    .result-status.error {
-      background: var(--accent-red-dim);
-      color: var(--accent-red);
-    }
-
-    .result-content {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: var(--bg-secondary);
-      padding: 10px;
-      border-radius: 6px;
-    }
-
-    /* Thinking Indicator */
-    .thinking {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 18px;
+      gap: 12px;
+      padding: 14px 18px;
+      background: var(--bg-message-ai);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      border-bottom-left-radius: 4px;
+      box-shadow: var(--shadow-sm);
+      animation: messageIn 0.3s ease;
     }
 
     .thinking-dots {
       display: flex;
-      gap: 5px;
+      gap: 4px;
     }
 
     .thinking-dot {
       width: 8px;
       height: 8px;
-      background: var(--accent-cyan);
+      background: var(--primary-color);
       border-radius: 50%;
-      animation: thinking-bounce 1.4s infinite ease-in-out both;
+      animation: bounce 1.4s infinite ease-in-out both;
     }
 
     .thinking-dot:nth-child(1) { animation-delay: -0.32s; }
     .thinking-dot:nth-child(2) { animation-delay: -0.16s; }
     .thinking-dot:nth-child(3) { animation-delay: 0s; }
 
-    @keyframes thinking-bounce {
-      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-      40% { transform: scale(1); opacity: 1; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
     }
 
     .thinking-text {
-      font-size: 0.9rem;
+      font-size: 14px;
       color: var(--text-secondary);
     }
 
-    /* Bottom Detail Panel */
-    .detail-panel {
-      background: var(--bg-secondary);
-      border-top: 1px solid var(--border-color);
-      flex-shrink: 0;
-      max-height: 45%;
+    /* Deep Thinking Message - Doubao style */
+    .thinking-message {
       display: flex;
-      flex-direction: column;
-      transition: max-height 0.3s ease;
-      position: relative;
+      gap: 12px;
+      max-width: 85%;
+      animation: messageIn 0.3s ease;
+      margin-bottom: 16px;
     }
 
-    .detail-panel.collapsed {
-      max-height: 44px;
+    .thinking-message.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
     }
 
-    .detail-panel-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 16px;
-      background: var(--bg-tertiary);
-      border-bottom: 1px solid var(--border-color);
-      cursor: pointer;
-      flex-shrink: 0;
+    .thinking-bubble {
+      flex: 1;
+      background: var(--bg-message-ai);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      border-bottom-left-radius: 4px;
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
     }
 
-    .detail-panel-title {
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: var(--text-primary);
+    .thinking-header {
       display: flex;
       align-items: center;
       gap: 8px;
-    }
-
-    .detail-panel-tabs {
-      display: flex;
-      gap: 4px;
-    }
-
-    .detail-tab {
-      padding: 6px 12px;
-      font-size: 0.75rem;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 6px;
-      color: var(--text-muted);
+      padding: 10px 14px;
+      background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+      border-bottom: 1px solid var(--border-color);
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: var(--transition);
     }
 
-    .detail-tab:hover {
-      color: var(--text-secondary);
-      background: var(--bg-secondary);
+    .thinking-header:hover {
+      background: linear-gradient(135deg, #e0f2fe, #dbeafe);
     }
 
-    .detail-tab.active {
-      color: var(--accent-cyan);
-      background: var(--accent-cyan-dim);
-      border-color: var(--accent-cyan-dim);
+    .thinking-header-icon {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
     }
 
-    .detail-panel-toggle {
-      font-size: 1.2rem;
-      color: var(--text-muted);
+    .thinking-header-text {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--primary-color);
+    }
+
+    .thinking-header-agent {
+      font-size: 11px;
+      color: var(--text-light);
+      background: rgba(37, 99, 235, 0.1);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    .thinking-header-expand {
+      font-size: 12px;
+      color: var(--text-light);
       transition: transform 0.3s ease;
     }
 
-    .detail-panel.collapsed .detail-panel-toggle {
+    .thinking-bubble.expanded .thinking-header-expand {
       transform: rotate(180deg);
     }
 
-    .detail-panel-content {
-      flex: 1;
+    .thinking-content {
+      max-height: 0;
       overflow: hidden;
-      display: flex;
+      opacity: 0;
+      transition: all 0.3s ease;
     }
 
-    .detail-panel.collapsed .detail-panel-content {
-      display: none;
+    .thinking-bubble.expanded .thinking-content {
+      max-height: 500px;
+      opacity: 1;
     }
 
-    .detail-tab-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px 16px;
-      display: none;
+    .thinking-body {
+      padding: 14px 16px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: 'Monaco', 'Menlo', monospace;
+      background: #fafafa;
     }
 
-    .detail-tab-content.active {
-      display: block;
-    }
-
-    /* LLM Request Display */
-    .llm-request-block {
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      margin-bottom: 12px;
-      overflow: hidden;
-    }
-
-    .llm-request-header {
+    .thinking-loading {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 6px;
       padding: 10px 14px;
-      background: var(--bg-tertiary);
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .thinking-loading-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--primary-color);
+      border-radius: 50%;
+      animation: bounce 1.4s infinite ease-in-out both;
+    }
+
+    .thinking-loading-dot:nth-child(1) { animation-delay: -0.32s; }
+    .thinking-loading-dot:nth-child(2) { animation-delay: -0.16s; }
+    .thinking-loading-dot:nth-child(3) { animation-delay: 0s; }
+
+    .thinking-time {
+      font-size: 12px;
+      color: var(--text-light);
+      padding: 8px 16px;
+      text-align: right;
+      border-top: 1px solid var(--border-color);
+      background: #f8fafc;
+    }
+
+    .result-card {
+      background: var(--bg-message-ai);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      margin-top: 8px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .result-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
       border-bottom: 1px solid var(--border-color);
     }
 
-    .llm-request-type {
-      font-size: 0.7rem;
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-weight: 600;
-    }
-
-    .llm-request-type.request {
-      background: var(--accent-purple-dim);
-      color: var(--accent-purple);
-    }
-
-    .llm-request-type.response {
-      background: var(--accent-green-dim);
-      color: var(--accent-green);
-    }
-
-    .llm-request-time {
-      font-size: 0.7rem;
-      color: var(--text-muted);
-      margin-left: auto;
-    }
-
-    .llm-request-body {
-      padding: 12px 14px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      max-height: 200px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
-    .llm-request-body::-webkit-scrollbar {
-      width: 6px;
-    }
-
-    .llm-request-body::-webkit-scrollbar-thumb {
-      background: var(--border-color);
-      border-radius: 3px;
-    }
-
-    /* Log Entry */
-    .log-entry {
+    .result-card-icon {
+      width: 24px;
+      height: 24px;
+      background: #10b981;
+      border-radius: 50%;
       display: flex;
-      gap: 10px;
-      padding: 6px 0;
-      border-bottom: 1px solid rgba(33, 38, 45, 0.5);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      animation: logIn 0.2s ease;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 14px;
     }
 
-    @keyframes logIn {
-      from { opacity: 0; transform: translateX(-10px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
-
-    .log-time {
-      color: var(--text-muted);
-      flex-shrink: 0;
-    }
-
-    .log-agent {
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-size: 0.7rem;
+    .result-card-title {
+      font-size: 14px;
       font-weight: 600;
-      flex-shrink: 0;
+      color: var(--text-primary);
     }
 
-    .log-agent.main {
-      background: var(--accent-cyan-dim);
-      color: var(--accent-cyan);
-    }
-
-    .log-agent.sub {
-      background: var(--accent-purple-dim);
-      color: var(--accent-purple);
-    }
-
-    .log-agent.llm {
-      background: var(--accent-orange-dim);
-      color: var(--accent-orange);
-    }
-
-    .log-message {
+    .result-card-content {
+      font-size: 14px;
       color: var(--text-secondary);
-      flex: 1;
-      word-break: break-word;
-    }
-
-    /* Input Area */
-    .input-area {
-      background: var(--bg-secondary);
-      border-top: 1px solid var(--border-color);
-      padding: 16px 24px;
-      flex-shrink: 0;
-    }
-
-    .input-wrapper {
-      display: flex;
-      gap: 14px;
-      align-items: flex-end;
-      max-width: 900px;
-      margin: 0 auto;
+      line-height: 1.6;
     }
 
     .input-container {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      background: var(--bg-input);
-      border: 1px solid var(--border-color);
-      border-radius: 14px;
-      overflow: hidden;
-      transition: all 0.2s ease;
-    }
-
-    .input-container:focus-within {
-      border-color: var(--accent-cyan);
-      box-shadow: 0 0 0 3px var(--accent-cyan-dim), var(--shadow-cyan);
-    }
-
-    .textarea-wrapper {
-      position: relative;
-    }
-
-    #messageInput {
-      width: 100%;
-      min-height: 52px;
-      max-height: 150px;
-      padding: 14px 18px;
-      background: transparent;
-      border: none;
-      color: var(--text-primary);
-      font-family: 'Noto Sans SC', sans-serif;
-      font-size: 0.95rem;
-      line-height: 1.5;
-      resize: none;
-      outline: none;
-    }
-
-    #messageInput::placeholder {
-      color: var(--text-muted);
-    }
-
-    .input-footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 14px;
+      padding: 20px 24px;
+      background: var(--bg-sidebar);
       border-top: 1px solid var(--border-color);
     }
 
-    .input-hint {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-
-    .send-btn {
-      width: 52px;
-      height: 52px;
-      background: linear-gradient(135deg, var(--accent-cyan), #00c9a7);
-      border: none;
-      border-radius: 14px;
-      cursor: pointer;
+    .input-wrapper {
+      max-width: 800px;
+      margin: 0 auto;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s ease;
-      flex-shrink: 0;
-      box-shadow: 0 4px 15px rgba(0, 245, 212, 0.3);
+      gap: 12px;
+      align-items: flex-end;
     }
 
-    .send-btn:hover:not(:disabled) {
-      transform: scale(1.05) translateY(-2px);
-      box-shadow: 0 6px 25px rgba(0, 245, 212, 0.4);
-    }
-
-    .send-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .send-btn svg {
-      width: 22px;
-      height: 22px;
-      fill: var(--bg-primary);
-    }
-
-    /* Empty State */
-    .empty-state {
+    .input-field-container {
       flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      color: var(--text-muted);
-      text-align: center;
-      padding: 40px;
-    }
-
-    .empty-icon {
-      font-size: 4.5rem;
-      margin-bottom: 20px;
-      opacity: 0.5;
-      animation: float 3s ease-in-out infinite;
-    }
-
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
-    }
-
-    .empty-title {
-      font-size: 1.3rem;
-      color: var(--text-secondary);
-      margin-bottom: 10px;
-    }
-
-    .empty-desc {
-      font-size: 0.9rem;
-    }
-
-    /* Scrollbar */
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-    }
-
-    ::-webkit-scrollbar-track {
       background: var(--bg-primary);
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: var(--border-color);
-      border-radius: 4px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: var(--text-muted);
-    }
-
-    /* Toggle Timeline Button */
-    .toggle-timeline-btn {
-      position: fixed;
-      right: 16px;
-      top: 80px;
-      z-index: 50;
-      width: 36px;
-      height: 36px;
-      background: var(--bg-tertiary);
       border: 1px solid var(--border-color);
-      border-radius: 8px;
+      border-radius: var(--radius-xl);
+      padding: 12px 16px;
+      display: flex;
+      align-items: flex-end;
+      gap: 12px;
+      transition: var(--transition);
+    }
+
+    .input-field-container:focus-within {
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .input-field {
+      flex: 1;
+      border: none;
+      background: transparent;
+      font-size: 15px;
+      color: var(--text-primary);
+      outline: none;
+      resize: none;
+      min-height: 24px;
+      max-height: 120px;
+      font-family: inherit;
+    }
+
+    .input-field::placeholder {
+      color: var(--text-light);
+    }
+
+    .send-button {
+      width: 40px;
+      height: 40px;
+      background: var(--primary-color);
+      border: none;
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: all 0.2s ease;
-      font-size: 1rem;
-      color: var(--text-muted);
+      transition: var(--transition);
+      flex-shrink: 0;
     }
 
-    .toggle-timeline-btn:hover {
-      border-color: var(--accent-cyan);
-      color: var(--accent-cyan);
-      background: var(--accent-cyan-dim);
+    .send-button:hover:not(:disabled) {
+      background: var(--primary-hover);
+      transform: scale(1.05);
     }
 
-    /* Responsive */
-    @media (max-width: 1024px) {
-      .timeline-panel {
-        position: fixed;
-        right: 0;
-        top: 60px;
-        bottom: 0;
-        z-index: 40;
-        width: 320px;
-        transform: translateX(100%);
-        transition: transform 0.3s ease;
-      }
+    .send-button:disabled {
+      background: var(--text-light);
+      cursor: not-allowed;
+    }
 
-      .timeline-panel.visible {
-        transform: translateX(0);
-      }
+    .send-button svg {
+      width: 20px;
+      height: 20px;
+      fill: white;
+    }
 
-      .toggle-timeline-btn {
-        display: flex;
-      }
+    .input-hint {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-light);
+      margin-top: 8px;
     }
 
     @media (max-width: 768px) {
-      header {
-        padding: 12px 16px;
+      .sidebar {
+        display: none;
       }
 
-      .chat-container {
+      .chat-messages {
         padding: 16px;
       }
 
@@ -1004,882 +806,747 @@
         max-width: 95%;
       }
 
-      .input-area {
+      .input-container {
         padding: 12px 16px;
       }
+    }
+
+    .error-message {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #dc2626;
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      margin: 8px 0;
+      font-size: 14px;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-light);
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <div class="logo">M</div>
-      <span class="header-title">多智能体系统</span>
-    </div>
-    <div class="header-status">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">连接中...</span>
-    </div>
-  </header>
-
-  <button class="toggle-timeline-btn" id="toggleTimelineBtn" title="切换详情面板">
-    <span>📊</span>
-  </button>
-
-  <div class="main-content">
-    <div class="chat-container" id="chatContainer">
-      <div class="empty-state" id="emptyState">
-        <div class="empty-icon">💬</div>
-        <div class="empty-title">开始对话</div>
-        <div class="empty-desc">发送消息开始测试多智能体系统</div>
-      </div>
-    </div>
-
-    <div class="timeline-panel" id="timelinePanel">
-      <div class="timeline-header">
-        <div class="timeline-title">
-          <span class="timeline-title-icon">⚡</span>
-          <<span>执行流程</span>
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo">AI</div>
+        <div>
+          <div class="sidebar-title">多智能体系统</div>
+          <div class="sidebar-subtitle">实时处理监控</div>
         </div>
       </div>
-      <div class="timeline-content" id="timelineContent">
-      </div>
-    </div>
-  </div>
+      <div class="thinking-container" id="thinkingContainer"></div>
+    </aside>
 
-  <div class="detail-panel" id="detailPanel">
-    <div class="detail-panel-header" onclick="toggleDetailPanel()">
-      <div class="detail-panel-title">
-        <span>🔍</span>
-        <span>处理详情</span>
-      </div>
-      <div class="detail-panel-tabs">
-        <button class="detail-tab active" data-tab="logs" onclick="switchTab(event, 'logs')">📋 完整日志</button>
-        <button class="detail-tab" data-tab="llm" onclick="switchTab(event, 'llm')">🤖 LLM 请求</button>
-        <button class="detail-tab" data-tab="tasks" onclick="switchTab(event, 'tasks')">📦 任务详情</button>
-      </div>
-      <span class="detail-panel-toggle">▼</span>
-    </div>
-    <div class="detail-panel-content">
-      <div class="detail-tab-content active" id="tab-logs"></div>
-      <div class="detail-tab-content" id="tab-llm"></div>
-      <div class="detail-tab-content" id="tab-tasks"></div>
-    </div>
-  </div>
+    <main class="main-content">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <span class="chat-header-title">AI 助手</span>
+        </div>
+        <div class="chat-header-status">
+          <span class="status-dot"></span>
+          <span>在线</span>
+        </div>
+      </header>
 
-  <div class="input-area">
-    <div class="input-wrapper">
+      <div class="chat-messages" id="chatMessages">
+        <div class="welcome-screen" id="welcomeScreen">
+          <div class="welcome-icon">🤖</div>
+          <h1 class="welcome-title">多智能体协作系统</h1>
+          <p class="welcome-subtitle">输入您的需求，我将自动分析并协调多个智能体完成任务</p>
+          <div class="suggestion-chips">
+            <div class="suggestion-chip" onclick="setInput('计算 2 + 2')">计算 2 + 2</div>
+            <div class="suggestion-chip" onclick="setInput('查询班级信息')">查询班级信息</div>
+            <div class="suggestion-chip" onclick="setInput('5 乘以 8 等于多少')">5 乘以 8</div>
+            <div class="suggestion-chip" onclick="setInput('帮我算一下 100 除以 4')">100 除以 4</div>
+          </div>
+        </div>
+      </div>
+
       <div class="input-container">
-        <div class="textarea-wrapper">
-          <textarea 
-            id="messageInput" 
-            placeholder="输入你的需求..." 
-            rows="1"
-          ></textarea>
+        <div class="input-wrapper">
+          <div class="input-field-container">
+            <textarea class="input-field" id="messageInput" placeholder="输入您的需求..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+          </div>
+          <button class="send-button" id="sendButton" onclick="sendMessage()" title="发送">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
         </div>
-        <div class="input-footer">
-          <span class="input-hint">Ctrl + Enter 发送</span>
-        </div>
+        <div class="input-hint">按 Enter 发送，Shift + Enter 换行</div>
       </div>
-      <button class="send-btn" id="sendBtn" onclick="sendMessage()">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-        </svg>
-      </button>
-    </div>
+    </main>
   </div>
 
   <script>
-    // Configuration
     const API_BASE_URL = 'http://localhost:3000';
-
-    // State
-    let messages = [];
-    let currentTaskId = null;
     let isProcessing = false;
-    let processLogs = [];
-    let llmRequests = [];
-    let taskDetails = [];
-    let currentTimelineStep = 0;
+    let subtasks = {};
 
-    // Timeline steps configuration
-    const TIMELINE_STEPS = [
-      { id: 1, title: '需求分析', icon: '🔍', description: '理解用户意图，提取关键实体' },
-      { id: 2, title: '技能匹配', icon: '🎯', description: '匹配最相关的技能组合' },
-      { id: 3, title: '任务规划', icon: '📋', description: '创建执行计划，定义依赖关系' },
-      { id: 4, title: '执行监控', icon: '⚙️', description: '执行任务并处理结果' }
-    ];
+    const THINKING_SECTIONS = {
+      analysis: { id: 'analysis', title: '需求分析', icon: '🧠', description: '分析用户意图和提取关键实体' },
+      matching: { id: 'matching', title: '技能匹配', icon: '⚙️', description: '匹配最适合的技能' },
+      planning: { id: 'planning', title: '任务规划', icon: '📋', description: '创建 DAG 任务计划' },
+      execution: { id: 'execution', title: '任务执行', icon: '⚡', description: 'SubAgent 执行技能脚本' },
+      aggregation: { id: 'aggregation', title: '结果聚合', icon: '🔄', description: '汇总子任务结果' },
+      response: { id: 'response', title: '生成响应', icon: '✨', description: '生成最终回复' }
+    };
 
-    // DOM Elements
-    const chatContainer = document.getElementById('chatContainer');
-    const emptyState = document.getElementById('emptyState');
-    const messageInput = document.getElementById('messageInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const statusDot = document.getElementById('statusDot');
-    const statusText = document.getElementById('statusText');
-    const timelinePanel = document.getElementById('timelinePanel');
-    const timelineContent = document.getElementById('timelineContent');
-    const detailPanel = document.getElementById('detailPanel');
-    const toggleTimelineBtn = document.getElementById('toggleTimelineBtn');
-
-    // Initialize
-    document.addEventListener('DOMContentLoaded', () => {
-      checkApiStatus();
-      setupAutoResize();
-      renderTimeline();
-    });
-
-    // Toggle timeline panel
-    toggleTimelineBtn.addEventListener('click', () => {
-      timelinePanel.classList.toggle('visible');
-    });
-
-    // Check API Status
-    async function checkApiStatus() {
-      try {
-        const response = await fetch(`${API_BASE_URL}/health`, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' }
-        });
-        
-        if (response.ok) {
-          updateStatus('connected', '已连接');
-        } else {
-          updateStatus('error', '连接错误');
-        }
-      } catch (error) {
-        updateStatus('error', '无法连接');
-      }
-    }
-
-    function updateStatus(status, text) {
-      statusDot.className = 'status-dot ' + status;
-      statusText.textContent = text;
-    }
-
-    // Auto-resize textarea
-    function setupAutoResize() {
-      messageInput.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 150) + 'px';
-      });
-
-      messageInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          sendMessage();
-        }
-      });
-    }
-
-    // Render timeline
-    function renderTimeline() {
-      let html = '';
-      TIMELINE_STEPS.forEach((step, index) => {
-        html += `
-          <div class="timeline-step" id="step-${step.id}">
-            <div class="timeline-step-indicator">
-              <span class="step-icon-number">${step.id}</span>
-              <span class="step-icon-check">✓</span>
-            </div>
-            <div class="timeline-step-line"></div>
-            <div class="timeline-step-content">
-              <div class="timeline-step-title">
-                ${step.icon} ${step.title}
+    function initThinkingSections() {
+      const container = document.getElementById('thinkingContainer');
+      container.innerHTML = Object.values(THINKING_SECTIONS).map(section => `
+        <div class="thinking-section" id="section-${section.id}" data-section-id="${section.id}">
+          <div class="thinking-section-header" onclick="toggleSection('${section.id}')">
+            <div class="thinking-section-icon">${section.icon}</div>
+            <div class="thinking-section-title">${section.title}</div>
+            <div class="thinking-section-expand">▼</div>
+          </div>
+          <div class="thinking-section-content">
+            <div class="thinking-details" id="details-${section.id}">
+              <div class="thinking-detail-item">
+                <div class="thinking-detail-label">状态</div>
+                <div class="thinking-detail-value" id="status-${section.id}">等待中</div>
               </div>
-              <div class="timeline-step-desc">${step.description}</div>
-              <div class="timeline-step-detail" id="step-detail-${step.id}"></div>
+              <div class="thinking-detail-item" id="log-container-${section.id}" style="display: none;">
+                <div class="thinking-detail-label">处理日志</div>
+                <div class="thinking-log" id="log-${section.id}"></div>
+              </div>
+              <div class="subtask-list" id="subtasks-${section.id}"></div>
             </div>
           </div>
-        `;
-      });
-      timelineContent.innerHTML = html;
+        </div>
+      `).join('');
     }
 
-    // Update timeline step
-    function updateTimelineStep(stepId, status, detail = '') {
-      const stepEl = document.getElementById(`step-${stepId}`);
-      const detailEl = document.getElementById(`step-detail-${stepId}`);
-      
-      if (stepEl) {
-        stepEl.classList.remove('active', 'completed');
-        if (status === 'active') {
-          stepEl.classList.add('active');
-          currentTimelineStep = stepId;
-        } else if (status === 'completed') {
-          stepEl.classList.add('completed');
+    function toggleSection(sectionId) {
+      const section = document.getElementById('section-' + sectionId);
+      if (section) section.classList.toggle('expanded');
+    }
+
+    function updateSection(sectionId, status, detail, log) {
+      const section = document.getElementById('section-' + sectionId);
+      if (!section) return;
+
+      section.classList.remove('active', 'completed');
+      section.classList.add(status);
+
+      const statusEl = document.getElementById('status-' + sectionId);
+      const statusText = { active: '进行中...', completed: '已完成', failed: '失败', waiting: '等待中' }[status] || status;
+      if (statusEl) statusEl.textContent = statusText;
+
+      if (log) {
+        const logContainer = document.getElementById('log-container-' + sectionId);
+        const logEl = document.getElementById('log-' + sectionId);
+        if (logContainer && logEl) {
+          logContainer.style.display = 'block';
+          logEl.textContent += (logEl.textContent ? '\n' : '') + log;
+          logEl.scrollTop = logEl.scrollHeight;
         }
       }
-      
-      if (detailEl && detail) {
-        detailEl.textContent = detail;
-      }
-    }
 
-    // Add log entry
-    function addLogEntry(agent, message, timestamp = new Date()) {
-      const time = timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const logEntry = { agent, message, time };
-      processLogs.push(logEntry);
-      
-      const logsTab = document.getElementById('tab-logs');
-      if (logsTab) {
-        const agentClass = agent === 'MainAgent' ? 'main' : (agent === 'SubAgent' ? 'sub' : 'llm');
-        logsTab.innerHTML += `
-          <div class="log-entry">
-            <span class="log-time">${time}</span>
-            <span class="log-agent ${agentClass}">${agent}</span>
-            <span class="log-message">${escapeHtml(message)}</span>
-          </div>
-        `;
-        logsTab.scrollTop = logsTab.scrollHeight;
-      }
-    }
-
-    // Add LLM request
-    function addLLMRequest(type, data, timestamp = new Date()) {
-      const time = timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      llmRequests.push({ type, data, time });
-      
-      const llmTab = document.getElementById('tab-llm');
-      if (llmTab) {
-        const typeLabel = type === 'request' ? '请求' : '响应';
-        const truncatedData = JSON.stringify(data, null, 2);
-        llmTab.innerHTML = `
-          <div class="llm-request-block">
-            <div class="llm-request-header">
-              <span class="llm-request-type ${type}">${typeLabel}</span>
-              <span class="llm-request-time">${time}</span>
-            </div>
-            <div class="llm-request-body">${escapeHtml(truncatedData)}</div>
-          </div>
-        ` + llmTab.innerHTML;
-        
-        // Keep only last 10 entries visible
-        const blocks = llmTab.querySelectorAll('.llm-request-block');
-        if (blocks.length > 10) {
-          blocks[blocks.length - 1].remove();
-        }
-      }
-    }
-
-    // Update task details
-    function updateTaskDetails(taskId, skillName, status, detail = '') {
-      let task = taskDetails.find(t => t.taskId === taskId);
-      if (!task) {
-        task = { taskId, skillName, status, details: [] };
-        taskDetails.push(task);
-      }
-      task.status = status;
       if (detail) {
-        task.details.push({ time: new Date().toLocaleTimeString(), detail });
+        const details = document.getElementById('details-' + sectionId);
+        const existingDetail = details.querySelector('.dynamic-detail');
+        if (existingDetail) existingDetail.remove();
+        
+        const detailItem = document.createElement('div');
+        detailItem.className = 'thinking-detail-item dynamic-detail';
+        detailItem.innerHTML = '<div class="thinking-detail-label">详情</div><div class="thinking-detail-value">' + escapeHtml(detail) + '</div>';
+        details.insertBefore(detailItem, details.children[1]);
       }
-      
-      renderTaskDetails();
+
+      if (status === 'active') section.classList.add('expanded');
     }
 
-    // Render task details
-    function renderTaskDetails() {
-      const tasksTab = document.getElementById('tab-tasks');
-      if (!tasksTab) return;
+    function addSubtask(sectionId, taskId, name, status) {
+      const container = document.getElementById('subtasks-' + sectionId);
+      if (!container) return;
+
+      const icons = { pending: '⏳', running: '🔄', completed: '✅', failed: '❌' };
+      const existing = document.getElementById('subtask-' + taskId);
       
-      if (taskDetails.length === 0) {
-        tasksTab.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 20px;">暂无任务详情</div>';
-        return;
+      if (existing) {
+        existing.className = 'subtask-item ' + status;
+        const statusEl = existing.querySelector('.subtask-status');
+        const iconEl = existing.querySelector('.subtask-icon');
+        if (statusEl) statusEl.textContent = status;
+        if (iconEl) iconEl.textContent = icons[status];
+      } else {
+        const subtask = document.createElement('div');
+        subtask.className = 'subtask-item ' + status;
+        subtask.id = 'subtask-' + taskId;
+        subtask.innerHTML = '<span class="subtask-icon">' + icons[status] + '</span><span class="subtask-name">' + escapeHtml(name) + '</span><span class="subtask-status">' + status + '</span>';
+        container.appendChild(subtask);
       }
-      
-      let html = '';
-      taskDetails.forEach(task => {
-        const statusIcon = task.status === 'completed' ? '✅' : 
-                          task.status === 'failed' ? '❌' : 
-                          task.status === 'running' ? '🔄' : '⏳';
-        
-        html += `
-          <div class="subtask-item ${task.status}">
-            <span class="subtask-status">${statusIcon}</span>
-            <span class="subtask-name">[${task.skillName}] ${task.taskId}</span>
-          </div>
-        `;
-        
-        if (task.details.length > 0) {
-          task.details.slice(-3).forEach(d => {
-            html += `
-              <div style="padding: 4px 0 4px 36px; font-size: 0.7rem; color: var(--text-muted);">
-                ${d.time} - ${escapeHtml(d.detail.substring(0, 80))}${d.detail.length > 80 ? '...' : ''}
-              </div>
-            `;
-          });
+    }
+
+    function resetSections() {
+      Object.keys(THINKING_SECTIONS).forEach(id => {
+        const section = document.getElementById('section-' + id);
+        if (section) {
+          section.classList.remove('active', 'completed', 'expanded');
+          const statusEl = document.getElementById('status-' + id);
+          if (statusEl) statusEl.textContent = '等待中';
+          const logContainer = document.getElementById('log-container-' + id);
+          if (logContainer) {
+            logContainer.style.display = 'none';
+            const logEl = document.getElementById('log-' + id);
+            if (logEl) logEl.textContent = '';
+          }
+          const subtasks = document.getElementById('subtasks-' + id);
+          if (subtasks) subtasks.innerHTML = '';
+          const dynamicDetails = section.querySelectorAll('.dynamic-detail');
+          dynamicDetails.forEach(el => el.remove());
         }
       });
-      
-      tasksTab.innerHTML = html;
+      subtasks = {};
     }
 
-    // Send Message with SSE streaming
-    async function sendMessage() {
-      const text = messageInput.value.trim();
-      if (!text || isProcessing) return;
+    function autoResize(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+    }
 
-      isProcessing = true;
-      sendBtn.disabled = true;
-      messageInput.disabled = true;
-
-      // Hide empty state
-      emptyState.style.display = 'none';
-
-      // Add user message
-      addMessage('user', text);
-      messageInput.value = '';
-      messageInput.style.height = 'auto';
-
-      // Reset state
-      processLogs = [];
-      llmRequests = [];
-      taskDetails = [];
-      currentTimelineStep = 0;
-      
-      // Reset timeline
-      renderTimeline();
-      updateTimelineStep(1, 'active');
-
-      // Clear detail panels
-      document.getElementById('tab-logs').innerHTML = '';
-      document.getElementById('tab-llm').innerHTML = '';
-      document.getElementById('tab-tasks').innerHTML = '';
-
-      // Show thinking indicator
-      showThinking();
-
-      try {
-        // Start SSE stream
-        const response = await fetch(`${API_BASE_URL}/tasks/stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-          },
-          body: JSON.stringify({ requirement: text })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.message || `HTTP ${response.status}`);
-        }
-
-        // Read SSE stream
-        await readSSEResponse(response);
-
-      } catch (error) {
-        console.error('Stream error:', error);
-        hideThinking();
-        addMessage('ai', `请求失败: ${error.message}`);
-        isProcessing = false;
-        sendBtn.disabled = false;
-        messageInput.disabled = false;
+    function handleKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
       }
     }
 
-    // Read and parse SSE response stream
-    async function readSSEResponse(response) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+    function setInput(text) {
+      const input = document.getElementById('messageInput');
+      input.value = text;
+      autoResize(input);
+      input.focus();
+    }
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+    function addMessage(role, content) {
+      const container = document.getElementById('chatMessages');
+      const message = document.createElement('div');
+      message.className = 'message ' + role;
+      const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      message.innerHTML = '<div class="message-avatar">' + (role === 'user' ? '👤' : '🤖') + '</div><div class="message-content"><div class="message-bubble">' + escapeHtml(content) + '</div><div class="message-time">' + time + '</div></div>';
+      container.appendChild(message);
+      container.scrollTop = container.scrollHeight;
+    }
 
-          buffer += decoder.decode(value, { stream: true });
-          
-          // Process complete events in buffer
-          const events = parseSSEvents(buffer);
-          
-          // Keep incomplete event in buffer
-          const lastDoubleNewline = buffer.lastIndexOf('\n\n');
-          if (lastDoubleNewline !== -1) {
-            buffer = buffer.slice(lastDoubleNewline + 2);
+// Store current thinking messages
+let currentThinkingMessages = {};
+
+function showThinking() {
+  const container = document.getElementById('chatMessages');
+  const thinking = document.createElement('div');
+  thinking.className = 'message ai';
+  thinking.id = 'thinkingIndicator';
+  thinking.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="thinking-indicator"><div class="thinking-dots"><div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div></div><span class="thinking-text">思考中...</span></div></div>';
+  container.appendChild(thinking);
+  container.scrollTop = container.scrollHeight;
+}
+
+function addThinkingBubble(agent, title) {
+  const container = document.getElementById('chatMessages');
+  const bubbleId = 'thinking-bubble-' + agent + '-' + Date.now();
+  
+  const thinking = document.createElement('div');
+  thinking.className = 'thinking-message ai';
+  thinking.id = bubbleId;
+  
+  const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  
+  const avatar = agent === 'MainAgent' ? '🧠' : '⚡';
+  const agentLabel = agent === 'MainAgent' ? '主智能体' : '子智能体';
+  
+  thinking.innerHTML = 
+    '<div class="message-avatar">' + avatar + '</div>' +
+    '<div class="thinking-bubble" id="bubble-' + bubbleId + '">' +
+      '<div class="thinking-header" data-bubble-id="' + bubbleId + '">' +
+        '<div class="thinking-header-icon">💭</div>' +
+        '<div class="thinking-header-text">深度思考</div>' +
+        '<div class="thinking-header-agent">' + agentLabel + '</div>' +
+        '<div class="thinking-header-expand">▼</div>' +
+      '</div>' +
+      '<div class="thinking-content">' +
+        '<div class="thinking-body" id="body-' + bubbleId + '">' +
+          '<div class="thinking-loading" id="loading-' + bubbleId + '">' +
+            '<div class="thinking-loading-dot"></div>' +
+            '<div class="thinking-loading-dot"></div>' +
+            '<div class="thinking-loading-dot"></div>' +
+            '<span>正在思考...</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="thinking-time">' + time + '</div>' +
+      '</div>' +
+    '</div>';
+  
+  // Add event listener for toggle
+  const header = thinking.querySelector('.thinking-header');
+  if (header) {
+    header.addEventListener('click', function() {
+      const bid = this.getAttribute('data-bubble-id');
+      const bubble = document.getElementById('bubble-' + bid);
+      if (bubble) bubble.classList.toggle('expanded');
+    });
+  }
+  
+  container.appendChild(thinking);
+  container.scrollTop = container.scrollHeight;
+  
+  currentThinkingMessages[bubbleId] = {
+    agent: agent,
+    content: '',
+    element: thinking
+  };
+  
+  return bubbleId;
+}
+
+function toggleThinkingBubble(bubbleId) {
+  const bubble = document.getElementById('bubble-' + bubbleId);
+  if (bubble) {
+    bubble.classList.toggle('expanded');
+  }
+}
+
+function updateThinkingBubble(bubbleId, reasoning) {
+  const bubble = currentThinkingMessages[bubbleId];
+  if (!bubble) return;
+  
+  const loadingEl = document.getElementById('loading-' + bubbleId);
+  if (loadingEl) loadingEl.remove();
+  
+  const bodyEl = document.getElementById('body-' + bubbleId);
+  if (bodyEl) {
+    bubble.content += reasoning;
+    bodyEl.textContent = bubble.content;
+  }
+  
+  // Auto expand to show content
+  const bubbleEl = document.getElementById('bubble-' + bubbleId);
+  if (bubbleEl && !bubbleEl.classList.contains('expanded')) {
+    bubbleEl.classList.add('expanded');
+  }
+}
+
+function finalizeThinkingBubble(bubbleId) {
+  const bubble = currentThinkingMessages[bubbleId];
+  if (!bubble) return;
+  
+  const loadingEl = document.getElementById('loading-' + bubbleId);
+  if (loadingEl) loadingEl.remove();
+  
+  delete currentThinkingMessages[bubbleId];
+}
+
+function hideThinking() {
+  // Remove the initial thinking indicator
+  const thinkingIndicator = document.getElementById('thinkingIndicator');
+  if (thinkingIndicator) {
+    thinkingIndicator.remove();
+  }
+  
+  // Clean up all active thinking bubbles
+  Object.keys(activeThinkingBubbles).forEach(key => {
+    finalizeThinkingBubble(activeThinkingBubbles[key]);
+  });
+  activeThinkingBubbles = {};
+  currentThinkingMessages = {};
+}
+
+    function showResult(result) {
+      const container = document.getElementById('chatMessages');
+      const resultCard = document.createElement('div');
+      resultCard.className = 'message ai';
+      
+      // Try to extract a user-friendly message from result
+      let displayContent = '';
+      if (typeof result === 'object') {
+        // Check for common result patterns
+        if (result.result !== undefined) {
+          displayContent = String(result.result);
+        } else if (result.finalResult !== undefined) {
+          displayContent = typeof result.finalResult === 'object' ? 
+            (result.finalResult.result !== undefined ? String(result.finalResult.result) : JSON.stringify(result.finalResult, null, 2)) :
+            String(result.finalResult);
+        } else if (result.message) {
+          displayContent = result.message;
+        } else if (result.steps && Array.isArray(result.steps)) {
+          // For step-by-step execution, show the final result
+          const lastStep = result.steps[result.steps.length - 1];
+          if (lastStep && lastStep.result) {
+            displayContent = typeof lastStep.result === 'object' ? 
+              JSON.stringify(lastStep.result, null, 2) : String(lastStep.result);
+          } else {
+            displayContent = JSON.stringify(result, null, 2);
           }
-
-          // Handle each event
-          for (const event of events) {
-            await handleSSEEvent(event);
-          }
+        } else {
+          displayContent = JSON.stringify(result, null, 2);
         }
-      } finally {
-        reader.releaseLock();
+      } else {
+        displayContent = String(result);
       }
+      
+      resultCard.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="result-card"><div class="result-card-header"><div class="result-card-icon">✓</div><div class="result-card-title">处理完成</div></div><div class="result-card-content">' + escapeHtml(displayContent) + '</div></div></div>';
+      container.appendChild(resultCard);
+      container.scrollTop = container.scrollHeight;
     }
 
-    // Parse SSE events from buffer
-    function parseSSEvents(buffer) {
-      const events = [];
-      const eventBlocks = buffer.split('\n\n');
-
-      for (const block of eventBlocks) {
-        if (!block.trim()) continue;
-
-        const lines = block.split('\n');
-        let eventType = '';
-        let eventData = '';
-
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            eventData = line.slice(5).trim();
-          }
-        }
-
-        if (eventType && eventData) {
-          events.push({ type: eventType, data: eventData });
-        }
-      }
-
-      return events;
+    function showError(message) {
+      const container = document.getElementById('chatMessages');
+      const error = document.createElement('div');
+      error.className = 'message ai';
+      error.innerHTML = '<div class="message-avatar">⚠️</div><div class="message-content"><div class="error-message">' + escapeHtml(message) + '</div></div>';
+      container.appendChild(error);
+      container.scrollTop = container.scrollHeight;
     }
 
-    // Handle individual SSE event
-    async function handleSSEEvent(event) {
-      try {
-        const data = JSON.parse(event.data);
-
-        switch (event.type) {
-          case 'start':
-            updateThinkingMessage('🤔 ' + (data.message || '开始处理您的请求...'));
-            break;
-
-          case 'step':
-            handleStepEvent(data);
-            break;
-
-          case 'complete':
-            markThinkingComplete();
-            updateTimelineStep(currentTimelineStep, 'completed');
-            displayResult(data);
-            isProcessing = false;
-            sendBtn.disabled = false;
-            messageInput.disabled = false;
-            break;
-
-          case 'error':
-            markThinkingFailed(data.message || '未知错误');
-            addMessage('ai', `❌ 错误: ${data.message || '未知错误'}`);
-            isProcessing = false;
-            sendBtn.disabled = false;
-            messageInput.disabled = false;
-            break;
-
-          default:
-            console.log('Unknown event type:', event.type, data);
-        }
-      } catch (error) {
-        console.error('Error parsing SSE event:', error, event);
-      }
-    }
-
-    // Handle step event with detailed processing
-    function handleStepEvent(data) {
-      const msg = data.message || '';
-      const timestamp = new Date(data.timestamp);
-      
-      // Determine which agent
-      let agent = 'System';
-      if (msg.includes('[MainAgent]')) agent = 'MainAgent';
-      else if (msg.includes('[SubAgent]')) agent = 'SubAgent';
-      else if (msg.includes('LLM')) agent = 'LLM';
-      
-      // Add to log
-      addLogEntry(agent, msg, timestamp);
-      
-      // Parse and update timeline based on message content
-      if (msg.includes('步骤 1/4') || msg.includes('分析用户需求')) {
-        updateTimelineStep(1, 'active', '正在分析...');
-        updateThinkingMessage('🧠 ' + '分析用户需求中...');
-      }
-      else if (msg.includes('需求分析完成') || msg.includes('intent:') || msg.includes('entities:')) {
-        updateTimelineStep(1, 'completed', '分析完成');
-        updateTimelineStep(2, 'active', '正在匹配技能...');
-        updateThinkingMessage('🎯 ' + '匹配技能中...');
-        
-        // Extract analysis result
-        if (msg.includes('意图:')) {
-          const intentMatch = msg.match(/意图: ([^,]+)/);
-          if (intentMatch) {
-            updateTimelineStep(1, 'completed', `意图: ${intentMatch[1].trim()}`);
-          }
-        }
-      }
-      else if (msg.includes('步骤 2/4') || msg.includes('匹配技能')) {
-        updateTimelineStep(2, 'active', '正在匹配技能...');
-      }
-      else if (msg.includes('Relevant skills') || msg.includes('技能匹配完成')) {
-        updateTimelineStep(2, 'completed', '技能匹配完成');
-        updateTimelineStep(3, 'active', '正在创建任务计划...');
-        updateThinkingMessage('📋 ' + '创建任务计划中...');
-        
-        // Extract skills
-        const skillsMatch = msg.match(/Relevant skills found:? ?(\[.*\]|[\w, ]+)/);
-        if (skillsMatch) {
-          updateTimelineStep(2, 'completed', `匹配技能: ${skillsMatch[1]}`);
-        }
-      }
-      else if (msg.includes('步骤 3/4') || msg.includes('创建任务计划')) {
-        updateTimelineStep(3, 'active', '正在创建任务计划...');
-      }
-      else if (msg.includes('任务计划创建完成') || msg.includes('Task plan created')) {
-        updateTimelineStep(3, 'completed', '计划已创建');
-        updateTimelineStep(4, 'active', '开始执行...');
-        updateThinkingMessage('⚙️ ' + '执行任务中...');
-        
-        // Extract task count
-        const countMatch = msg.match(/共 (\d+) 个任务/);
-        if (countMatch) {
-          updateTimelineStep(3, 'completed', `计划创建完成: ${countMatch[1]} 个任务`);
-        }
-      }
-      else if (msg.includes('步骤 4/4') || msg.includes('执行任务')) {
-        updateTimelineStep(4, 'active', '执行中...');
-      }
-      else if (msg.includes('Processing task') || msg.includes('开始执行任务')) {
-        // SubAgent task execution
-        const taskMatch = msg.match(/\[([^\]]+)\]/);
-        const skillMatch = msg.match(/技能:?\s*([\w-]+)/);
-        if (taskMatch && skillMatch) {
-          updateTaskDetails(taskMatch[1], skillMatch[1], 'running', msg);
-        }
-      }
-      else if (msg.includes('任务执行成功') || msg.includes('completed')) {
-        const taskMatch = msg.match(/\[([^\]]+)\]/);
-        if (taskMatch) {
-          updateTaskDetails(taskMatch[1], '', 'completed', '执行成功');
-        }
-      }
-      else if (msg.includes('执行失败') || msg.includes('failed')) {
-        const taskMatch = msg.match(/\[([^\]]+)\]/);
-        if (taskMatch) {
-          updateTaskDetails(taskMatch[1], '', 'failed', msg);
-        }
-      }
-      else if (msg.includes('所有任务执行完成')) {
-        updateTimelineStep(4, 'completed', '全部完成');
-        updateThinkingMessage('✨ ' + '处理完成!');
-      }
-      
-      // LLM request details
-      if (msg.includes('LLM request attempt') || msg.includes('Sending LLM request')) {
-        addLLMRequest('request', { message: msg, attempt: msg.match(/attempt (\d+)/)?.[1] }, timestamp);
-      }
-      else if (msg.includes('LLM response') || msg.includes('LLM request successful')) {
-        // Extract status if available
-        const statusMatch = msg.match(/status: (\d+)/);
-        if (statusMatch) {
-          addLLMRequest('response', { message: msg, status: parseInt(statusMatch[1]) }, timestamp);
-        }
-      }
-      
-      // Update thinking content
-      const stepInfo = formatStepMessage(msg);
-      if (stepInfo) {
-        appendThinkingMessage(stepInfo);
-      }
-    }
-
-    // Format step message to be more readable
-    function formatStepMessage(msg) {
-      if (!msg) return '';
-      
-      // MainAgent steps
-      if (msg.includes('LLM request')) {
-        if (msg.includes('attempt')) {
-          const attempt = msg.match(/attempt (\d+)/)?.[1] || '?';
-          return `🔄 LLM调用 (第${attempt}次尝试)`;
-        }
-        if (msg.includes('Sending LLM request')) {
-          return `📤 发送LLM请求...`;
-        }
-        if (msg.includes('response status')) {
-          const status = msg.match(/status: (\d+)/)?.[1] || '?';
-          const isError = status >= 400;
-          return `${isError ? '❌' : '✅'} LLM响应状态: ${status}`;
-        }
-        if (msg.includes('response data')) {
-          return `📥 收到LLM响应`;
-        }
-        if (msg.includes('error:') || msg.includes('Error:')) {
-          return `❌ LLM错误: ${msg.split('error:')[1]?.split(',')[0] || msg.split('Error:')[1]?.split(',')[0] || '未知错误'}`;
-        }
-      }
-      
-      if (msg.includes('analysis completed') || msg.includes('需求分析完成')) {
-        return `🧠 需求分析完成`;
-      }
-      
-      if (msg.includes('Relevant skills')) {
-        let skills = msg.replace('Relevant skills found:', '').trim();
-        if (skills.startsWith('[')) {
-          skills = skills.match(/\[(.*)\]/)?.[1] || skills;
-        }
-        return `🎯 技能匹配: ${skills || '无匹配'}`;
-      }
-      
-      if (msg.includes('Task plan created') || msg.includes('任务计划创建完成')) {
-        return `📋 任务计划已生成`;
-      }
-      
-      if (msg.includes('Processing task')) {
-        return `⚙️ 开始执行任务...`;
-      }
-      
-      if (msg.includes('任务执行成功') || msg.includes('执行成功')) {
-        return `✅ 任务执行成功`;
-      }
-      
-      if (msg.includes('执行失败') || msg.includes('failed')) {
-        return `❌ 任务执行失败`;
-      }
-      
-      if (msg.includes('所有任务执行完成')) {
-        return `✨ 所有任务执行完成`;
-      }
-
-      // Default: show abbreviated message
-      return '📝 ' + msg.substring(0, 60) + (msg.length > 60 ? '...' : '');
-    }
-
-    // Append to thinking message (accumulate)
-    function appendThinkingMessage(text) {
-      const thinkingEl = document.getElementById('thinkingMessage');
-      if (!thinkingEl) {
-        showThinking();
-      }
-      
-      const contentEl = document.querySelector('#thinkingMessage .thinking-content');
-      if (contentEl) {
-        contentEl.innerHTML += `<div>${text}</div>`;
-        scrollToBottom();
-      }
-    }
-
-    // Update thinking message content
-    function updateThinkingMessage(text) {
-      const thinkingEl = document.getElementById('thinkingMessage');
-      if (!thinkingEl) {
-        showThinking();
-      }
-      
-      const bubble = document.querySelector('#thinkingMessage .thinking-text');
-      if (bubble) {
-        bubble.textContent = text;
-      }
-    }
-
-    // Show thinking indicator
-    function showThinking() {
-      const thinkingHtml = `
-        <div class="message ai" id="thinkingMessage">
-          <div class="message-avatar">🤖</div>
-          <div class="message-content">
-            <div class="message-bubble">
-              <div class="thinking">
-                <div class="thinking-dots">
-                  <div class="thinking-dot"></div>
-                  <div class="thinking-dot"></div>
-                  <div class="thinking-dot"></div>
-                </div>
-                <span class="thinking-text">处理中...</span>
-              </div>
-              <div class="thinking-content" style="margin-top: 12px; font-size: 0.85rem; color: #888; line-height: 1.8;"></div>
-            </div>
-          </div>
-        </div>
-      `;
-      chatContainer.insertAdjacentHTML('beforeend', thinkingHtml);
-      scrollToBottom();
-    }
-
-    // Hide thinking indicator (for errors)
-    function hideThinking() {
-      const thinkingEl = document.getElementById('thinkingMessage');
-      if (thinkingEl) {
-        thinkingEl.remove();
-      }
-    }
-
-    // Mark thinking as failed (keep it visible)
-    function markThinkingFailed(errorMsg) {
-      const thinkingEl = document.getElementById('thinkingMessage');
-      if (!thinkingEl) return;
-      
-      // Remove animated dots
-      const dots = thinkingEl.querySelector('.thinking-dots');
-      if (dots) dots.remove();
-      
-      // Update header text
-      const textSpan = thinkingEl.querySelector('.thinking-text');
-      if (textSpan) textSpan.textContent = '❌ 处理失败: ' + errorMsg;
-      
-      // Add styling for failed state
-      thinkingEl.style.borderLeft = '3px solid #f87171';
-    }
-
-    // Mark thinking as complete and make it collapsible
-    function markThinkingComplete() {
-      const thinkingEl = document.getElementById('thinkingMessage');
-      if (!thinkingEl) return;
-      
-      // Remove animated dots
-      const dots = thinkingEl.querySelector('.thinking-dots');
-      if (dots) dots.remove();
-      
-      // Update header text
-      const textSpan = thinkingEl.querySelector('.thinking-text');
-      if (textSpan) textSpan.textContent = '📋 处理过程 (点击折叠)';
-      
-      // Make the content collapsible
-      const contentEl = thinkingEl.querySelector('.thinking-content');
-      if (contentEl) {
-        contentEl.style.display = 'block';
-        contentEl.style.cursor = 'pointer';
-        contentEl.onclick = function() {
-          this.classList.toggle('collapsed');
-        };
-        // Add collapsed style
-        contentEl.classList.add('process-collapsed');
-      }
-      
-      // Add click handler to the whole element
-      thinkingEl.style.cursor = 'pointer';
-      thinkingEl.onclick = function(e) {
-        if (e.target.closest('.thinking-text')) {
-          const content = this.querySelector('.thinking-content');
-          if (content) content.classList.toggle('collapsed');
-        }
-      };
-    }
-
-    // Display result
-    function displayResult(data) {
-      const result = data.result;
-      
-      if (!result) {
-        addMessage('ai', '未返回结果');
-        return;
-      }
-
-      // If no skill match - show message and available skills
-      if (result.message && result.availableSkills) {
-        let html = result.message;
-        
-        if (result.availableSkills.length > 0) {
-          html += '\n\n可用技能:\n';
-          html += '<div class="skill-chips">';
-          result.availableSkills.forEach(skill => {
-            html += `<span class="skill-chip">${skill.name}</span>`;
-          });
-          html += '</div>';
-        }
-
-        addMessage('ai', html, data);
-      } 
-      // If skill matched - show results
-      else if (result.results) {
-        let html = `任务完成! 共 ${result.results.length} 个子任务\n\n`;
-        
-        result.results.forEach((taskResult, index) => {
-          const status = taskResult.error ? 'error' : 'success';
-          const statusText = taskResult.error ? '失败' : '成功';
-          const content = taskResult.error ? taskResult.error.message || JSON.stringify(taskResult.error) : 
-                         (typeof taskResult.result === 'object' ? JSON.stringify(taskResult.result, null, 2) : taskResult.result);
-          
-          html += `
-            <div class="result-item">
-              <div class="result-header">
-                <span class="result-skill">${taskResult.skillName || 'Unknown'}</span>
-                <span class="result-status ${status}">${statusText}</span>
-              </div>
-              <div class="result-content">${escapeHtml(content)}</div>
-            </div>
-          `;
-        });
-
-        addMessage('ai', html, data);
-      } 
-      // Fallback
-      else {
-        addMessage('ai', typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result), data);
-      }
-    }
-
-    // Add message to chat
-    function addMessage(role, content, rawData = null) {
-      const now = new Date();
-      const time = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-
-      const messageHtml = `
-        <div class="message ${role}">
-          <div class="message-avatar">${role === 'ai' ? '🤖' : '👤'}</div>
-          <div class="message-content">
-            <div class="message-bubble">
-              ${content}
-            </div>
-            ${rawData ? `
-              <button class="json-toggle" onclick="toggleJson(this)">
-                <span class="json-toggle-icon">▶</span>
-                <span>查看原始数据</span>
-              </button>
-              <div class="json-content">${escapeHtml(JSON.stringify(rawData, null, 2))}</div>
-            ` : ''}
-            <div class="message-time">${time}</div>
-          </div>
-        </div>
-      `;
-
-      chatContainer.insertAdjacentHTML('beforeend', messageHtml);
-      scrollToBottom();
-    }
-
-    // Toggle JSON view
-    function toggleJson(btn) {
-      btn.classList.toggle('expanded');
-      const jsonContent = btn.nextElementSibling;
-      jsonContent.classList.toggle('show');
-      
-      const icon = btn.querySelector('.json-toggle-icon');
-      icon.textContent = btn.classList.contains('expanded') ? '▼' : '▶';
-    }
-
-    // Toggle detail panel
-    function toggleDetailPanel() {
-      detailPanel.classList.toggle('collapsed');
-    }
-
-    // Switch tab
-    function switchTab(event, tabId) {
-      event.stopPropagation();
-      
-      // Update tab buttons
-      document.querySelectorAll('.detail-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabId);
-      });
-      
-      // Update tab content
-      document.querySelectorAll('.detail-tab-content').forEach(content => {
-        content.classList.toggle('active', content.id === `tab-${tabId}`);
-      });
-    }
-
-    // Scroll to bottom
-    function scrollToBottom() {
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-
-    // Escape HTML
     function escapeHtml(text) {
-      if (typeof text !== 'string') return text;
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
     }
+
+    function parseSSEvents(buffer) {
+      const events = [];
+      const blocks = buffer.split('\n\n');
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        const lines = block.split('\n');
+        let eventType = '';
+        let eventData = '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) eventType = line.slice(6).trim();
+          else if (line.startsWith('data:')) eventData = line.slice(5).trim();
+        }
+        if (eventType && eventData) {
+          try { events.push({ type: eventType, data: JSON.parse(eventData) }); }
+          catch (e) { events.push({ type: eventType, data: eventData }); }
+        }
+      }
+      return events;
+    }
+
+  // Track active thinking bubbles
+  let activeThinkingBubbles = {};
+
+  function handleSSEEvent(event) {
+    // Handle reasoning events - show in thinking bubble
+    if (event.type === 'reasoning' && event.data) {
+      const reasoningContent = event.data.content || '';
+      const agent = event.data.agent || 'MainAgent';
+      
+      // Create or get existing thinking bubble for this agent
+      const bubbleKey = agent;
+      if (!activeThinkingBubbles[bubbleKey]) {
+        activeThinkingBubbles[bubbleKey] = addThinkingBubble(agent, '深度思考');
+      }
+      
+      updateThinkingBubble(activeThinkingBubbles[bubbleKey], reasoningContent);
+      return;
+    }
+    
+    // Handle reasoning complete
+    if (event.type === 'reasoning_complete') {
+      const agent = event.data?.agent || 'MainAgent';
+      const bubbleKey = agent;
+      if (activeThinkingBubbles[bubbleKey]) {
+        finalizeThinkingBubble(activeThinkingBubbles[bubbleKey]);
+        delete activeThinkingBubbles[bubbleKey];
+      }
+      return;
+    }
+    
+    const msg = event.data.message || '';
+    
+    // 统一规划器阶段
+  if (msg.includes('使用统一规划器')) {
+    updateSection('analysis', 'completed', '意图分类完成');
+    updateSection('matching', 'completed', '通过统一规划器匹配');
+    updateSection('planning', 'active', '正在统一规划...');
+  }
+  if (msg.includes('🚀 开始统一规划')) {
+    updateSection('planning', 'active', '开始统一规划', msg);
+  }
+  if (msg.includes('📊 分析意图:')) {
+    const intent = msg.match(/分析意图:\s*(.+)/)?.[1] || '';
+    updateSection('analysis', 'completed', '意图: ' + intent, msg);
+  }
+  if (msg.includes('📊 选中技能:')) {
+    const skills = msg.match(/选中技能:\s*(.+)/)?.[1] || '';
+    updateSection('matching', 'completed', '技能: ' + skills, msg);
+  }
+  if (msg.includes('📊 任务数量:')) {
+    const count = msg.match(/任务数量:\s*(\d+)/)?.[1] || '0';
+    updateSection('planning', 'active', '任务数: ' + count, msg);
+  }
+  if (msg.includes('✅ 规划完成')) {
+    updateSection('planning', 'completed', '规划完成', msg);
+    updateSection('execution', 'active');
+  }
+  if (msg.includes('⚠️ 规划失败')) {
+    updateSection('planning', 'failed', '规划失败', msg);
+  }
+
+  // 需求分析阶段 - 详细思考过程
+    if (msg.includes('收到用户请求')) {
+      updateSection('analysis', 'active', '开始分析需求');
+    }
+    if (msg.includes('🧠 需求分析 - 开始')) {
+      updateSection('analysis', 'active', '正在解析用户需求...', '开始需求分析流程');
+    }
+    if (msg.includes('🧠 输入:')) {
+      const input = msg.match(/输入:\s*"(.+)"/)?.[1] || msg;
+      updateSection('analysis', 'active', '接收用户输入: ' + input, msg);
+    }
+    if (msg.includes('🧠 发送LLM请求')) {
+      updateSection('analysis', 'active', '调用LLM进行需求分析...', '正在分析意图和提取实体');
+    }
+    if (msg.includes('🧠 系统提示:')) {
+      updateSection('analysis', 'active', '', '系统提示: 分析用户需求');
+    }
+    if (msg.includes('🧠 分析结果:')) {
+      updateSection('analysis', 'active', 'LLM分析完成，提取关键信息', '分析结果已返回');
+    }
+    if (msg.includes('🧠 - 意图:')) {
+      const intent = msg.match(/意图:\s*(.+)/)?.[1] || '未知';
+      updateSection('analysis', 'active', '识别意图: ' + intent, '意图识别: ' + intent);
+    }
+    if (msg.includes('🧠 - 实体:')) {
+      const entities = msg.match(/实体:\s*(.+)/)?.[1] || '无';
+      updateSection('analysis', 'active', '提取实体: ' + entities, '实体提取: ' + entities);
+    }
+    if (msg.includes('🧠 - 摘要:')) {
+      const summary = msg.match(/摘要:\s*(.+)/)?.[1] || '';
+      updateSection('analysis', 'active', '需求摘要: ' + summary.substring(0, 50), '摘要: ' + summary);
+    }
+    if (msg.includes('🧠 - 建议技能:')) {
+      const suggested = msg.match(/建议技能:\s*(.+)/)?.[1] || '无';
+      updateSection('analysis', 'active', '建议技能: ' + suggested, '建议技能: ' + suggested);
+    }
+    if (msg.includes('需求分析完成')) {
+      const match = msg.match(/意图:\s*([^,]+).*实体:\s*(.+)/);
+      const detail = match ? '意图: ' + match[1] + '\n实体: ' + match[2] : '';
+      updateSection('analysis', 'completed', detail, msg);
+      updateSection('matching', 'active');
+    }
+    
+    // 技能匹配阶段 - 详细思考过程
+    if (msg.includes('⚙️ 技能匹配 - 开始')) {
+      updateSection('matching', 'active', '开始匹配可用技能', '技能匹配流程启动');
+    }
+    if (msg.includes('⚙️ 可用技能列表:')) {
+      updateSection('matching', 'active', '加载可用技能列表...', '获取所有注册的技能');
+    }
+    if (msg.includes('⚙️ - calculator:') || msg.includes('⚙️ - classroom:')) {
+      const skillName = msg.match(/-\s*(\w+):/)?.[1] || '未知技能';
+      updateSection('matching', 'active', '技能: ' + skillName, '检查技能: ' + skillName);
+    }
+    if (msg.includes('⚙️ 发送LLM请求进行技能匹配')) {
+      updateSection('matching', 'active', '调用LLM进行技能匹配...', 'LLM正在分析哪个技能最合适');
+    }
+    if (msg.includes('⚙️ 分析意图:')) {
+      const intent = msg.match(/分析意图:\s*(.+)/)?.[1] || '';
+      updateSection('matching', 'active', '基于意图匹配: ' + intent, '意图分析: ' + intent);
+    }
+    if (msg.includes('⚙️ 分析实体:')) {
+      const entities = msg.match(/分析实体:\s*(.+)/)?.[1] || '';
+      updateSection('matching', 'active', '基于实体匹配: ' + entities, '实体分析: ' + entities);
+    }
+    if (msg.includes('技能匹配完成')) {
+      const match = msg.match(/找到\s+(\d+)\s+个相关技能/);
+      const count = match ? match[1] : '若干';
+      updateSection('matching', 'completed', '匹配到 ' + count + ' 个技能', msg);
+      updateSection('planning', 'active');
+    }
+    
+    // 任务规划阶段
+    if (msg.includes('📋 任务规划 - 开始')) {
+      updateSection('planning', 'active', '开始创建任务计划', '任务规划流程启动');
+    }
+    if (msg.includes('📋 计划ID:')) {
+      const planId = msg.match(/计划ID:\s*(.+)/)?.[1] || '';
+      updateSection('planning', 'active', '生成计划ID: ' + planId, '计划ID: ' + planId);
+    }
+    if (msg.includes('📋 发送LLM请求进行任务规划')) {
+      updateSection('planning', 'active', '调用LLM规划任务...', 'LLM正在分解任务');
+    }
+    if (msg.includes('📋 需求摘要:')) {
+      const summary = msg.match(/需求摘要:\s*(.+)/)?.[1] || '';
+      updateSection('planning', 'active', '分析需求: ' + summary, '需求摘要: ' + summary);
+    }
+    if (msg.includes('📋 可用技能:')) {
+      const skills = msg.match(/可用技能:\s*(.+)/)?.[1] || '';
+      updateSection('planning', 'active', '可用技能: ' + skills, '技能列表: ' + skills);
+    }
+    if (msg.includes('📋 规划结果:')) {
+      updateSection('planning', 'active', '获取规划结果...', '任务规划完成');
+    }
+    if (msg.includes('📋   - 任务数量:')) {
+      const count = msg.match(/任务数量:\s*(\d+)/)?.[1] || '0';
+      updateSection('planning', 'active', '创建 ' + count + ' 个子任务', '任务数量: ' + count);
+    }
+    if (msg.includes('📋   - 任务 ')) {
+      const taskMatch = msg.match(/任务\s*(\w+):\s*\[(\w+)\]\s*(.+)/);
+      if (taskMatch) {
+        const taskInfo = '任务' + taskMatch[1] + ': [' + taskMatch[2] + '] ' + taskMatch[3];
+        updateSection('planning', 'active', taskInfo, taskInfo);
+      }
+    }
+    if (msg.includes('任务计划创建完成')) {
+      const match = msg.match(/共\s+(\d+)\s+个任务/);
+      const count = match ? match[1] : '若干';
+      updateSection('planning', 'completed', '创建了 ' + count + ' 个任务', msg);
+      updateSection('execution', 'active');
+    }
+    
+    // 任务执行阶段
+    if (msg.includes('⚡ 任务执行 - 开始')) {
+      updateSection('execution', 'active', '开始执行任务', '任务执行流程启动');
+    }
+    if (msg.includes('⚡ 任务ID:')) {
+      const taskId = msg.match(/任务ID:\s*(.+)/)?.[1] || '';
+      updateSection('execution', 'active', '处理任务: ' + taskId, '任务ID: ' + taskId);
+    }
+    if (msg.includes('⚡ 技能名称:')) {
+      const skill = msg.match(/技能名称:\s*(.+)/)?.[1] || '';
+      subtasks[skill] = { skillName: skill, status: 'running' };
+      addSubtask('execution', skill, skill, 'running');
+      updateSection('execution', 'active', '使用技能: ' + skill, '技能: ' + skill);
+    }
+    if (msg.includes('⚡ 任务需求:')) {
+      const req = msg.match(/任务需求:\s*"(.+)"/)?.[1] || '';
+      updateSection('execution', 'active', '任务: ' + req, '需求: ' + req);
+    }
+    if (msg.includes('⚡ 正在加载技能')) {
+      const skill = msg.match(/加载技能:\s*(.+)/)?.[1] || '';
+      updateSection('execution', 'active', '加载技能: ' + skill, '加载技能: ' + skill);
+    }
+    if (msg.includes('⚡ 技能加载成功')) {
+      updateSection('execution', 'active', '技能加载成功', '技能已加载');
+    }
+    if (msg.includes('⚡ - 技能描述:')) {
+      const desc = msg.match(/技能描述:\s*(.+)/)?.[1] || '';
+      updateSection('execution', 'active', '技能描述: ' + desc.substring(0, 50), '描述: ' + desc);
+    }
+    if (msg.includes('⚡ 步骤 1/2: 生成执行参数')) {
+      updateSection('execution', 'active', '步骤 1/2: 生成执行参数', '正在生成执行参数');
+    }
+    if (msg.includes('⚡ 分析需求:')) {
+      const req = msg.match(/分析需求:\s*"(.+)"/)?.[1] || '';
+      updateSection('execution', 'active', '分析需求: ' + req, '分析: ' + req);
+    }
+    if (msg.includes('⚡ 匹配技能:')) {
+      const skill = msg.match(/匹配技能:\s*"(.+)"/)?.[1] || '';
+      updateSection('execution', 'active', '匹配技能: ' + skill, '匹配: ' + skill);
+    }
+    if (msg.includes('⚡ 参数生成完成:')) {
+      const params = msg.match(/参数生成完成:\s*(.+)/)?.[1] || '{}';
+      updateSection('execution', 'active', '参数: ' + params.substring(0, 100), '参数: ' + params);
+    }
+    if (msg.includes('⚡ 步骤 2/2: 执行技能脚本')) {
+      const execType = msg.match(/执行方式:\s*(.+)/)?.[1] || '执行';
+      updateSection('execution', 'active', '步骤 2/2: ' + execType, '执行方式: ' + execType);
+    }
+    if (msg.includes('⚡ 任务执行成功')) {
+      updateSection('execution', 'completed', '任务执行成功', msg);
+      updateSection('aggregation', 'active');
+    }
+    
+    // 结果聚合阶段
+    if (msg.includes('结果聚合') || msg.includes('聚合')) {
+      updateSection('aggregation', 'active', '正在聚合结果...', msg);
+    }
+    if (msg.includes('聚合完成')) {
+      updateSection('aggregation', 'completed', '结果聚合完成');
+      updateSection('response', 'active');
+    }
+  }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const button = document.getElementById('sendButton');
+      const text = input.value.trim();
+      if (!text || isProcessing) return;
+
+      const welcomeScreen = document.getElementById('welcomeScreen');
+      if (welcomeScreen) welcomeScreen.remove();
+
+      addMessage('user', text);
+      input.value = '';
+      input.style.height = 'auto';
+      isProcessing = true;
+      button.disabled = true;
+      input.disabled = true;
+      resetSections();
+      showThinking();
+
+      try {
+        const response = await fetch(API_BASE_URL + '/tasks/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          body: JSON.stringify({ requirement: text })
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult = null;
+        let hasError = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = parseSSEvents(buffer);
+          const lastDoubleNewline = buffer.lastIndexOf('\n\n');
+          if (lastDoubleNewline !== -1) buffer = buffer.slice(lastDoubleNewline + 2);
+          for (const event of events) {
+            if (event.type === 'step') handleSSEEvent(event);
+            else if (event.type === 'complete') finalResult = event.data;
+            else if (event.type === 'error') {
+              hasError = true;
+              hideThinking();
+              showError(event.data.message || '处理失败');
+            }
+          }
+        }
+
+        hideThinking();
+        if (!hasError) {
+          updateSection('response', 'completed', '响应生成完成');
+          if (finalResult) showResult(finalResult);
+          else addMessage('ai', '处理完成');
+        }
+      } catch (error) {
+        hideThinking();
+        showError('请求失败: ' + error.message);
+      } finally {
+        isProcessing = false;
+        button.disabled = false;
+        input.disabled = false;
+        input.focus();
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      initThinkingSections();
+      fetch(API_BASE_URL + '/health').catch(() => showError('无法连接到服务器，请确保服务已启动'));
+    });
   </script>
 </body>
 </html>

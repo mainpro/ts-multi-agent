@@ -185,18 +185,20 @@ export const CONFIG = {
   MAX_QUEUE_SIZE: 100,
   /** Maximum replan attempts for failed tasks */
   MAX_REPLAN_ATTEMPTS: 3,
-  /** Individual task timeout (30 seconds) */
-  TASK_TIMEOUT_MS: 30000,
-  /** Total workflow timeout (5 minutes) */
-  TOTAL_TIMEOUT_MS: 300000,
-  /** LLM API timeout (60 seconds) */
-  LLM_TIMEOUT_MS: 60000,
+  /** Individual task timeout - must cover LLM retries (90s × 3 + backoff ≈ 300s) */
+  TASK_TIMEOUT_MS: parseInt(process.env.TASK_TIMEOUT_MS || '400000', 10),
+  /** Total workflow timeout - for multiple sequential tasks */
+  TOTAL_TIMEOUT_MS: parseInt(process.env.TOTAL_TIMEOUT_MS || '600000', 10),
+  /** LLM API timeout - NVIDIA API can be slow for complex prompts */
+  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || '90000', 10),
+  /** Script execution timeout - should be less than TASK_TIMEOUT_MS */
+  SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
   SKILL_DIRECTORY: './skills/',
   /** GLM model name */
-  LLM_MODEL: 'glm-4.7-flash',
+  LLM_MODEL: 'z-ai/glm4.7',
   /** LLM API base URL */
-  LLM_BASE_URL: 'https://open.bigmodel.cn/api/paas/v4',
+  LLM_BASE_URL: 'https://integrate.api.nvidia.com/v1',
   /** LLM temperature */
   LLM_TEMPERATURE: 0.7,
   /** Task cleanup interval (5 minutes) */

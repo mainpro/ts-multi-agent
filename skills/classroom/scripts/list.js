@@ -14,12 +14,14 @@
 
 // Mock database
 const classes = [
-  { id: 'class-001', name: '高一(1)班', teacher: '张三', students: 45 },
-  { id: 'class-002', name: '高一(2)班', teacher: '李四', students: 42 },
-  { id: 'class-003', name: '高二(1)班', teacher: '王五', students: 48 },
-  { id: 'class-004', name: '高二(2)班', teacher: '赵六', students: 44 },
-  { id: 'class-005', name: '高三(1)班', teacher: '孙七', students: 50 },
-  { id: 'class-006', name: '高三(2)班', teacher: '周八', students: 46 }
+  { id: 'class-001', name: '高一(1)班', teacher: '张三', students: 45, grade: '高一' },
+  { id: 'class-002', name: '高一(2)班', teacher: '李四', students: 42, grade: '高一' },
+  { id: 'class-003', name: '高一(3)班', teacher: '王五', students: 48, grade: '高一' },
+  { id: 'class-004', name: '高二(1)班', teacher: '赵六', students: 44, grade: '高二' },
+  { id: 'class-005', name: '高二(2)班', teacher: '孙七', students: 50, grade: '高二' },
+  { id: 'class-006', name: '高二(3)班', teacher: '周八', students: 46, grade: '高二' },
+  { id: 'class-007', name: '高三(1)班', teacher: '吴九', students: 52, grade: '高三' },
+  { id: 'class-008', name: '高三(2)班', teacher: '郑十', students: 49, grade: '高三' }
 ];
 
 function findClassById(id) {

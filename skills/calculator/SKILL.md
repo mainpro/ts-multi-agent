@@ -1,6 +1,6 @@
 ---
-name: calculator
-description: Perform basic arithmetic calculations (add, subtract, multiply, divide). Use when user needs mathematical operations. 执行基本算术计算（加、减、乘、除）。当用户需要数学运算时使用。
+name: 计算器
+description: 执行基本算术计算（加、减、乘、除）。当用户需要数学运算时使用。
 license: MIT
 metadata:
   author: system
@@ -12,13 +12,11 @@ metadata:
     - math
 ---
 
-# Calculator Skill
+# 计算器技能
 
 ## Quick Reference (RIF)
 
-**Operations**: `add`, `subtract`, `multiply`, `divide`
-**Usage**: `{ "operation": "add", "a": 10, "b": 5 }`
-**Scripts**: `scripts/add.js`
+
 
 ## Execution Steps
 
@@ -26,12 +24,12 @@ metadata:
 
 根据需求判断需要哪个操作：
 
-| 需求关键词 | Operation | Script |
-|-----------|-----------|--------|
-| 加、plus、+、求和、和 | `add` | `scripts/add.js` |
-| 减、minus、-、差 | `subtract` | `scripts/subtract.js` |
-| 乘、times、×、积 | `multiply` | `scripts/multiply.js` |
-| 除、divide、÷、商 | `divide` | `scripts/divide.js` |
+| 需求关键词 | Operation | 
+|-----------|-----------|
+| 加、plus、+、求和、和 | `add` | 
+| 减、minus、-、差 | `subtract` |
+| 乘、times、×、积 | `multiply` | 
+| 除、divide、÷、商 | `divide` | 
 
 ### Step 2: Validate Input (分支逻辑)
 
@@ -48,12 +46,7 @@ metadata:
 
 ### Step 3: Execute Operation
 
-根据 operation 执行对应 script：
-
-- `add` → 执行 `scripts/add.js`，参数 `{ "a": <值>, "b": <值> }`
-- `subtract` → 执行 `scripts/subtract.js`，参数 `{ "a": <值>, "b": <值> }`
-- `multiply` → 执行 `scripts/multiply.js`，参数 `{ "a": <值>, "b": <值> }`
-- `divide` → 执行 `scripts/divide.js`，参数 `{ "a": <值>, "b": <值> }`
+根据 operation 自行计算
 
 ### Step 4: Return Result
 
@@ -67,11 +60,6 @@ metadata:
 }
 ```
 
-## References
-
-**详细文档**: See [references/README.md](references/README.md)
-- **何时读取**: 当需要了解脚本接口规范或错误代码时
-- **内容**: 脚本实现细节、错误处理规范
 
 ## Error Handling
 

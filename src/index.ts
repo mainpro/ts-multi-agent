@@ -23,7 +23,7 @@ async function bootstrap() {
       llmClient = new LLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
-      console.warn('⚠️  Warning: Failed to initialize LLM Client. Set ZHIPU_API_KEY env var.\n');
+      console.warn('⚠️  Warning: Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.\n');
       process.exit(1);
     }
 

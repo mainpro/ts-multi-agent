@@ -2,6 +2,48 @@ import { Message, CONFIG } from '../types';
 import { ZodSchema } from 'zod';
 
 /**
+ * Global event emitter for LLM reasoning stream
+ */
+export type LLMEventType = 'reasoning' | 'response';
+
+export class LLMEventEmitter {
+  private listeners: Map<LLMEventType, ((data: string) => void)[]> = new Map();
+
+  on(event: LLMEventType, callback: (data: string) => void): void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event)!.push(callback);
+  }
+
+  off(event: LLMEventType, callback: (data: string) => void): void {
+    const callbacks = this.listeners.get(event);
+    if (callbacks) {
+      const index = callbacks.indexOf(callback);
+      if (index > -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+
+  emit(event: LLMEventType, data: string): void {
+    const callbacks = this.listeners.get(event);
+    if (callbacks) {
+      callbacks.forEach(callback => {
+        try {
+          callback(data);
+        } catch (e) {
+          // Ignore listener errors
+        }
+      });
+    }
+  }
+}
+
+// Global event emitter instance
+export const llmEvents = new LLMEventEmitter();
+
+/**
  * LLM error types for classification
  */
 export type LLMErrorType =
@@ -33,7 +75,8 @@ export class LLMError extends Error {
 interface GLMResponse {
   choices: Array<{
     message: {
-      content: string;
+      content: string | null;
+      reasoning_content?: string | null;
       role: string;
     };
     finish_reason: string;
@@ -64,10 +107,10 @@ export class LLMClient {
 
   /**
    * Create a new LLM client
-   * @param apiKey - GLM API key (defaults to ZHIPU_API_KEY env var)
+   * @param apiKey - NVIDIA API key (defaults to NVIDIA_API_KEY env var)
    */
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.ZHIPU_API_KEY || '';
+    this.apiKey = apiKey || process.env.NVIDIA_API_KEY || '';
     this.baseUrl = CONFIG.LLM_BASE_URL;
     this.model = CONFIG.LLM_MODEL;
     this.temperature = CONFIG.LLM_TEMPERATURE;
@@ -77,7 +120,7 @@ export class LLMClient {
     if (!this.apiKey) {
       throw new LLMError(
         'INVALID_KEY',
-        'ZHIPU_API_KEY environment variable is not set'
+        'NVIDIA_API_KEY environment variable is not set'
       );
     }
   }
@@ -169,19 +212,26 @@ export class LLMClient {
    */
   private async makeRequest(
     messages: Message[],
-    responseFormat?: { type: 'json_object' }
+    responseFormat?: { type: 'json_object' },
+    signal?: AbortSignal
   ): Promise<GLMResponse> {
     let lastError: LLMError | undefined;
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
         console.log(`LLM request attempt ${attempt + 1}/${this.maxRetries}`);
-        
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
           console.log('LLM request timeout');
           controller.abort();
         }, this.timeoutMs);
+
+        if (signal?.aborted) {
+          controller.abort();
+        }
+
+        signal?.addEventListener('abort', () => controller.abort());
 
         const requestBody: Record<string, unknown> = {
           model: this.model,
@@ -205,7 +255,7 @@ export class LLMClient {
           {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${this.apiKey}`, // Use full API key
+              Authorization: `Bearer ${this.apiKey}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify(requestBody),
@@ -336,7 +386,14 @@ export class LLMClient {
       throw new LLMError('API_ERROR', 'No choices in response');
     }
 
-    return response.choices[0].message.content;
+    const message = response.choices[0].message;
+    
+    // Emit reasoning_content if present
+    if (message.reasoning_content) {
+      llmEvents.emit('reasoning', message.reasoning_content);
+    }
+    
+    return message.content || message.reasoning_content || '';
   }
 
   /**
@@ -344,12 +401,14 @@ export class LLMClient {
    * @param prompt - User prompt
    * @param schema - Zod schema for validation
    * @param systemPrompt - Optional system prompt
+   * @param onReasoning - Optional callback for reasoning_content chunks
    * @returns Parsed and validated structured data
    */
   async generateStructured<T>(
     prompt: string,
     schema: ZodSchema<T>,
-    systemPrompt?: string
+    systemPrompt?: string,
+    signal?: AbortSignal
   ): Promise<T> {
     const messages: Message[] = [];
 
@@ -365,13 +424,24 @@ export class LLMClient {
       content: prompt,
     });
 
-    const response = await this.makeRequest(messages, { type: 'json_object' });
+    const response = await this.makeRequest(messages, { type: 'json_object' }, signal);
 
     if (!response.choices || response.choices.length === 0) {
       throw new LLMError('API_ERROR', 'No choices in response');
     }
 
-    const content = response.choices[0].message.content;
+    const message = response.choices[0].message;
+    
+    // Emit reasoning_content if present
+    if (message.reasoning_content) {
+      llmEvents.emit('reasoning', message.reasoning_content);
+    }
+
+    const content = message.content;
+
+    if (!content) {
+      throw new LLMError('API_ERROR', 'No content in response');
+    }
 
     try {
       const parsed = JSON.parse(content);

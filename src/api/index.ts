@@ -5,6 +5,7 @@ import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
+import { llmEvents } from '../llm';
 
 interface ApiError {
   error: string;
@@ -258,37 +259,65 @@ export function createAPIServer(
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
+    try {
+      sendEvent('start', { message: '开始处理您的请求...' });
+
+  const originalLog = console.log;
+  let stepCount = 0;
+  console.log = (...args: unknown[]) => {
+    const msg = args.join(' ');
+    // Capture MainAgent, SubAgent, UnifiedPlanner process messages
+    if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]')) {
+      stepCount++;
+      let agent = 'MainAgent';
+      if (msg.includes('[SubAgent]')) agent = 'SubAgent';
+      else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
+      else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
+      
+      sendEvent('step', {
+        step: stepCount,
+        message: msg,
+        agent,
+        timestamp: new Date().toISOString()
+      });
+    }
+    originalLog.apply(console, args);
+  };
+
+      // Subscribe to LLM reasoning events
+      const reasoningBuffer: string[] = [];
+      const handleReasoning = (reasoning: string) => {
+        reasoningBuffer.push(reasoning);
+        sendEvent('reasoning', {
+          type: 'thinking',
+          content: reasoning,
+          agent: 'MainAgent',
+          timestamp: new Date().toISOString()
+        });
+      };
+      llmEvents.on('reasoning', handleReasoning);
+
       try {
-        sendEvent('start', { message: '开始处理您的请求...' });
+        const result = await mainAgent.processRequirement(requirement);
 
-        const originalLog = console.log;
-        let stepCount = 0;
-        console.log = (...args: unknown[]) => {
-          const msg = args.join(' ');
-          // Capture MainAgent and SubAgent process messages
-          if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]')) {
-            stepCount++;
-            sendEvent('step', { 
-              step: stepCount, 
-              message: msg,
-              agent: msg.includes('[MainAgent]') ? 'MainAgent' : 'SubAgent',
-              timestamp: new Date().toISOString()
-            });
-          }
-          originalLog.apply(console, args);
-        };
-
-        try {
-          const result = await mainAgent.processRequirement(requirement);
-          
-          if (result.success) {
-            sendEvent('complete', result.data);
-          } else {
-            sendEvent('error', result.error);
-          }
-        } finally {
-          console.log = originalLog;
+        // Send final reasoning summary if any
+        if (reasoningBuffer.length > 0) {
+          sendEvent('reasoning_complete', {
+            type: 'thinking_complete',
+            totalChunks: reasoningBuffer.length,
+            timestamp: new Date().toISOString()
+          });
         }
+
+        if (result.success) {
+          sendEvent('complete', result.data);
+        } else {
+          sendEvent('error', result.error);
+        }
+      } finally {
+        console.log = originalLog;
+        llmEvents.off('reasoning', handleReasoning);
+      }
 
       } catch (error) {
         sendEvent('error', { 
