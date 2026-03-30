@@ -6,17 +6,31 @@ import { ZodSchema } from 'zod';
  */
 export type LLMEventType = 'reasoning' | 'response';
 
-export class LLMEventEmitter {
-  private listeners: Map<LLMEventType, ((data: string) => void)[]> = new Map();
+export interface ReasoningEvent {
+  content: string;
+  agent: 'MainAgent' | 'SubAgent';
+}
 
-  on(event: LLMEventType, callback: (data: string) => void): void {
+export class LLMEventEmitter {
+  private listeners: Map<LLMEventType, ((data: string | ReasoningEvent) => void)[]> = new Map();
+  private currentAgent: 'MainAgent' | 'SubAgent' = 'MainAgent';
+
+  setAgent(agent: 'MainAgent' | 'SubAgent'): void {
+    this.currentAgent = agent;
+  }
+
+  getAgent(): 'MainAgent' | 'SubAgent' {
+    return this.currentAgent;
+  }
+
+  on(event: LLMEventType, callback: (data: string | ReasoningEvent) => void): void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, []);
     }
     this.listeners.get(event)!.push(callback);
   }
 
-  off(event: LLMEventType, callback: (data: string) => void): void {
+  off(event: LLMEventType, callback: (data: string | ReasoningEvent) => void): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
       const index = callbacks.indexOf(callback);
@@ -29,9 +43,13 @@ export class LLMEventEmitter {
   emit(event: LLMEventType, data: string): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
+      const enrichedData: ReasoningEvent = {
+        content: data,
+        agent: this.currentAgent,
+      };
       callbacks.forEach(callback => {
         try {
-          callback(data);
+          callback(enrichedData);
         } catch (e) {
           // Ignore listener errors
         }
@@ -233,15 +251,16 @@ export class LLMClient {
 
         signal?.addEventListener('abort', () => controller.abort());
 
-        const requestBody: Record<string, unknown> = {
-          model: this.model,
-          messages: messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-            ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-          })),
-          temperature: this.temperature,
-        };
+const requestBody: Record<string, unknown> = {
+      model: this.model,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
+      })),
+      temperature: this.temperature,
+      max_tokens: 4096,
+    };
 
         if (responseFormat) {
           requestBody.response_format = responseFormat;
@@ -396,14 +415,6 @@ export class LLMClient {
     return message.content || message.reasoning_content || '';
   }
 
-  /**
-   * Generate structured output using JSON mode
-   * @param prompt - User prompt
-   * @param schema - Zod schema for validation
-   * @param systemPrompt - Optional system prompt
-   * @param onReasoning - Optional callback for reasoning_content chunks
-   * @returns Parsed and validated structured data
-   */
   async generateStructured<T>(
     prompt: string,
     schema: ZodSchema<T>,
@@ -413,55 +424,148 @@ export class LLMClient {
     const messages: Message[] = [];
 
     if (systemPrompt) {
-      messages.push({
-        role: 'system',
-        content: systemPrompt,
-      });
+      messages.push({ role: 'system', content: systemPrompt });
     }
 
-    messages.push({
-      role: 'user',
-      content: prompt,
-    });
+    messages.push({ role: 'user', content: prompt });
 
-    const response = await this.makeRequest(messages, { type: 'json_object' }, signal);
+    const response = await this.makeStreamRequest(messages, signal);
 
-    if (!response.choices || response.choices.length === 0) {
-      throw new LLMError('API_ERROR', 'No choices in response');
-    }
-
-    const message = response.choices[0].message;
-    
-    // Emit reasoning_content if present
-    if (message.reasoning_content) {
-      llmEvents.emit('reasoning', message.reasoning_content);
-    }
-
-    const content = message.content;
-
-    if (!content) {
+    if (!response.content) {
       throw new LLMError('API_ERROR', 'No content in response');
+    }
+
+    let content = response.content.trim();
+    
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonMatch) {
+      content = jsonMatch[1].trim();
+    }
+    
+    const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonObjectMatch && !content.startsWith('{')) {
+      content = jsonObjectMatch[0];
     }
 
     try {
       const parsed = JSON.parse(content);
       return schema.parse(parsed);
-    } catch (error) {
-      if (error instanceof Error && error.name === 'ZodError') {
-        throw new LLMError(
-          'API_ERROR',
-          `Schema validation failed: ${error.message}`,
-          undefined,
-          error
-        );
-      }
-      throw new LLMError(
-        'API_ERROR',
-        `Failed to parse JSON response: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        undefined,
-        error
-      );
+    } catch (parseError) {
+      console.error('[LLM] Schema validation failed. Content:', content.substring(0, 500));
+      throw new LLMError('API_ERROR', 'Schema validation failed: ' + JSON.stringify(parseError));
     }
+  }
+
+  private async makeStreamRequest(
+    messages: Message[],
+    signal?: AbortSignal
+  ): Promise<{ reasoning: string; content: string }> {
+    let lastError: LLMError | undefined;
+
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        console.log(`[LLM] 流式请求 attempt ${attempt + 1}/${this.maxRetries}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+        signal?.addEventListener('abort', () => controller.abort());
+
+        const requestBody = {
+          model: this.model,
+          messages: messages.map(m => ({
+            role: m.role,
+            content: m.content,
+            ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
+          })),
+          temperature: this.temperature,
+      max_tokens: CONFIG.LLM_MAX_TOKENS || 512,
+          stream: true,
+          response_format: { type: 'json_object' },
+        };
+
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw this.classifyError(response.status, { message: errorText });
+        }
+
+        if (!response.body) {
+          throw new LLMError('API_ERROR', 'No response body');
+        }
+
+        let reasoning = '';
+        let content = '';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') continue;
+
+            try {
+              const chunk = JSON.parse(data);
+              const delta = chunk.choices?.[0]?.delta;
+              if (!delta) continue;
+
+              if (delta.reasoning_content) {
+                reasoning += delta.reasoning_content;
+                llmEvents.emit('reasoning', delta.reasoning_content);
+              }
+
+              if (delta.content) {
+                content += delta.content;
+              }
+            } catch {
+            }
+          }
+        }
+
+        console.log(`[LLM] 流式请求完成, reasoning: ${reasoning.length} chars, content: ${content.length} chars`);
+        return { reasoning, content };
+
+      } catch (error) {
+        console.log('[LLM] 流式请求错误:', error);
+
+        if (error instanceof LLMError) {
+          lastError = error;
+          if (error.type === 'INVALID_KEY') throw error;
+          if (!error.type.includes('RATE_LIMIT') && !error.type.includes('SERVER')) throw error;
+        } else {
+          lastError = new LLMError('NETWORK_ERROR', error instanceof Error ? error.message : 'Unknown error');
+        }
+
+        if (attempt < this.maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.log(`[LLM] ${delay}ms 后重试`);
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
   }
 }
 

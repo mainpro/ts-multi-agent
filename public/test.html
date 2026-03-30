@@ -3,1550 +3,665 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>多智能体协作系统 - AI助手</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <title>多智能体协作系统</title>
   <style>
     :root {
-      --primary-color: #2563eb;
-      --primary-hover: #1d4ed8;
-      --bg-primary: #fafafa;
-      --bg-secondary: #f3f4f6;
-      --bg-message-user: #2563eb;
-      --bg-message-ai: #ffffff;
-      --bg-sidebar: #ffffff;
-      --text-primary: #1f2937;
-      --text-secondary: #6b7280;
+      --primary: #2563eb;
+      --primary-light: #dbeafe;
+      --bg: #fafafa;
+      --bg-white: #ffffff;
+      --text: #1f2937;
+      --text-sec: #6b7280;
       --text-light: #9ca3af;
-      --border-color: #e5e7eb;
-      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-      --radius-sm: 8px;
-      --radius-md: 12px;
-      --radius-lg: 16px;
-      --radius-xl: 24px;
-      --transition: all 0.2s ease;
+      --border: #e5e7eb;
+      --success: #10b981;
+      --error: #ef4444;
     }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    html, body {
-      height: 100%;
-      font-family: 'Noto Sans SC', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.6;
-    }
-
-    .app-container {
-      display: flex;
-      height: 100vh;
-      overflow: hidden;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; font-family: 'Noto Sans SC', -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+    .app { display: flex; height: 100vh; }
 
     .sidebar {
-      width: 380px;
-      background: var(--bg-sidebar);
-      border-right: 1px solid var(--border-color);
-      display: flex;
-      flex-direction: column;
-      flex-shrink: 0;
-      overflow-y: auto;
+      width: 380px; background: var(--bg-white); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; flex-shrink: 0; overflow-y: auto;
     }
-
     .sidebar-header {
-      padding: 20px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      position: sticky;
-      top: 0;
-      background: var(--bg-sidebar);
-      z-index: 10;
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; position: sticky; top: 0;
+      background: var(--bg-white); z-index: 10;
     }
-
     .sidebar-logo {
-      width: 40px;
-      height: 40px;
-      background: linear-gradient(135deg, var(--primary-color), #3b82f6);
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-weight: 600;
-      font-size: 18px;
+      width: 36px; height: 36px; background: var(--primary); border-radius: 8px;
+      display: flex; align-items: center; justify-content: center; color: white; font-size: 16px;
     }
+    .sidebar-title { font-size: 14px; font-weight: 600; }
+    .sidebar-sub { font-size: 11px; color: var(--text-light); }
+    .steps-container { padding: 12px; }
 
-    .sidebar-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-primary);
+    .step {
+      margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--bg); overflow: hidden; transition: all 0.3s;
     }
-
-    .sidebar-subtitle {
-      font-size: 12px;
-      color: var(--text-light);
-      margin-top: 2px;
+    .step.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
+    .step.done { border-color: var(--success); }
+    .step.fail { border-color: var(--error); }
+    .step-header {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      background: var(--bg); cursor: pointer; transition: background 0.2s;
     }
-
-    .thinking-container {
-      padding: 16px;
+    .step-header:hover { background: #e5e7eb; }
+    .step-icon {
+      width: 22px; height: 22px; border-radius: 50%; display: flex;
+      align-items: center; justify-content: center; font-size: 11px;
+      background: white; border: 2px solid var(--border); flex-shrink: 0;
     }
-
-    .thinking-section {
-      margin-bottom: 16px;
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-md);
-      background: var(--bg-primary);
-      overflow: hidden;
+    .step.active .step-icon { border-color: var(--primary); background: var(--primary); color: white; animation: pulse 2s infinite; }
+    .step.done .step-icon { border-color: var(--success); background: var(--success); color: white; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,0.4)} 50%{box-shadow:0 0 0 6px rgba(37,99,235,0)} }
+    .step-title { flex: 1; font-size: 13px; font-weight: 500; }
+    .step-detail { font-size: 11px; color: var(--text-sec); margin-left: 34px; padding: 0 12px 8px; }
+    .step-log {
+      font-family: monospace; font-size: 11px; background: #f8fafc;
+      padding: 8px 12px; margin: 0 12px 8px; border-radius: 6px;
+      color: var(--text-sec); max-height: 100px; overflow-y: auto;
+      white-space: pre-wrap; word-break: break-word; display: none;
     }
+.step-log.visible { display: block; }
 
-    .thinking-section.active {
-      border-color: var(--primary-color);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-    }
+.image-upload {
+  display: flex;
+  align-items: center;
+}
+.image-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: var(--bg);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sec);
+  transition: all 0.2s;
+  margin-right: 8px;
+}
+.image-btn:hover {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.image-preview {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg);
+  border-radius: 8px;
+  margin-top: 8px;
+}
+.image-preview img {
+  max-width: 120px;
+  max-height: 80px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+.remove-btn {
+  margin-left: 8px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: #ef4444;
+  color: white;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
-    .thinking-section.completed {
-      border-color: #10b981;
-    }
-
-    .thinking-section-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 14px;
-      background: var(--bg-secondary);
-      cursor: pointer;
-      transition: var(--transition);
-    }
-
-    .thinking-section-header:hover {
-      background: #e5e7eb;
-    }
-
-    .thinking-section-icon {
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      background: white;
-      border: 2px solid var(--border-color);
-      flex-shrink: 0;
-    }
-
-    .thinking-section.active .thinking-section-icon {
-      border-color: var(--primary-color);
-      background: var(--primary-color);
-      color: white;
-      animation: pulse 2s infinite;
-    }
-
-    .thinking-section.completed .thinking-section-icon {
-      border-color: #10b981;
-      background: #10b981;
-      color: white;
-    }
-
-    @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
-      50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
-    }
-
-    .thinking-section-title {
-      flex: 1;
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--text-primary);
-    }
-
-    .thinking-section-expand {
-      font-size: 12px;
-      color: var(--text-light);
-      transition: transform 0.3s ease;
-    }
-
-    .thinking-section.expanded .thinking-section-expand {
-      transform: rotate(180deg);
-    }
-
-    .thinking-section-content {
-      max-height: 0;
-      overflow: hidden;
-      opacity: 0;
-      transition: all 0.3s ease;
-    }
-
-    .thinking-section.expanded .thinking-section-content {
-      max-height: 500px;
-      opacity: 1;
-    }
-
-    .thinking-details {
-      padding: 12px 14px;
-      border-top: 1px solid var(--border-color);
-    }
-
-    .thinking-detail-item {
-      margin-bottom: 10px;
-      font-size: 13px;
-    }
-
-    .thinking-detail-item:last-child {
-      margin-bottom: 0;
-    }
-
-    .thinking-detail-label {
-      color: var(--text-light);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
-    }
-
-    .thinking-detail-value {
-      color: var(--text-primary);
-      line-height: 1.5;
-    }
-
-    .thinking-log {
-      font-family: 'Monaco', 'Menlo', monospace;
-      font-size: 12px;
-      background: #f8fafc;
-      padding: 10px;
-      border-radius: var(--radius-sm);
-      color: var(--text-secondary);
-      max-height: 150px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .subtask-list {
-      margin-top: 8px;
-    }
-
-    .subtask-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 10px;
-      background: white;
-      border-radius: var(--radius-sm);
-      margin-bottom: 6px;
-      font-size: 12px;
-      border-left: 3px solid var(--border-color);
-    }
-
-    .subtask-item.pending {
-      border-left-color: var(--text-light);
-    }
-
-    .subtask-item.running {
-      border-left-color: var(--primary-color);
-      background: rgba(37, 99, 235, 0.05);
-    }
-
-    .subtask-item.completed {
-      border-left-color: #10b981;
-      background: rgba(16, 185, 129, 0.05);
-    }
-
-    .subtask-item.failed {
-      border-left-color: #ef4444;
-      background: rgba(239, 68, 68, 0.05);
-    }
-
-    .subtask-icon {
-      font-size: 14px;
-    }
-
-    .subtask-name {
-      flex: 1;
-      color: var(--text-secondary);
-    }
-
-    .subtask-status {
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: var(--bg-secondary);
-      color: var(--text-light);
-    }
-
-    .subtask-item.running .subtask-status {
-      background: rgba(37, 99, 235, 0.1);
-      color: var(--primary-color);
-    }
-
-    .subtask-item.completed .subtask-status {
-      background: rgba(16, 185, 129, 0.1);
-      color: #10b981;
-    }
-
-    .subtask-item.failed .subtask-status {
-      background: rgba(239, 68, 68, 0.1);
-      color: #ef4444;
-    }
-
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-    }
-
+.main { flex: 1; display: flex; flex-direction: column; }
     .chat-header {
-      padding: 16px 24px;
-      background: var(--bg-sidebar);
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      padding: 14px 24px; background: var(--bg-white); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
     }
+    .chat-title { font-size: 15px; font-weight: 600; }
+    .chat-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-sec); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+    .messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
 
-    .chat-header-left {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+    .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px; }
+    .welcome-icon { width: 64px; height: 64px; background: var(--primary); border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 32px; margin-bottom: 16px; }
+    .welcome h1 { font-size: 24px; margin-bottom: 8px; }
+    .welcome p { color: var(--text-sec); margin-bottom: 24px; }
+    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 500px; }
+    .chip {
+      padding: 8px 14px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 16px; font-size: 13px; cursor: pointer; transition: all 0.2s;
     }
+    .chip:hover { background: var(--primary); color: white; border-color: var(--primary); }
 
-    .chat-header-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-primary);
+    .msg { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.3s; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+    .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+    .msg-avatar {
+      width: 32px; height: 32px; border-radius: 50%; display: flex;
+      align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0;
     }
+    .msg.user .msg-avatar { background: var(--primary); color: white; }
+    .msg.ai .msg-avatar { background: var(--bg); border: 1px solid var(--border); }
+    .msg-bubble { padding: 12px 16px; border-radius: 16px; font-size: 14px; line-height: 1.6; }
+    .msg.user .msg-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
+.msg.ai .msg-bubble { background: var(--bg-white); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.msg-image { margin-bottom: 8px; }
+.msg-image img { max-width: 200px; max-height: 150px; border-radius: 8px; }
+.msg-time { font-size: 11px; color: var(--text-light); padding: 2px 4px; }
 
-    .chat-header-status {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #10b981;
-      animation: blink 2s infinite;
-    }
-
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    .chat-messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    .welcome-screen {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      padding: 40px;
-    }
-
-    .welcome-icon {
-      width: 80px;
-      height: 80px;
-      background: linear-gradient(135deg, var(--primary-color), #3b82f6);
-      border-radius: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 40px;
-      margin-bottom: 24px;
-      box-shadow: var(--shadow-lg);
-    }
-
-    .welcome-title {
-      font-size: 28px;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 12px;
-    }
-
-    .welcome-subtitle {
-      font-size: 16px;
-      color: var(--text-secondary);
-      margin-bottom: 32px;
-    }
-
-    .suggestion-chips {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 10px;
-      max-width: 600px;
-    }
-
-    .suggestion-chip {
-      padding: 10px 16px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 20px;
-      font-size: 14px;
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: var(--transition);
-    }
-
-    .suggestion-chip:hover {
-      background: var(--bg-message-user);
-      color: white;
-      border-color: var(--bg-message-user);
-    }
-
-    .message {
-      display: flex;
-      gap: 12px;
-      max-width: 85%;
-      animation: messageIn 0.3s ease;
-    }
-
-    @keyframes messageIn {
-      from {
-        opacity: 0;
-        transform: translateY(10px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
-    .message.user {
-      align-self: flex-end;
-      flex-direction: row-reverse;
-    }
-
-    .message-avatar {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      flex-shrink: 0;
-    }
-
-    .message.user .message-avatar {
-      background: var(--bg-message-user);
-      color: white;
-    }
-
-    .message.ai .message-avatar {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-    }
-
-    .message-content {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .message-bubble {
-      padding: 14px 18px;
-      border-radius: var(--radius-lg);
-      font-size: 15px;
-      line-height: 1.6;
-      max-width: 100%;
-      word-wrap: break-word;
-    }
-
-    .message.user .message-bubble {
-      background: var(--bg-message-user);
-      color: white;
-      border-bottom-right-radius: 4px;
-    }
-
-    .message.ai .message-bubble {
-      background: var(--bg-message-ai);
-      border: 1px solid var(--border-color);
-      border-bottom-left-radius: 4px;
-      box-shadow: var(--shadow-sm);
-    }
-
-    .message-time {
-      font-size: 12px;
-      color: var(--text-light);
-      padding: 0 4px;
-    }
-
-    .message.user .message-time {
-      text-align: right;
-    }
-
-    .thinking-indicator {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 14px 18px;
-      background: var(--bg-message-ai);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-lg);
-      border-bottom-left-radius: 4px;
-      box-shadow: var(--shadow-sm);
-      animation: messageIn 0.3s ease;
-    }
-
-    .thinking-dots {
-      display: flex;
-      gap: 4px;
-    }
-
-    .thinking-dot {
-      width: 8px;
-      height: 8px;
-      background: var(--primary-color);
-      border-radius: 50%;
-      animation: bounce 1.4s infinite ease-in-out both;
-    }
-
-    .thinking-dot:nth-child(1) { animation-delay: -0.32s; }
-    .thinking-dot:nth-child(2) { animation-delay: -0.16s; }
-    .thinking-dot:nth-child(3) { animation-delay: 0s; }
-
-    @keyframes bounce {
-      0%, 80%, 100% { transform: scale(0); }
-      40% { transform: scale(1); }
-    }
-
-    .thinking-text {
-      font-size: 14px;
-      color: var(--text-secondary);
-    }
-
-    /* Deep Thinking Message - Doubao style */
-    .thinking-message {
-      display: flex;
-      gap: 12px;
-      max-width: 85%;
-      animation: messageIn 0.3s ease;
-      margin-bottom: 16px;
-    }
-
-    .thinking-message.user {
-      align-self: flex-end;
-      flex-direction: row-reverse;
-    }
-
+    .thinking-msg { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.3s; }
     .thinking-bubble {
-      flex: 1;
-      background: var(--bg-message-ai);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-lg);
-      border-bottom-left-radius: 4px;
-      box-shadow: var(--shadow-sm);
-      overflow: hidden;
+      flex: 1; background: var(--bg-white); border: 1px solid var(--border);
+      border-radius: 16px; border-bottom-left-radius: 4px; overflow: hidden;
     }
-
     .thinking-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
-      border-bottom: 1px solid var(--border-color);
-      cursor: pointer;
-      transition: var(--transition);
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      background: var(--primary-light); cursor: pointer;
     }
-
-    .thinking-header:hover {
-      background: linear-gradient(135deg, #e0f2fe, #dbeafe);
-    }
-
-    .thinking-header-icon {
-      width: 20px;
-      height: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-    }
-
-    .thinking-header-text {
-      flex: 1;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--primary-color);
-    }
-
+    .thinking-header-text { flex: 1; font-size: 12px; font-weight: 500; color: var(--primary); }
     .thinking-header-agent {
-      font-size: 11px;
-      color: var(--text-light);
-      background: rgba(37, 99, 235, 0.1);
-      padding: 2px 8px;
-      border-radius: 10px;
+      font-size: 10px; color: var(--text-light); background: rgba(37,99,235,0.1);
+      padding: 1px 6px; border-radius: 8px;
     }
-
-    .thinking-header-expand {
-      font-size: 12px;
-      color: var(--text-light);
-      transition: transform 0.3s ease;
-    }
-
-    .thinking-bubble.expanded .thinking-header-expand {
-      transform: rotate(180deg);
-    }
-
-    .thinking-content {
-      max-height: 0;
-      overflow: hidden;
-      opacity: 0;
-      transition: all 0.3s ease;
-    }
-
-    .thinking-bubble.expanded .thinking-content {
-      max-height: 500px;
-      opacity: 1;
-    }
-
     .thinking-body {
-      padding: 14px 16px;
-      font-size: 14px;
-      line-height: 1.7;
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      font-family: 'Monaco', 'Menlo', monospace;
-      background: #fafafa;
+      max-height: 0; overflow-y: auto; transition: max-height 0.3s;
+      font-size: 13px; line-height: 1.6; color: var(--text-sec);
+      white-space: pre-wrap; padding: 0 12px; font-family: monospace;
     }
-
-    .thinking-loading {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 10px 14px;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-
-    .thinking-loading-dot {
-      width: 6px;
-      height: 6px;
-      background: var(--primary-color);
-      border-radius: 50%;
-      animation: bounce 1.4s infinite ease-in-out both;
-    }
-
-    .thinking-loading-dot:nth-child(1) { animation-delay: -0.32s; }
-    .thinking-loading-dot:nth-child(2) { animation-delay: -0.16s; }
-    .thinking-loading-dot:nth-child(3) { animation-delay: 0s; }
-
-    .thinking-time {
-      font-size: 12px;
-      color: var(--text-light);
-      padding: 8px 16px;
-      text-align: right;
-      border-top: 1px solid var(--border-color);
-      background: #f8fafc;
-    }
+    .thinking-bubble.open .thinking-body { max-height: 400px; padding: 10px 12px; }
+    .thinking-time { font-size: 10px; color: var(--text-light); padding: 4px 12px 6px; text-align: right; border-top: 1px solid var(--border); }
 
     .result-card {
-      background: var(--bg-message-ai);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-lg);
-      padding: 16px;
-      margin-top: 8px;
-      box-shadow: var(--shadow-sm);
+      background: var(--bg-white); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px; margin-top: 4px;
     }
+    .result-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    .result-icon { width: 22px; height: 22px; background: var(--success); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; }
+    .result-title { font-size: 13px; font-weight: 600; }
+    .result-body { font-size: 14px; color: var(--text-sec); line-height: 1.6; }
 
-    .result-card-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 12px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border-color);
+    .input-bar { padding: 16px 20px; background: var(--bg-white); border-top: 1px solid var(--border); }
+    .input-row { max-width: 700px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+    .input-wrap {
+      flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 20px;
+      padding: 10px 14px; display: flex; align-items: flex-end; transition: all 0.2s;
     }
-
-    .result-card-icon {
-      width: 24px;
-      height: 24px;
-      background: #10b981;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-size: 14px;
-    }
-
-    .result-card-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .result-card-content {
-      font-size: 14px;
-      color: var(--text-secondary);
-      line-height: 1.6;
-    }
-
-    .input-container {
-      padding: 20px 24px;
-      background: var(--bg-sidebar);
-      border-top: 1px solid var(--border-color);
-    }
-
-    .input-wrapper {
-      max-width: 800px;
-      margin: 0 auto;
-      display: flex;
-      gap: 12px;
-      align-items: flex-end;
-    }
-
-    .input-field-container {
-      flex: 1;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-xl);
-      padding: 12px 16px;
-      display: flex;
-      align-items: flex-end;
-      gap: 12px;
-      transition: var(--transition);
-    }
-
-    .input-field-container:focus-within {
-      border-color: var(--primary-color);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-    }
-
+    .input-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
     .input-field {
-      flex: 1;
-      border: none;
-      background: transparent;
-      font-size: 15px;
-      color: var(--text-primary);
-      outline: none;
-      resize: none;
-      min-height: 24px;
-      max-height: 120px;
-      font-family: inherit;
+      flex: 1; border: none; background: transparent; font-size: 14px; outline: none;
+      resize: none; min-height: 20px; max-height: 100px; font-family: inherit;
     }
-
-    .input-field::placeholder {
-      color: var(--text-light);
+    .input-field::placeholder { color: var(--text-light); }
+    .send-btn {
+      width: 36px; height: 36px; background: var(--primary); border: none; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
     }
+    .send-btn:disabled { background: var(--text-light); cursor: not-allowed; }
+    .send-btn svg { width: 16px; height: 16px; fill: white; }
+    .input-hint { text-align: center; font-size: 11px; color: var(--text-light); margin-top: 6px; }
 
-    .send-button {
-      width: 40px;
-      height: 40px;
-      background: var(--primary-color);
-      border: none;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: var(--transition);
-      flex-shrink: 0;
-    }
+    .error-box { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
 
-    .send-button:hover:not(:disabled) {
-      background: var(--primary-hover);
-      transform: scale(1.05);
-    }
-
-    .send-button:disabled {
-      background: var(--text-light);
-      cursor: not-allowed;
-    }
-
-    .send-button svg {
-      width: 20px;
-      height: 20px;
-      fill: white;
-    }
-
-    .input-hint {
-      text-align: center;
-      font-size: 12px;
-      color: var(--text-light);
-      margin-top: 8px;
-    }
-
-    @media (max-width: 768px) {
-      .sidebar {
-        display: none;
-      }
-
-      .chat-messages {
-        padding: 16px;
-      }
-
-      .message {
-        max-width: 95%;
-      }
-
-      .input-container {
-        padding: 12px 16px;
-      }
-    }
-
-    .error-message {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #dc2626;
-      padding: 12px 16px;
-      border-radius: var(--radius-md);
-      margin: 8px 0;
-      font-size: 14px;
-    }
-
-    ::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
-    }
-
-    ::-webkit-scrollbar-track {
-      background: transparent;
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: var(--border-color);
-      border-radius: 3px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: var(--text-light);
+    @media(max-width:768px) {
+      .sidebar { display: none; }
+      .msg, .thinking-msg { max-width: 95%; }
     }
   </style>
 </head>
 <body>
-  <div class="app-container">
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="sidebar-logo">AI</div>
-        <div>
-          <div class="sidebar-title">多智能体系统</div>
-          <div class="sidebar-subtitle">实时处理监控</div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">AI</div>
+      <div>
+        <div class="sidebar-title">多智能体系统</div>
+        <div class="sidebar-sub">实时处理监控</div>
+      </div>
+    </div>
+    <div class="steps-container" id="stepsContainer"></div>
+  </aside>
+  <main class="main">
+    <header class="chat-header">
+      <span class="chat-title">AI 助手</span>
+      <div class="chat-status"><span class="status-dot"></span><span>在线</span></div>
+    </header>
+    <div class="messages" id="chatMessages">
+      <div class="welcome" id="welcomeScreen">
+        <div class="welcome-icon">🤖</div>
+        <h1>多智能体协作系统</h1>
+        <p>输入需求，智能体自动分析并协调执行</p>
+        <div class="chips">
+          <div class="chip" onclick="setInput('我要申请GEAM凭证查询权限')">申请GEAM权限</div>
+          <div class="chip" onclick="setInput('计算 2 + 2')">计算 2+2</div>
+          <div class="chip" onclick="setInput('查询班级信息')">查询班级</div>
         </div>
       </div>
-      <div class="thinking-container" id="thinkingContainer"></div>
-    </aside>
+    </div>
+<div class="input-bar">
+<div class="input-row">
+<div class="input-wrap">
+<textarea class="input-field" id="msgInput" placeholder="输入需求..." rows="1"
+  onkeydown="onKey(event)" oninput="autoSize(this)"></textarea>
+</div>
+<div class="image-upload">
+  <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+  <button class="image-btn" onclick="document.getElementById('imageInput').click()" title="上传图片">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 7v2.99s-1.99.01-2 0V7h-3s.01-2 0-2h3V2h2v3h3v2h-3zm-4 7.5c0 1.93-1.57 3.5-3.5 3.5S8 16.43 8 14.5 9.57 11 11.5 11s3.5 1.57 3.5 3.5zm4.5 4.5c0 .83-.67 1.5-1.5 1.5H4c-.83 0-1.5-.67-1.5-1.5v-9c0-.83.67-1.5 1.5-1.5h3.5l2-3h5l2 3H20c.83 0 1.5.67 1.5 1.5v9z"/></svg>
+  </button>
+</div>
+<button class="send-btn" id="sendBtn" onclick="send()">
+  <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+</button>
+</div>
+<div class="image-preview" id="imagePreview" style="display:none">
+<img id="previewImg" src="" alt="预览">
+<button class="remove-btn" onclick="clearImage()">×</button>
+</div>
+<div class="input-hint">Enter 发送 · Shift+Enter 换行</div>
+</div>
+  </main>
+</div>
+<script>
+const API = 'http://localhost:3000';
+let busy = false;
+const thinkingBubbles = {};
+let selectedImage = null;
 
-    <main class="main-content">
-      <header class="chat-header">
-        <div class="chat-header-left">
-          <span class="chat-header-title">AI 助手</span>
-        </div>
-        <div class="chat-header-status">
-          <span class="status-dot"></span>
-          <span>在线</span>
-        </div>
-      </header>
+const STEPS = [
+{ id: 'intent', icon: '🧠', title: '意图分类' },
+{ id: 'plan', icon: '📋', title: '任务规划' },
+{ id: 'exec', icon: '⚡', title: '任务执行' },
+{ id: 'result', icon: '✅', title: '生成结果' },
+];
 
-      <div class="chat-messages" id="chatMessages">
-        <div class="welcome-screen" id="welcomeScreen">
-          <div class="welcome-icon">🤖</div>
-          <h1 class="welcome-title">多智能体协作系统</h1>
-          <p class="welcome-subtitle">输入您的需求，我将自动分析并协调多个智能体完成任务</p>
-          <div class="suggestion-chips">
-            <div class="suggestion-chip" onclick="setInput('计算 2 + 2')">计算 2 + 2</div>
-            <div class="suggestion-chip" onclick="setInput('查询班级信息')">查询班级信息</div>
-            <div class="suggestion-chip" onclick="setInput('5 乘以 8 等于多少')">5 乘以 8</div>
-            <div class="suggestion-chip" onclick="setInput('帮我算一下 100 除以 4')">100 除以 4</div>
-          </div>
-        </div>
+function initSteps() {
+  document.getElementById('stepsContainer').innerHTML = STEPS.map(s =>
+    `<div class="step" id="step-${s.id}">
+      <div class="step-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="step-icon">${s.icon}</div>
+        <div class="step-title">${s.title}</div>
       </div>
-
-      <div class="input-container">
-        <div class="input-wrapper">
-          <div class="input-field-container">
-            <textarea class="input-field" id="messageInput" placeholder="输入您的需求..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
-          </div>
-          <button class="send-button" id="sendButton" onclick="sendMessage()" title="发送">
-            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
-        </div>
-        <div class="input-hint">按 Enter 发送，Shift + Enter 换行</div>
-      </div>
-    </main>
-  </div>
-
-  <script>
-    const API_BASE_URL = 'http://localhost:3000';
-    let isProcessing = false;
-    let subtasks = {};
-
-    const THINKING_SECTIONS = {
-      analysis: { id: 'analysis', title: '需求分析', icon: '🧠', description: '分析用户意图和提取关键实体' },
-      matching: { id: 'matching', title: '技能匹配', icon: '⚙️', description: '匹配最适合的技能' },
-      planning: { id: 'planning', title: '任务规划', icon: '📋', description: '创建 DAG 任务计划' },
-      execution: { id: 'execution', title: '任务执行', icon: '⚡', description: 'SubAgent 执行技能脚本' },
-      aggregation: { id: 'aggregation', title: '结果聚合', icon: '🔄', description: '汇总子任务结果' },
-      response: { id: 'response', title: '生成响应', icon: '✨', description: '生成最终回复' }
-    };
-
-    function initThinkingSections() {
-      const container = document.getElementById('thinkingContainer');
-      container.innerHTML = Object.values(THINKING_SECTIONS).map(section => `
-        <div class="thinking-section" id="section-${section.id}" data-section-id="${section.id}">
-          <div class="thinking-section-header" onclick="toggleSection('${section.id}')">
-            <div class="thinking-section-icon">${section.icon}</div>
-            <div class="thinking-section-title">${section.title}</div>
-            <div class="thinking-section-expand">▼</div>
-          </div>
-          <div class="thinking-section-content">
-            <div class="thinking-details" id="details-${section.id}">
-              <div class="thinking-detail-item">
-                <div class="thinking-detail-label">状态</div>
-                <div class="thinking-detail-value" id="status-${section.id}">等待中</div>
-              </div>
-              <div class="thinking-detail-item" id="log-container-${section.id}" style="display: none;">
-                <div class="thinking-detail-label">处理日志</div>
-                <div class="thinking-log" id="log-${section.id}"></div>
-              </div>
-              <div class="subtask-list" id="subtasks-${section.id}"></div>
-            </div>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function toggleSection(sectionId) {
-      const section = document.getElementById('section-' + sectionId);
-      if (section) section.classList.toggle('expanded');
-    }
-
-    function updateSection(sectionId, status, detail, log) {
-      const section = document.getElementById('section-' + sectionId);
-      if (!section) return;
-
-      section.classList.remove('active', 'completed');
-      section.classList.add(status);
-
-      const statusEl = document.getElementById('status-' + sectionId);
-      const statusText = { active: '进行中...', completed: '已完成', failed: '失败', waiting: '等待中' }[status] || status;
-      if (statusEl) statusEl.textContent = statusText;
-
-      if (log) {
-        const logContainer = document.getElementById('log-container-' + sectionId);
-        const logEl = document.getElementById('log-' + sectionId);
-        if (logContainer && logEl) {
-          logContainer.style.display = 'block';
-          logEl.textContent += (logEl.textContent ? '\n' : '') + log;
-          logEl.scrollTop = logEl.scrollHeight;
-        }
-      }
-
-      if (detail) {
-        const details = document.getElementById('details-' + sectionId);
-        const existingDetail = details.querySelector('.dynamic-detail');
-        if (existingDetail) existingDetail.remove();
-        
-        const detailItem = document.createElement('div');
-        detailItem.className = 'thinking-detail-item dynamic-detail';
-        detailItem.innerHTML = '<div class="thinking-detail-label">详情</div><div class="thinking-detail-value">' + escapeHtml(detail) + '</div>';
-        details.insertBefore(detailItem, details.children[1]);
-      }
-
-      if (status === 'active') section.classList.add('expanded');
-    }
-
-    function addSubtask(sectionId, taskId, name, status) {
-      const container = document.getElementById('subtasks-' + sectionId);
-      if (!container) return;
-
-      const icons = { pending: '⏳', running: '🔄', completed: '✅', failed: '❌' };
-      const existing = document.getElementById('subtask-' + taskId);
-      
-      if (existing) {
-        existing.className = 'subtask-item ' + status;
-        const statusEl = existing.querySelector('.subtask-status');
-        const iconEl = existing.querySelector('.subtask-icon');
-        if (statusEl) statusEl.textContent = status;
-        if (iconEl) iconEl.textContent = icons[status];
-      } else {
-        const subtask = document.createElement('div');
-        subtask.className = 'subtask-item ' + status;
-        subtask.id = 'subtask-' + taskId;
-        subtask.innerHTML = '<span class="subtask-icon">' + icons[status] + '</span><span class="subtask-name">' + escapeHtml(name) + '</span><span class="subtask-status">' + status + '</span>';
-        container.appendChild(subtask);
-      }
-    }
-
-    function resetSections() {
-      Object.keys(THINKING_SECTIONS).forEach(id => {
-        const section = document.getElementById('section-' + id);
-        if (section) {
-          section.classList.remove('active', 'completed', 'expanded');
-          const statusEl = document.getElementById('status-' + id);
-          if (statusEl) statusEl.textContent = '等待中';
-          const logContainer = document.getElementById('log-container-' + id);
-          if (logContainer) {
-            logContainer.style.display = 'none';
-            const logEl = document.getElementById('log-' + id);
-            if (logEl) logEl.textContent = '';
-          }
-          const subtasks = document.getElementById('subtasks-' + id);
-          if (subtasks) subtasks.innerHTML = '';
-          const dynamicDetails = section.querySelectorAll('.dynamic-detail');
-          dynamicDetails.forEach(el => el.remove());
-        }
-      });
-      subtasks = {};
-    }
-
-    function autoResize(textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-    }
-
-    function handleKeyDown(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
-    }
-
-    function setInput(text) {
-      const input = document.getElementById('messageInput');
-      input.value = text;
-      autoResize(input);
-      input.focus();
-    }
-
-    function addMessage(role, content) {
-      const container = document.getElementById('chatMessages');
-      const message = document.createElement('div');
-      message.className = 'message ' + role;
-      const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      message.innerHTML = '<div class="message-avatar">' + (role === 'user' ? '👤' : '🤖') + '</div><div class="message-content"><div class="message-bubble">' + escapeHtml(content) + '</div><div class="message-time">' + time + '</div></div>';
-      container.appendChild(message);
-      container.scrollTop = container.scrollHeight;
-    }
-
-// Store current thinking messages
-let currentThinkingMessages = {};
-
-function showThinking() {
-  const container = document.getElementById('chatMessages');
-  const thinking = document.createElement('div');
-  thinking.className = 'message ai';
-  thinking.id = 'thinkingIndicator';
-  thinking.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="thinking-indicator"><div class="thinking-dots"><div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div></div><span class="thinking-text">思考中...</span></div></div>';
-  container.appendChild(thinking);
-  container.scrollTop = container.scrollHeight;
+      <div class="step-detail" id="detail-${s.id}"></div>
+      <div class="step-log" id="log-${s.id}"></div>
+    </div>`
+  ).join('');
 }
 
-function addThinkingBubble(agent, title) {
-  const container = document.getElementById('chatMessages');
-  const bubbleId = 'thinking-bubble-' + agent + '-' + Date.now();
-  
-  const thinking = document.createElement('div');
-  thinking.className = 'thinking-message ai';
-  thinking.id = bubbleId;
-  
-  const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  
-  const avatar = agent === 'MainAgent' ? '🧠' : '⚡';
-  const agentLabel = agent === 'MainAgent' ? '主智能体' : '子智能体';
-  
-  thinking.innerHTML = 
-    '<div class="message-avatar">' + avatar + '</div>' +
-    '<div class="thinking-bubble" id="bubble-' + bubbleId + '">' +
-      '<div class="thinking-header" data-bubble-id="' + bubbleId + '">' +
-        '<div class="thinking-header-icon">💭</div>' +
-        '<div class="thinking-header-text">深度思考</div>' +
-        '<div class="thinking-header-agent">' + agentLabel + '</div>' +
-        '<div class="thinking-header-expand">▼</div>' +
-      '</div>' +
-      '<div class="thinking-content">' +
-        '<div class="thinking-body" id="body-' + bubbleId + '">' +
-          '<div class="thinking-loading" id="loading-' + bubbleId + '">' +
-            '<div class="thinking-loading-dot"></div>' +
-            '<div class="thinking-loading-dot"></div>' +
-            '<div class="thinking-loading-dot"></div>' +
-            '<span>正在思考...</span>' +
-          '</div>' +
-        '</div>' +
-        '<div class="thinking-time">' + time + '</div>' +
-      '</div>' +
-    '</div>';
-  
-  // Add event listener for toggle
-  const header = thinking.querySelector('.thinking-header');
-  if (header) {
-    header.addEventListener('click', function() {
-      const bid = this.getAttribute('data-bubble-id');
-      const bubble = document.getElementById('bubble-' + bid);
-      if (bubble) bubble.classList.toggle('expanded');
-    });
-  }
-  
-  container.appendChild(thinking);
-  container.scrollTop = container.scrollHeight;
-  
-  currentThinkingMessages[bubbleId] = {
-    agent: agent,
-    content: '',
-    element: thinking
-  };
-  
-  return bubbleId;
+function setStep(id, status, detail, log) {
+  const el = document.getElementById('step-' + id);
+  if (!el) return;
+  el.classList.remove('active', 'done', 'fail');
+  if (status) el.classList.add(status);
+  if (status === 'active') el.classList.add('open');
+  const d = document.getElementById('detail-' + id);
+  if (d && detail) d.textContent = detail;
+  const l = document.getElementById('log-' + id);
+  if (l && log) { l.textContent += (l.textContent ? '\n' : '') + log; l.classList.add('visible'); l.scrollTop = l.scrollHeight; }
 }
 
-function toggleThinkingBubble(bubbleId) {
-  const bubble = document.getElementById('bubble-' + bubbleId);
-  if (bubble) {
-    bubble.classList.toggle('expanded');
-  }
-}
-
-function updateThinkingBubble(bubbleId, reasoning) {
-  const bubble = currentThinkingMessages[bubbleId];
-  if (!bubble) return;
-  
-  const loadingEl = document.getElementById('loading-' + bubbleId);
-  if (loadingEl) loadingEl.remove();
-  
-  const bodyEl = document.getElementById('body-' + bubbleId);
-  if (bodyEl) {
-    bubble.content += reasoning;
-    bodyEl.textContent = bubble.content;
-  }
-  
-  // Auto expand to show content
-  const bubbleEl = document.getElementById('bubble-' + bubbleId);
-  if (bubbleEl && !bubbleEl.classList.contains('expanded')) {
-    bubbleEl.classList.add('expanded');
-  }
-}
-
-function finalizeThinkingBubble(bubbleId) {
-  const bubble = currentThinkingMessages[bubbleId];
-  if (!bubble) return;
-  
-  const loadingEl = document.getElementById('loading-' + bubbleId);
-  if (loadingEl) loadingEl.remove();
-  
-  delete currentThinkingMessages[bubbleId];
-}
-
-function hideThinking() {
-  // Remove the initial thinking indicator
-  const thinkingIndicator = document.getElementById('thinkingIndicator');
-  if (thinkingIndicator) {
-    thinkingIndicator.remove();
-  }
-  
-  // Clean up all active thinking bubbles
-  Object.keys(activeThinkingBubbles).forEach(key => {
-    finalizeThinkingBubble(activeThinkingBubbles[key]);
+function resetSteps() {
+  STEPS.forEach(s => {
+    const el = document.getElementById('step-' + s.id);
+    if (el) { el.classList.remove('active', 'done', 'fail', 'open'); }
+    const d = document.getElementById('detail-' + s.id);
+    if (d) d.textContent = '';
+    const l = document.getElementById('log-' + s.id);
+    if (l) { l.textContent = ''; l.classList.remove('visible'); }
   });
-  activeThinkingBubbles = {};
-  currentThinkingMessages = {};
 }
 
-    function showResult(result) {
-      const container = document.getElementById('chatMessages');
-      const resultCard = document.createElement('div');
-      resultCard.className = 'message ai';
-      
-      // Try to extract a user-friendly message from result
-      let displayContent = '';
-      if (typeof result === 'object') {
-        // Check for common result patterns
-        if (result.result !== undefined) {
-          displayContent = String(result.result);
-        } else if (result.finalResult !== undefined) {
-          displayContent = typeof result.finalResult === 'object' ? 
-            (result.finalResult.result !== undefined ? String(result.finalResult.result) : JSON.stringify(result.finalResult, null, 2)) :
-            String(result.finalResult);
-        } else if (result.message) {
-          displayContent = result.message;
-        } else if (result.steps && Array.isArray(result.steps)) {
-          // For step-by-step execution, show the final result
-          const lastStep = result.steps[result.steps.length - 1];
-          if (lastStep && lastStep.result) {
-            displayContent = typeof lastStep.result === 'object' ? 
-              JSON.stringify(lastStep.result, null, 2) : String(lastStep.result);
-          } else {
-            displayContent = JSON.stringify(result, null, 2);
-          }
-        } else {
-          displayContent = JSON.stringify(result, null, 2);
-        }
-      } else {
-        displayContent = String(result);
-      }
-      
-      resultCard.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="result-card"><div class="result-card-header"><div class="result-card-icon">✓</div><div class="result-card-title">处理完成</div></div><div class="result-card-content">' + escapeHtml(displayContent) + '</div></div></div>';
-      container.appendChild(resultCard);
-      container.scrollTop = container.scrollHeight;
-    }
+function addMsg(role, content) {
+const c = document.getElementById('chatMessages');
+const el = document.createElement('div');
+el.className = 'msg ' + role;
+const t = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-    function showError(message) {
-      const container = document.getElementById('chatMessages');
-      const error = document.createElement('div');
-      error.className = 'message ai';
-      error.innerHTML = '<div class="message-avatar">⚠️</div><div class="message-content"><div class="error-message">' + escapeHtml(message) + '</div></div>';
-      container.appendChild(error);
-      container.scrollTop = container.scrollHeight;
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    function parseSSEvents(buffer) {
-      const events = [];
-      const blocks = buffer.split('\n\n');
-      for (const block of blocks) {
-        if (!block.trim()) continue;
-        const lines = block.split('\n');
-        let eventType = '';
-        let eventData = '';
-        for (const line of lines) {
-          if (line.startsWith('event:')) eventType = line.slice(6).trim();
-          else if (line.startsWith('data:')) eventData = line.slice(5).trim();
-        }
-        if (eventType && eventData) {
-          try { events.push({ type: eventType, data: JSON.parse(eventData) }); }
-          catch (e) { events.push({ type: eventType, data: eventData }); }
-        }
-      }
-      return events;
-    }
-
-  // Track active thinking bubbles
-  let activeThinkingBubbles = {};
-
-  function handleSSEEvent(event) {
-    // Handle reasoning events - show in thinking bubble
-    if (event.type === 'reasoning' && event.data) {
-      const reasoningContent = event.data.content || '';
-      const agent = event.data.agent || 'MainAgent';
-      
-      // Create or get existing thinking bubble for this agent
-      const bubbleKey = agent;
-      if (!activeThinkingBubbles[bubbleKey]) {
-        activeThinkingBubbles[bubbleKey] = addThinkingBubble(agent, '深度思考');
-      }
-      
-      updateThinkingBubble(activeThinkingBubbles[bubbleKey], reasoningContent);
-      return;
-    }
-    
-    // Handle reasoning complete
-    if (event.type === 'reasoning_complete') {
-      const agent = event.data?.agent || 'MainAgent';
-      const bubbleKey = agent;
-      if (activeThinkingBubbles[bubbleKey]) {
-        finalizeThinkingBubble(activeThinkingBubbles[bubbleKey]);
-        delete activeThinkingBubbles[bubbleKey];
-      }
-      return;
-    }
-    
-    const msg = event.data.message || '';
-    
-    // 统一规划器阶段
-  if (msg.includes('使用统一规划器')) {
-    updateSection('analysis', 'completed', '意图分类完成');
-    updateSection('matching', 'completed', '通过统一规划器匹配');
-    updateSection('planning', 'active', '正在统一规划...');
+let bubbleContent = '';
+if (typeof content === 'object' && content.image) {
+  // 包含图片的消息
+  bubbleContent = `<div class="msg-image"><img src="${content.image}" alt="用户图片"></div>`;
+  if (content.text) {
+    bubbleContent += `<div>${esc(content.text)}</div>`;
   }
-  if (msg.includes('🚀 开始统一规划')) {
-    updateSection('planning', 'active', '开始统一规划', msg);
-  }
-  if (msg.includes('📊 分析意图:')) {
-    const intent = msg.match(/分析意图:\s*(.+)/)?.[1] || '';
-    updateSection('analysis', 'completed', '意图: ' + intent, msg);
-  }
-  if (msg.includes('📊 选中技能:')) {
-    const skills = msg.match(/选中技能:\s*(.+)/)?.[1] || '';
-    updateSection('matching', 'completed', '技能: ' + skills, msg);
-  }
-  if (msg.includes('📊 任务数量:')) {
-    const count = msg.match(/任务数量:\s*(\d+)/)?.[1] || '0';
-    updateSection('planning', 'active', '任务数: ' + count, msg);
-  }
-  if (msg.includes('✅ 规划完成')) {
-    updateSection('planning', 'completed', '规划完成', msg);
-    updateSection('execution', 'active');
-  }
-  if (msg.includes('⚠️ 规划失败')) {
-    updateSection('planning', 'failed', '规划失败', msg);
-  }
+} else {
+  bubbleContent = esc(content);
+}
 
-  // 需求分析阶段 - 详细思考过程
-    if (msg.includes('收到用户请求')) {
-      updateSection('analysis', 'active', '开始分析需求');
-    }
-    if (msg.includes('🧠 需求分析 - 开始')) {
-      updateSection('analysis', 'active', '正在解析用户需求...', '开始需求分析流程');
-    }
-    if (msg.includes('🧠 输入:')) {
-      const input = msg.match(/输入:\s*"(.+)"/)?.[1] || msg;
-      updateSection('analysis', 'active', '接收用户输入: ' + input, msg);
-    }
-    if (msg.includes('🧠 发送LLM请求')) {
-      updateSection('analysis', 'active', '调用LLM进行需求分析...', '正在分析意图和提取实体');
-    }
-    if (msg.includes('🧠 系统提示:')) {
-      updateSection('analysis', 'active', '', '系统提示: 分析用户需求');
-    }
-    if (msg.includes('🧠 分析结果:')) {
-      updateSection('analysis', 'active', 'LLM分析完成，提取关键信息', '分析结果已返回');
-    }
-    if (msg.includes('🧠 - 意图:')) {
-      const intent = msg.match(/意图:\s*(.+)/)?.[1] || '未知';
-      updateSection('analysis', 'active', '识别意图: ' + intent, '意图识别: ' + intent);
-    }
-    if (msg.includes('🧠 - 实体:')) {
-      const entities = msg.match(/实体:\s*(.+)/)?.[1] || '无';
-      updateSection('analysis', 'active', '提取实体: ' + entities, '实体提取: ' + entities);
-    }
-    if (msg.includes('🧠 - 摘要:')) {
-      const summary = msg.match(/摘要:\s*(.+)/)?.[1] || '';
-      updateSection('analysis', 'active', '需求摘要: ' + summary.substring(0, 50), '摘要: ' + summary);
-    }
-    if (msg.includes('🧠 - 建议技能:')) {
-      const suggested = msg.match(/建议技能:\s*(.+)/)?.[1] || '无';
-      updateSection('analysis', 'active', '建议技能: ' + suggested, '建议技能: ' + suggested);
-    }
-    if (msg.includes('需求分析完成')) {
-      const match = msg.match(/意图:\s*([^,]+).*实体:\s*(.+)/);
-      const detail = match ? '意图: ' + match[1] + '\n实体: ' + match[2] : '';
-      updateSection('analysis', 'completed', detail, msg);
-      updateSection('matching', 'active');
-    }
-    
-    // 技能匹配阶段 - 详细思考过程
-    if (msg.includes('⚙️ 技能匹配 - 开始')) {
-      updateSection('matching', 'active', '开始匹配可用技能', '技能匹配流程启动');
-    }
-    if (msg.includes('⚙️ 可用技能列表:')) {
-      updateSection('matching', 'active', '加载可用技能列表...', '获取所有注册的技能');
-    }
-    if (msg.includes('⚙️ - calculator:') || msg.includes('⚙️ - classroom:')) {
-      const skillName = msg.match(/-\s*(\w+):/)?.[1] || '未知技能';
-      updateSection('matching', 'active', '技能: ' + skillName, '检查技能: ' + skillName);
-    }
-    if (msg.includes('⚙️ 发送LLM请求进行技能匹配')) {
-      updateSection('matching', 'active', '调用LLM进行技能匹配...', 'LLM正在分析哪个技能最合适');
-    }
-    if (msg.includes('⚙️ 分析意图:')) {
-      const intent = msg.match(/分析意图:\s*(.+)/)?.[1] || '';
-      updateSection('matching', 'active', '基于意图匹配: ' + intent, '意图分析: ' + intent);
-    }
-    if (msg.includes('⚙️ 分析实体:')) {
-      const entities = msg.match(/分析实体:\s*(.+)/)?.[1] || '';
-      updateSection('matching', 'active', '基于实体匹配: ' + entities, '实体分析: ' + entities);
-    }
-    if (msg.includes('技能匹配完成')) {
-      const match = msg.match(/找到\s+(\d+)\s+个相关技能/);
-      const count = match ? match[1] : '若干';
-      updateSection('matching', 'completed', '匹配到 ' + count + ' 个技能', msg);
-      updateSection('planning', 'active');
-    }
-    
-    // 任务规划阶段
-    if (msg.includes('📋 任务规划 - 开始')) {
-      updateSection('planning', 'active', '开始创建任务计划', '任务规划流程启动');
-    }
-    if (msg.includes('📋 计划ID:')) {
-      const planId = msg.match(/计划ID:\s*(.+)/)?.[1] || '';
-      updateSection('planning', 'active', '生成计划ID: ' + planId, '计划ID: ' + planId);
-    }
-    if (msg.includes('📋 发送LLM请求进行任务规划')) {
-      updateSection('planning', 'active', '调用LLM规划任务...', 'LLM正在分解任务');
-    }
-    if (msg.includes('📋 需求摘要:')) {
-      const summary = msg.match(/需求摘要:\s*(.+)/)?.[1] || '';
-      updateSection('planning', 'active', '分析需求: ' + summary, '需求摘要: ' + summary);
-    }
-    if (msg.includes('📋 可用技能:')) {
-      const skills = msg.match(/可用技能:\s*(.+)/)?.[1] || '';
-      updateSection('planning', 'active', '可用技能: ' + skills, '技能列表: ' + skills);
-    }
-    if (msg.includes('📋 规划结果:')) {
-      updateSection('planning', 'active', '获取规划结果...', '任务规划完成');
-    }
-    if (msg.includes('📋   - 任务数量:')) {
-      const count = msg.match(/任务数量:\s*(\d+)/)?.[1] || '0';
-      updateSection('planning', 'active', '创建 ' + count + ' 个子任务', '任务数量: ' + count);
-    }
-    if (msg.includes('📋   - 任务 ')) {
-      const taskMatch = msg.match(/任务\s*(\w+):\s*\[(\w+)\]\s*(.+)/);
-      if (taskMatch) {
-        const taskInfo = '任务' + taskMatch[1] + ': [' + taskMatch[2] + '] ' + taskMatch[3];
-        updateSection('planning', 'active', taskInfo, taskInfo);
-      }
-    }
-    if (msg.includes('任务计划创建完成')) {
-      const match = msg.match(/共\s+(\d+)\s+个任务/);
-      const count = match ? match[1] : '若干';
-      updateSection('planning', 'completed', '创建了 ' + count + ' 个任务', msg);
-      updateSection('execution', 'active');
-    }
-    
-    // 任务执行阶段
-    if (msg.includes('⚡ 任务执行 - 开始')) {
-      updateSection('execution', 'active', '开始执行任务', '任务执行流程启动');
-    }
-    if (msg.includes('⚡ 任务ID:')) {
-      const taskId = msg.match(/任务ID:\s*(.+)/)?.[1] || '';
-      updateSection('execution', 'active', '处理任务: ' + taskId, '任务ID: ' + taskId);
-    }
-    if (msg.includes('⚡ 技能名称:')) {
-      const skill = msg.match(/技能名称:\s*(.+)/)?.[1] || '';
-      subtasks[skill] = { skillName: skill, status: 'running' };
-      addSubtask('execution', skill, skill, 'running');
-      updateSection('execution', 'active', '使用技能: ' + skill, '技能: ' + skill);
-    }
-    if (msg.includes('⚡ 任务需求:')) {
-      const req = msg.match(/任务需求:\s*"(.+)"/)?.[1] || '';
-      updateSection('execution', 'active', '任务: ' + req, '需求: ' + req);
-    }
-    if (msg.includes('⚡ 正在加载技能')) {
-      const skill = msg.match(/加载技能:\s*(.+)/)?.[1] || '';
-      updateSection('execution', 'active', '加载技能: ' + skill, '加载技能: ' + skill);
-    }
-    if (msg.includes('⚡ 技能加载成功')) {
-      updateSection('execution', 'active', '技能加载成功', '技能已加载');
-    }
-    if (msg.includes('⚡ - 技能描述:')) {
-      const desc = msg.match(/技能描述:\s*(.+)/)?.[1] || '';
-      updateSection('execution', 'active', '技能描述: ' + desc.substring(0, 50), '描述: ' + desc);
-    }
-    if (msg.includes('⚡ 步骤 1/2: 生成执行参数')) {
-      updateSection('execution', 'active', '步骤 1/2: 生成执行参数', '正在生成执行参数');
-    }
-    if (msg.includes('⚡ 分析需求:')) {
-      const req = msg.match(/分析需求:\s*"(.+)"/)?.[1] || '';
-      updateSection('execution', 'active', '分析需求: ' + req, '分析: ' + req);
-    }
-    if (msg.includes('⚡ 匹配技能:')) {
-      const skill = msg.match(/匹配技能:\s*"(.+)"/)?.[1] || '';
-      updateSection('execution', 'active', '匹配技能: ' + skill, '匹配: ' + skill);
-    }
-    if (msg.includes('⚡ 参数生成完成:')) {
-      const params = msg.match(/参数生成完成:\s*(.+)/)?.[1] || '{}';
-      updateSection('execution', 'active', '参数: ' + params.substring(0, 100), '参数: ' + params);
-    }
-    if (msg.includes('⚡ 步骤 2/2: 执行技能脚本')) {
-      const execType = msg.match(/执行方式:\s*(.+)/)?.[1] || '执行';
-      updateSection('execution', 'active', '步骤 2/2: ' + execType, '执行方式: ' + execType);
-    }
-    if (msg.includes('⚡ 任务执行成功')) {
-      updateSection('execution', 'completed', '任务执行成功', msg);
-      updateSection('aggregation', 'active');
-    }
-    
-    // 结果聚合阶段
-    if (msg.includes('结果聚合') || msg.includes('聚合')) {
-      updateSection('aggregation', 'active', '正在聚合结果...', msg);
-    }
-    if (msg.includes('聚合完成')) {
-      updateSection('aggregation', 'completed', '结果聚合完成');
-      updateSection('response', 'active');
-    }
-  }
+el.innerHTML = `<div class="msg-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+<div><div class="msg-bubble">${bubbleContent}</div><div class="msg-time">${t}</div></div>`;
+c.appendChild(el);
+c.scrollTop = c.scrollHeight;
+}
 
-    async function sendMessage() {
-      const input = document.getElementById('messageInput');
-      const button = document.getElementById('sendButton');
-      const text = input.value.trim();
-      if (!text || isProcessing) return;
+function addThink(agent) {
+  const c = document.getElementById('chatMessages');
+  const id = 'think-' + Date.now();
+  const el = document.createElement('div');
+  el.className = 'thinking-msg';
+  el.id = id;
+  const label = agent.includes('Sub') ? '子智能体' : '主智能体';
+  const t = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  el.innerHTML = `<div class="msg-avatar">${agent.includes('Sub') ? '⚡' : '🧠'}</div>
+    <div class="thinking-bubble" id="bubble-${id}">
+      <div class="thinking-header" onclick="this.parentElement.classList.toggle('open')">
+        <span>💭</span>
+        <span class="thinking-header-text">深度思考</span>
+        <span class="thinking-header-agent">${label}</span>
+        <span>▼</span>
+      </div>
+      <div class="thinking-body" id="body-${id}"></div>
+      <div class="thinking-time">${t}</div>
+    </div>`;
+  c.appendChild(el);
+  c.scrollTop = c.scrollHeight;
+  thinkingBubbles[id] = { content: '', el: document.getElementById('body-' + id), bubble: document.getElementById('bubble-' + id) };
+  return id;
+}
 
-      const welcomeScreen = document.getElementById('welcomeScreen');
-      if (welcomeScreen) welcomeScreen.remove();
+function appendThink(id, text) {
+  const b = thinkingBubbles[id];
+  if (!b) return;
+  b.content += text;
+  b.el.textContent = b.content;
+  if (!b.bubble.classList.contains('open')) b.bubble.classList.add('open');
+  b.el.parentElement.parentElement.parentElement.parentElement.scrollTop = 999999;
+}
 
-      addMessage('user', text);
-      input.value = '';
-      input.style.height = 'auto';
-      isProcessing = true;
-      button.disabled = true;
-      input.disabled = true;
-      resetSections();
-      showThinking();
+function showResult(data) {
+  const c = document.getElementById('chatMessages');
+  const el = document.createElement('div');
+  el.className = 'msg ai';
+  let text = '';
+  if (data?.results?.[0]?.result?.response) text = data.results[0].result.response;
+  else if (data?.message) text = data.message;
+  else text = JSON.stringify(data, null, 2);
+  el.innerHTML = `<div class="msg-avatar">🤖</div>
+    <div><div class="result-card">
+      <div class="result-header"><div class="result-icon">✓</div><div class="result-title">处理完成</div></div>
+      <div class="result-body">${esc(text)}</div>
+    </div></div>`;
+  c.appendChild(el);
+  c.scrollTop = c.scrollHeight;
+}
 
-      try {
-        const response = await fetch(API_BASE_URL + '/tasks/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-          body: JSON.stringify({ requirement: text })
-        });
-        if (!response.ok) throw new Error('HTTP ' + response.status);
+function showError(msg) {
+  const c = document.getElementById('chatMessages');
+  const el = document.createElement('div');
+  el.className = 'msg ai';
+  el.innerHTML = `<div class="msg-avatar">⚠️</div><div><div class="error-box">${esc(msg)}</div></div>`;
+  c.appendChild(el);
+  c.scrollTop = c.scrollHeight;
+}
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let finalResult = null;
-        let hasError = false;
+function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+function autoSize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 100) + 'px'; }
+function setInput(t) { const i = document.getElementById('msgInput'); i.value = t; autoSize(i); i.focus(); }
+function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = parseSSEvents(buffer);
-          const lastDoubleNewline = buffer.lastIndexOf('\n\n');
-          if (lastDoubleNewline !== -1) buffer = buffer.slice(lastDoubleNewline + 2);
-          for (const event of events) {
-            if (event.type === 'step') handleSSEEvent(event);
-            else if (event.type === 'complete') finalResult = event.data;
-            else if (event.type === 'error') {
-              hasError = true;
-              hideThinking();
-              showError(event.data.message || '处理失败');
-            }
-          }
-        }
+function handleImageSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    selectedImage = e.target.result;
+    document.getElementById('previewImg').src = selectedImage;
+    document.getElementById('imagePreview').style.display = 'flex';
+  };
+  reader.readAsDataURL(file);
+}
 
-        hideThinking();
-        if (!hasError) {
-          updateSection('response', 'completed', '响应生成完成');
-          if (finalResult) showResult(finalResult);
-          else addMessage('ai', '处理完成');
-        }
-      } catch (error) {
-        hideThinking();
-        showError('请求失败: ' + error.message);
-      } finally {
-        isProcessing = false;
-        button.disabled = false;
-        input.disabled = false;
-        input.focus();
-      }
-    }
+function clearImage() {
+  selectedImage = null;
+  document.getElementById('imageInput').value = '';
+  document.getElementById('imagePreview').style.display = 'none';
+  document.getElementById('previewImg').src = '';
+}
 
-    document.addEventListener('DOMContentLoaded', () => {
-      initThinkingSections();
-      fetch(API_BASE_URL + '/health').catch(() => showError('无法连接到服务器，请确保服务已启动'));
+function parseSSE(buf) {
+  const evts = [];
+  buf.split('\n\n').forEach(b => {
+    if (!b.trim()) return;
+    let type = '', data = '';
+    b.split('\n').forEach(l => {
+      if (l.startsWith('event:')) type = l.slice(6).trim();
+      else if (l.startsWith('data:')) data = l.slice(5).trim();
     });
-  </script>
+    if (type && data) {
+      try { 
+        const parsed = JSON.parse(data);
+        console.log('[parseSSE] Parsed:', type, parsed);
+        evts.push({ type, data: parsed }); 
+      } catch { 
+        console.log('[parseSSE] Failed to parse:', type, data);
+        evts.push({ type, data }); 
+      }
+    }
+  });
+  return evts;
+}
+
+function handleEvent(ev) {
+  console.log('[handleEvent] Event type:', ev.type, 'Data:', ev.data);
+  
+  // 显示所有事件到日志
+  console.log(`[SSE Event] ${ev.type}:`, JSON.stringify(ev.data).substring(0, 200));
+  
+  // 按事件类型分类显示
+  if (ev.type === 'start') {
+    console.log('[System] 开始处理请求');
+    return;
+  }
+  
+  if (ev.type === 'reasoning') {
+    let content = '';
+    let agent = 'MainAgent';
+    
+    if (typeof ev.data === 'string') {
+      try {
+        const parsed = JSON.parse(ev.data);
+        content = parsed.content || '';
+        agent = parsed.agent || 'MainAgent';
+      } catch (e) {
+        content = ev.data;
+      }
+    } else if (ev.data && typeof ev.data === 'object') {
+      content = ev.data.content || ev.data.message || '';
+      agent = ev.data.agent || 'MainAgent';
+    }
+    
+    const agentLabel = getAgentLabel(agent);
+    console.log(`[${agentLabel}] 推理中: ${content.substring(0, 50)}...`);
+    
+    const key = agent;
+    if (!thinkingBubbles['__' + key]) thinkingBubbles['__' + key] = addThink(agent);
+    appendThink(thinkingBubbles['__' + key], content);
+    return;
+  }
+  
+  if (ev.type === 'reasoning_complete') {
+    console.log('[All] 推理完成');
+    Object.keys(thinkingBubbles).filter(k => k.startsWith('__')).forEach(k => delete thinkingBubbles[k]);
+    return;
+  }
+  
+  if (ev.type === 'step') {
+    const msg = ev.data?.message || '';
+    const agent = ev.data?.agent || 'System';
+    const agentLabel = getAgentLabel(agent);
+    const stepNum = ev.data?.step || '?';
+    const logMsg = `[${agentLabel}] ${msg}`;
+    
+    console.log(`[Step ${stepNum}] ${logMsg}`);
+    
+    // 根据消息内容分配到对应的步骤，并显示日志
+    // 意图分类阶段
+    if (msg.includes('📥 收到用户请求')) { 
+      setStep('intent', 'active', '开始分析', logMsg); 
+    }
+    else if (msg.includes('🖼️ 检测到图片') || msg.includes('🖼️ 图片分析')) { 
+      setStep('intent', 'active', '图片分析', logMsg); 
+    }
+    else if (msg.includes('🔄 正在分类') || msg.includes('🤖 使用 LLM')) { 
+      setStep('intent', 'active', '识别意图', logMsg); 
+    }
+    else if (msg.includes('⚡ 快速匹配')) { 
+      setStep('intent', 'active', '快速匹配', logMsg); 
+    }
+    else if (msg.includes('📊 意图分类')) { 
+      setStep('intent', 'done', '完成', logMsg); 
+    }
+    
+    // 规划阶段  
+    else if (msg.includes('🚀 单技能任务') || msg.includes('🚀 使用统一规划器')) { 
+      setStep('plan', 'active', '规划中', logMsg); 
+    }
+    else if (msg.includes('🎯 已匹配技能') || msg.includes('📊 选中技能')) { 
+      setStep('plan', 'active', '匹配技能', logMsg); 
+    }
+    else if (msg.includes('✅ 规划完成')) { 
+      setStep('plan', 'done', '完成', logMsg); 
+      setStep('exec', 'active', '开始执行', logMsg);
+    }
+    else if (msg.includes('⚠️ 规划失败')) { 
+      setStep('plan', 'fail', '规划失败', logMsg); 
+    }
+    
+    // 执行阶段
+    else if (msg.includes('📤 向任务队列提交')) { 
+      setStep('exec', 'active', '提交任务', logMsg); 
+    }
+    else if (msg.includes('📥 执行技能') || msg.includes('🔄 开始执行任务')) { 
+      setStep('exec', 'active', '执行中', logMsg); 
+    }
+    else if (msg.includes('📚 需要参考资料')) { 
+      setStep('exec', 'active', '读取资料', logMsg); 
+    }
+    else if (msg.includes('✅ executor 返回成功') || msg.includes('✅ 任务执行')) { 
+      setStep('exec', 'done', '执行完成', logMsg); 
+      setStep('result', 'active', '生成结果', logMsg);
+    }
+    
+    // 结果阶段
+    else if (msg.includes('✅ 所有任务执行完成')) { 
+      setStep('exec', 'done', '完成', logMsg); 
+      setStep('result', 'done', '成功', logMsg); 
+    }
+    
+    // 错误处理
+    else if (msg.includes('⚠️')) { 
+      if (stepNum <= 7) setStep('intent', 'fail', '失败', logMsg);
+      else if (stepNum <= 10) setStep('plan', 'fail', '失败', logMsg);
+      else setStep('exec', 'fail', '失败', logMsg);
+    }
+    
+    // 其他情况，显示到当前活跃的步骤
+    else {
+      const activeStep = document.querySelector('.step.active');
+      if (activeStep) {
+        const id = activeStep.id.replace('step-', '');
+        setStep(id, 'active', '处理中', logMsg);
+      }
+    }
+  }
+}
+
+function getAgentLabel(agent) {
+  if (agent.includes('Sub')) return 'SubAgent';
+  if (agent.includes('Main')) return 'MainAgent';
+  if (agent.includes('Vision')) return 'VisionLLM';
+  if (agent.includes('Intent')) return 'IntentRouter';
+  if (agent.includes('Unified')) return 'UnifiedPlanner';
+  return 'System';
+}
+
+async function send() {
+const input = document.getElementById('msgInput');
+const btn = document.getElementById('sendBtn');
+const text = input.value.trim();
+if ((!text && !selectedImage) || busy) return;
+
+document.getElementById('welcomeScreen')?.remove();
+
+// 显示用户消息（包含图片）
+const userContent = selectedImage 
+  ? { text: text || '请分析这张图片', image: selectedImage }
+  : text;
+addMsg('user', userContent);
+
+const requestBody = { requirement: text || '请分析这张图片' };
+if (selectedImage && selectedImage.length > 100) {
+  requestBody.image = selectedImage;
+}
+
+input.value = ''; input.style.height = 'auto';
+clearImage();
+busy = true; btn.disabled = true; input.disabled = true;
+resetSteps();
+
+const thinkId = addThink('MainAgent');
+let thinkingActive = true;
+
+try {
+const res = await fetch(API + '/tasks/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+  body: JSON.stringify(requestBody)
+});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', finalResult = null, hasError = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const evts = parseSSE(buf);
+      const last = buf.lastIndexOf('\n\n');
+      if (last !== -1) buf = buf.slice(last + 2);
+      for (const ev of evts) {
+        console.log('[Raw Event]', ev.type, ev.data);
+        
+        if (ev.type === 'complete') {
+          console.log('[System] 任务完成:', JSON.stringify(ev.data).substring(0, 100));
+          finalResult = ev.data;
+        }
+        else if (ev.type === 'error') { 
+          hasError = true; 
+          console.log('[Error] 错误:', JSON.stringify(ev.data));
+          showError(ev.data.message || JSON.stringify(ev.data)); 
+        }
+        else handleEvent(ev);
+      }
+    }
+
+    if (thinkingActive) {
+      const el = document.getElementById(thinkId);
+      if (el) el.remove();
+    }
+    setStep('result', 'done', '完成');
+    if (!hasError) {
+      if (finalResult?.message) addMsg('ai', finalResult.message);
+      else if (finalResult) showResult(finalResult);
+      else addMsg('ai', '处理完成');
+    }
+  } catch (err) {
+    showError('请求失败: ' + err.message);
+  } finally {
+    busy = false; btn.disabled = false; input.disabled = false; input.focus();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', initSteps);
+</script>
 </body>
 </html>

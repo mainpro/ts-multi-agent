@@ -1,15 +1,18 @@
 import { z } from 'zod';
 import { LLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
+import { UserProfile } from '../types';
+import { buildSkillMatcherPrompt } from '../prompts';
 
 /**
  * 意图类型
  */
 export type IntentType =
-  | 'small_talk'    // 闲聊：你好、你是谁、谢谢
-  | 'skill_task'    // 技能任务：需要执行技能
-  | 'out_of_scope'  // 超出范围：天气、新闻等
-  | 'unclear';      // 不明确
+  | 'small_talk' // 闲聊：你好、你是谁、谢谢
+  | 'skill_task' // 技能任务：需要执行技能
+  | 'out_of_scope' // 超出范围：天气、新闻等
+  | 'guess_confirm' // 猜测确认：根据常用系统猜测意图
+  | 'unclear'; // 不明确
 
 /**
  * 意图分类结果
@@ -19,6 +22,7 @@ export interface IntentResult {
   confidence?: number;
   suggestedResponse?: string;
   matchedSkill?: string;
+  guessedSystem?: string;
 }
 
 /**
@@ -26,7 +30,7 @@ export interface IntentResult {
  */
 interface SmallTalkPattern {
   patterns: RegExp[];
-  responseType: 'greeting' | 'identity' | 'thanks' | 'goodbye' | 'help' | 'capability';
+  responseType: 'greeting' | 'empathy' | 'identity' | 'thanks' | 'goodbye' | 'help' | 'capability';
 }
 
 /**
@@ -39,6 +43,13 @@ const SMALL_TALK_CONFIGS: SmallTalkPattern[] = [
       /^(你好|您好)[^\n]*$/i,
     ],
     responseType: 'greeting',
+  },
+  {
+    patterns: [
+      /(心情不好|心情差|不爽|郁闷|难过|伤心|沮丧|烦恼|压力大|焦虑|累|疲惫|烦)/i,
+      /(我今天|最近|今天)(心情|情绪|状态)(不好|差|糟|低落|烦)/i,
+    ],
+    responseType: 'empathy',
   },
   {
     patterns: [
@@ -91,8 +102,6 @@ const OUT_OF_SCOPE_PATTERNS = [
   /画画/,
   /绘画/,
   /生成图片/,
-  /图片/,
-  /照片/,
   /视频/,
   /音乐/,
   /歌曲/,
@@ -127,7 +136,8 @@ const OUT_OF_SCOPE_PATTERNS = [
  * 
  * 实现快速应答和意图分类：
  * 1. 关键词快速匹配（无 LLM 调用）
- * 2. LLM 意图分类（不确定时）
+ * 2. 猜你想问（立即生成）
+ * 3. LLM 匹配技能（并行）
  */
 export class IntentRouter {
   constructor(
@@ -137,30 +147,86 @@ export class IntentRouter {
 
   /**
    * 分类用户意图
-   * 
+   *
    * 策略：
-   * 1. 先用关键词快速匹配
-   * 2. 如果不明确，再用 LLM 分类
+   * 1. 先用关键词快速匹配闲聊/超出范围
+   * 2. 立即生成猜你想问（不等待 LLM）
+   * 3. 并行调用 LLM 匹配技能
+   * 4. 根据 LLM 结果决定返回猜你想问还是技能
    */
-  async classify(userInput: string): Promise<IntentResult> {
+  async classify(userInput: string, userProfile?: UserProfile): Promise<IntentResult> {
     const trimmedInput = userInput.trim();
 
-    // Step 1: 关键词快速匹配（零延迟）
-    const fastResult = this.fastClassify(trimmedInput);
+    // Step 1: 快速闲聊匹配（零延迟）
+    const fastResult = this.fastClassify(trimmedInput, userProfile);
     if (fastResult && (fastResult.confidence ?? 0) >= 0.95) {
       console.log(`[IntentRouter] ⚡ 快速匹配: ${fastResult.intent}`);
       return fastResult;
     }
 
-    // Step 2: LLM 分类（用于边界情况）
-    console.log(`[IntentRouter] 🤖 使用 LLM 分类意图...`);
-    return this.llmClassify(trimmedInput);
+    // Step 2: 立即生成猜你想问（用户无需等待）
+    const guessResponse = this.generateGuessQuestions(trimmedInput, userProfile);
+
+    // Step 3: 并行调用 LLM 匹配技能
+    console.log(`[IntentRouter] 🤖 使用 LLM 匹配技能...`);
+    try {
+      const llmResult = await this.llmMatchSkill(trimmedInput);
+
+      // 如果 LLM 匹配到了有效技能，直接返回
+      if (llmResult.matchedSkill && llmResult.matchedSkill !== 'fallback') {
+        console.log(`[IntentRouter] ✅ LLM 匹配到技能: ${llmResult.matchedSkill}`);
+        return {
+          ...llmResult,
+          suggestedResponse: undefined,
+        };
+      }
+
+      // LLM 没匹配到技能 → 返回猜你想问
+      console.log(`[IntentRouter] 💡 返回猜你想问`);
+      return {
+        intent: 'guess_confirm',
+        confidence: 0.8,
+        guessedSystem: guessResponse.systems[0] || undefined,
+        suggestedResponse: guessResponse.fullResponse,
+        matchedSkill: 'fallback',
+      };
+    } catch (error) {
+      // LLM 调用失败 → 返回猜你想问作为兜底
+      console.log(`[IntentRouter] ⚠️ LLM 匹配失败:`, error);
+      return {
+        intent: 'guess_confirm',
+        confidence: 0.7,
+        guessedSystem: guessResponse.systems[0] || undefined,
+        suggestedResponse: guessResponse.fullResponse,
+        matchedSkill: 'fallback',
+      };
+    }
+  }
+
+  /**
+   * 生成猜你想问（毫秒级，不调用 LLM）
+   */
+  generateGuessQuestions(userInput: string, userProfile?: UserProfile): { systems: string[]; fullResponse: string } {
+    const department = userProfile?.department || '';
+    const systems = userProfile?.commonSystems || [];
+    
+    let fullResponse: string;
+    
+    if (systems.length > 0) {
+      // 根据常用系统生成自然对话式询问
+      const systemNames = systems.join('和');
+      fullResponse = `您好～我看您是${department ? department + '的' : ''}平时使用${systemNames}较多，看您说"${userInput}"，请问具体是哪个系统呀？另外大概多久前开始出现这个情况的呢？`;
+    } else {
+      fullResponse = this.generateClarificationResponse();
+    }
+
+    return { systems, fullResponse };
   }
 
   /**
    * 快速关键词匹配
    */
-  private fastClassify(userInput: string): IntentResult | null {
+  private fastClassify(userInput: string, userProfile?: UserProfile): IntentResult | null {
     // 检查闲聊模式
     for (const config of SMALL_TALK_CONFIGS) {
       for (const pattern of config.patterns) {
@@ -168,119 +234,97 @@ export class IntentRouter {
           return {
             intent: 'small_talk',
             confidence: 0.98,
-            suggestedResponse: this.generateSmallTalkResponse(config.responseType),
+            suggestedResponse: this.generateSmallTalkResponse(config.responseType, userProfile),
           };
         }
       }
     }
 
-    // 检查超出范围
-    for (const pattern of OUT_OF_SCOPE_PATTERNS) {
-      if (pattern.test(userInput)) {
-        return {
-          intent: 'out_of_scope',
-          confidence: 0.95,
-          suggestedResponse: this.generateOutOfScopeResponse(),
-        };
+  // 检查超出范围
+  for (const pattern of OUT_OF_SCOPE_PATTERNS) {
+    if (pattern.test(userInput)) {
+      if (userProfile?.commonSystems?.length) {
+        const guessedSystem = this.findBestMatch(userInput, userProfile.commonSystems);
+        if (guessedSystem) {
+          return {
+            intent: 'guess_confirm',
+            confidence: 0.85,
+            guessedSystem,
+            suggestedResponse: `您是想查询${guessedSystem}相关的问题吗？请确认或告诉我具体需求。`,
+          };
+        }
       }
+      return {
+        intent: 'out_of_scope',
+        confidence: 0.95,
+        matchedSkill: 'fallback',
+      };
     }
+  }
 
     return null;
   }
 
   /**
-   * LLM 意图分类
+   * LLM 技能匹配
    */
-  private async llmClassify(userInput: string): Promise<IntentResult> {
+  private async llmMatchSkill(userInput: string): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
-    const skillList = skills.length > 0
-      ? skills.map(s => `- ${s.name}: ${s.description}`).join('\n')
-      : '暂无可用技能';
 
-const IntentSchema = z.object({
-  intent: z.enum(['small_talk', 'skill_task', 'out_of_scope', 'unclear']),
-  confidence: z.number().min(0).max(1).optional().default(0.8),
-  matchedSkill: z.string().optional(),
-  reasoning: z.string().optional(),
-});
+    const IntentSchema = z.object({
+      intent: z.enum(['skill_task', 'unclear'])
+      .describe('意图类型: skill_task=需要使用某个技能执行任务, unclear=无法判断'),
+      confidence: z.number().min(0).max(1).optional().default(0.8)
+      .describe('置信度 0-1'),
+      matchedSkill: z.string().optional()
+      .describe('匹配的技能名称，intent=skill_task 时填写'),
+    });
 
-    const systemPrompt = `你是一个高效的意图分类器。分析用户输入，判断用户意图。
-
-## 意图类型：
-
-1. **small_talk**: 闲聊、寒暄、问候
-   - 你好、您好、hi、hello
-   - 你是谁、自我介绍
-   - 谢谢、感谢
-   - 再见、拜拜
-   - 你能做什么
-
-2. **skill_task**: 需要执行具体技能任务
-   - 计算、数学运算
-   - 查询班级信息
-   - 其他需要具体处理的任务
-
-3. **out_of_scope**: 超出系统能力范围
-   - 天气查询
-   - 新闻资讯
-   - 翻译
-   - 写文章、画画
-   - 购物、订票
-   - 游戏、笑话
-
-4. **unclear**: 意图不明确
-   - 无法判断用户想要什么
-   - 需要更多信息
-
-## 系统可用技能：
-${skillList}
-
-## 分类规则：
-- 简单的问候、寒暄 → small_talk
-- 需求匹配某个技能的能力 → skill_task（指出匹配的技能名）
-- 需求超出所有技能范围 → out_of_scope
-- 无法判断 → unclear
-
-返回 JSON 格式，不要有多余说明。`;
+    const systemPrompt = buildSkillMatcherPrompt(skills);
 
     const result = await this.llm.generateStructured(
-      `用户输入: "${userInput}"\n\n请分类用户意图。`,
+      `用户需求: "${userInput}"`,
       IntentSchema,
       systemPrompt
     );
 
-    // 如果是闲聊或超出范围，生成回复
-    if (result.intent === 'small_talk') {
-      result.matchedSkill = undefined;
+    if (result.intent === 'unclear' || !result.matchedSkill) {
       return {
-        ...result,
-        suggestedResponse: this.generateSmallTalkResponse('greeting'),
+        intent: 'unclear',
+        confidence: 0.8,
+        matchedSkill: 'fallback',
       };
     }
 
-    if (result.intent === 'out_of_scope') {
-      return {
-        ...result,
-        suggestedResponse: this.generateOutOfScopeResponse(),
-      };
-    }
-
-    return result;
+    return {
+      intent: 'skill_task',
+      confidence: result.confidence || 0.8,
+      matchedSkill: result.matchedSkill,
+    };
   }
 
   /**
    * 生成闲聊回复
    */
-  private generateSmallTalkResponse(type: string): string {
+  private generateSmallTalkResponse(type: string, userProfile?: UserProfile): string {
     const skills = this.skillRegistry.getAllMetadata();
     const skillNames = skills.map(s => s.name).join('、');
     const skillList = skills.length > 0
       ? `我可以帮您解决${skillNames}等问题。`
       : '目前暂无可用功能。';
 
+    const personalizedGreeting = userProfile?.department
+      ? `您好！${userProfile.department}的同事，我可以帮您处理${userProfile.commonSystems.join('、')}相关问题。有什么可以帮您的吗？`
+      : `您好！我是运维智能体，${skillList}有什么可以帮您的吗？`;
+
+    const personalizedIdentity = userProfile?.department
+      ? `我是运维智能体，一个智能助手。${userProfile.department}的同事，我可以帮您处理${userProfile.commonSystems.join('、')}相关问题。请告诉我您需要什么帮助？`
+      : `我是运维智能体，一个智能助手。${skillList}请告诉我您需要什么帮助？`;
+
     const responses: Record<string, string> = {
-      greeting: `您好！我是运维智能体，${skillList}有什么可以帮您的吗？`,
-      identity: `我是运维智能体，一个智能助手。${skillList}请告诉我您需要什么帮助？`,
+      greeting: personalizedGreeting,
+      empathy: `听起来您今天状态不太好呀～工作生活中难免有低潮的时候。如果有什么我能帮您处理的，比如报销、差旅这些问题，可以随时告诉我，转移一下注意力可能会好受些😊`,
+      identity: personalizedIdentity,
       thanks: `不客气！如果还有其他问题，随时可以问我。我是运维智能体，${skillList}`,
       goodbye: `再见！有需要随时找我，我是运维智能体，${skillList}`,
       help: `您好！我是运维智能体。${skillList}\n\n请直接告诉我您需要什么帮助，我会尽力为您解决。`,
@@ -288,18 +332,6 @@ ${skillList}
     };
 
     return responses[type] || responses.greeting;
-  }
-
-  /**
-   * 生成超出范围回复
-   */
-  private generateOutOfScopeResponse(): string {
-    const skills = this.skillRegistry.getAllMetadata();
-    const skillList = skills.length > 0
-      ? skills.map(s => `• ${s.name}：${s.description}`).join('\n')
-      : '暂无可用功能';
-
-    return `抱歉，这个问题超出了我的能力范围。\n\n我是运维智能体，目前我可以帮您解决以下问题：\n\n${skillList}\n\n请告诉我您需要什么帮助？`;
   }
 
   /**
@@ -312,6 +344,17 @@ ${skillList}
       : '暂无可用功能';
 
     return `抱歉，我不太理解您的需求。\n\n我是运维智能体，目前我可以帮您解决以下问题：\n\n${skillList}\n\n请告诉我您需要什么帮助？`;
+  }
+
+  private findBestMatch(input: string, systems: string[]): string | null {
+    const lowerInput = input.toLowerCase();
+    for (const system of systems) {
+      const lowerSystem = system.toLowerCase();
+      if (lowerSystem.includes(lowerInput) || lowerInput.includes(lowerSystem)) {
+        return system;
+      }
+    }
+    return null;
   }
 }
 

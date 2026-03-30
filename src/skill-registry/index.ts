@@ -161,14 +161,18 @@ export class SkillRegistry {
         description: parsed.description,
       };
 
-      // Add optional fields
-      if (parsed.license && typeof parsed.license === 'string') {
-        metadata.license = parsed.license;
-      }
+  // Add optional fields
+    if (parsed.license && typeof parsed.license === 'string') {
+      metadata.license = parsed.license;
+    }
 
-      if (parsed.compatibility && typeof parsed.compatibility === 'string') {
-        metadata.compatibility = parsed.compatibility;
-      }
+    if (parsed.compatibility && typeof parsed.compatibility === 'string') {
+      metadata.compatibility = parsed.compatibility;
+    }
+
+    if (parsed.hidden === true) {
+      metadata.hidden = true;
+    }
 
       if (parsed.metadata && typeof parsed.metadata === 'object') {
         metadata.metadata = parsed.metadata as Record<string, unknown>;
@@ -213,9 +217,9 @@ export class SkillRegistry {
    * @returns Array of all skill metadata
    */
   getAllMetadata(): SkillMetadata[] {
-    return Array.from(this.metadataCache.values()).map((entry) => ({
-      ...entry.metadata,
-    }));
+    return Array.from(this.metadataCache.values())
+      .filter(entry => !entry.metadata.hidden)
+      .map((entry) => ({ ...entry.metadata }));
   }
 
   /**

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { LLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
 import { SkillMetadata, TaskPlan } from '../types';
+import { buildTaskPlannerPrompt } from '../prompts';
 
 /**
  * 统一规划器 - 将需求分析、技能匹配、任务规划合并为一次 LLM 调用
@@ -67,11 +68,13 @@ export class UnifiedPlanner {
    * 执行统一规划
    * 一次 LLM 调用完成：需求分析 + 技能匹配 + 任务规划
    */
-  async plan(requirement: string): Promise<PlanResult> {
+  async plan(requirement: string, matchedSkill?: string): Promise<PlanResult> {
     console.log(`[UnifiedPlanner] 🚀 开始统一规划...`);
     console.log(`[UnifiedPlanner] 📥 需求: "${requirement}"`);
+    if (matchedSkill) {
+      console.log(`[UnifiedPlanner] 🎯 已匹配技能: ${matchedSkill}`);
+    }
 
-    // 获取所有可用技能
     const allSkills = this.skillRegistry.getAllMetadata();
     console.log(`[UnifiedPlanner] 📋 可用技能: ${allSkills.map(s => s.name).join(', ')}`);
 
@@ -84,46 +87,20 @@ export class UnifiedPlanner {
       };
     }
 
-  // 构建技能列表描述
-  const skillDescriptions = allSkills.map(s =>
-    `- **${s.name}**: ${s.description}`
-  ).join('\n');
+  const systemPrompt = buildTaskPlannerPrompt(allSkills);
 
-  // 构建统一规划的 System Prompt（精简版，减少 token）
-  const systemPrompt = `你是任务规划器。分析需求，匹配技能，分解任务。
-
-## 可用技能
-${skillDescriptions}
-
-## 输出格式（JSON）
-{
-  "analysis": { "summary": "需求摘要" },
-  "skillSelection": ["skill-name-1", "skill-name-2"],
-  "plan": {
-    "needsClarification": false,
-    "tasks": [
-      { "id": "task-1", "requirement": "任务描述", "skillName": "skill-name", "dependencies": [] }
-    ]
-  }
-}
-
-## 规则
-- dependencies 为空数组表示可并行执行
-- 依赖前序任务时，dependencies 填入任务ID（如 ["task-1"]）
-- 一个任务只分配一个技能`;
-
-  const userPrompt = `需求: "${requirement}"
-
-请规划任务，返回 JSON。`;
+  const userPrompt = matchedSkill
+    ? `需求: "${requirement}"\n匹配技能: ${matchedSkill}\n为该技能创建任务计划。`
+    : `需求: "${requirement}"`;
 
   try {
     console.log(`[UnifiedPlanner] 🤖 发送统一规划请求...`);
-      
-      const result = await this.llm.generateStructured(
-        userPrompt,
-        UnifiedPlanSchema,
-        systemPrompt
-      );
+
+    const result = await this.llm.generateStructured(
+      userPrompt,
+      UnifiedPlanSchema,
+      systemPrompt
+    );
 
       console.log(`[UnifiedPlanner] ✅ 规划完成`);
 
@@ -132,7 +109,7 @@ ${skillDescriptions}
         ? result.skillSelection
         : (result.skillSelection as { selectedSkills?: string[] }).selectedSkills || [];
 
-      console.log(`[UnifiedPlanner] 📊 分析意图: ${result.analysis.intent || 'N/A'}`);
+      console.log(`[UnifiedPlanner] 📊 分析意图: ${result.analysis?.intent || 'N/A'}`);
       console.log(`[UnifiedPlanner] 📊 选中技能: ${selectedSkillNames.join(', ')}`);
       console.log(`[UnifiedPlanner] 📊 任务数量: ${result.plan.tasks.length}`);
 
@@ -151,14 +128,15 @@ ${skillDescriptions}
         .map(name => allSkills.find(s => s.name === name))
         .filter((s): s is SkillMetadata => s !== undefined);
 
-      if (matchedSkills.length === 0) {
-        console.log(`[UnifiedPlanner] ⚠️ 没有匹配到有效技能`);
-        return {
-          success: false,
-          needsClarification: true,
-          clarificationPrompt: `抱歉，无法找到合适的技能来处理您的请求。\n\n可用技能：\n${skillDescriptions}`,
-        };
-      }
+  if (matchedSkills.length === 0) {
+    console.log(`[UnifiedPlanner] ⚠️ 没有匹配到有效技能`);
+    const skillDescriptions = allSkills.map(s => `- **${s.name}**: ${s.description}`).join('\n');
+    return {
+      success: false,
+      needsClarification: true,
+      clarificationPrompt: `抱歉，无法找到合适的技能来处理您的请求。\n\n可用技能：\n${skillDescriptions}`,
+    };
+  }
 
       // 构建返回的计划（处理多种字段名）
       const planId = `plan-${Date.now()}`;

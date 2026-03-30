@@ -1,18 +1,9 @@
 {
-  "active_plan": "/Users/dipu/exercise/ts-multi-agent/.sisyphus/plans/multi-agent-timeout-fix.md",
-  "started_at": "2026-03-23T08:14:14.000Z",
+  "active_plan": "/Users/dipu/exercise/ts-multi-agent/.sisyphus/plans/geam-qa-skill-refactor.md",
+  "started_at": "2026-03-30T01:45:55.221Z",
   "session_ids": [
-    "ses_2e66acd05ffeOQtdGXaA7TGNSy",
-    "ses_2e6377198ffe7d394vrnHZ3Qd3",
-    "ses_2e2ab152effew3OeY0IzFPhVY6",
-    "ses_2e2a76015ffehevM13mO1Z45cT",
-    "ses_2e1b305d8ffeqy8pfYR7uZ3n7l",
-    "ses_2e1a071c3ffetdLia2KpNfqpDg",
-    "ses_2e19bf275ffeN3vLnAgXz7z4ir",
-    "ses_2dd810821ffeXOFF64f5ukX7id",
-    "ses_2dd7ff7d7ffeYP7X9zkpcGhS5L"
+    "ses_2d7098ceaffeYpPK3lkJGxWYry"
   ],
-  "plan_name": "multi-agent-timeout-fix",
-  "agent": "atlas",
-  "task_sessions": {}
+  "plan_name": "geam-qa-skill-refactor",
+  "agent": "atlas"
 }

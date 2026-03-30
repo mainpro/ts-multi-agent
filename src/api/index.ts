@@ -5,7 +5,13 @@ import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
-import { llmEvents } from '../llm';
+import { llmEvents, ReasoningEvent } from '../llm';
+
+interface ImageAttachment {
+  data: Buffer;
+  mimeType: string;
+  originalName?: string;
+}
 
 interface ApiError {
   error: string;
@@ -13,11 +19,9 @@ interface ApiError {
   code?: string;
 }
 
-/**
- * Task submission request
- */
 interface SubmitTaskRequest {
   requirement: string;
+  image?: string;
 }
 
 /**
@@ -88,7 +92,7 @@ export function createAPIServer(
 
   // Middleware
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
 
   // Static files middleware
   app.use(express.static('public'));
@@ -226,79 +230,95 @@ export function createAPIServer(
     }
   );
 
-  /**
-   * Submit a new task with streaming
-   * POST /tasks/stream
-   */
-  app.post(
-    '/tasks/stream',
-    async (
-      req: Request<{}, {}, SubmitTaskRequest>,
-      res: Response<ApiError>
-    ) => {
-      const { requirement } = req.body;
+/**
+ * Submit a new task with streaming
+ * POST /tasks/stream
+ */
+app.post(
+  '/tasks/stream',
+  async (
+    req: Request<{}, {}, SubmitTaskRequest>,
+    res: Response<ApiError>
+  ) => {
+    const { requirement } = req.body;
+    let imageAttachment: ImageAttachment | undefined;
 
-      // Validate request
-      if (!requirement || typeof requirement !== 'string') {
-        res.status(400).json({
-          error: 'Bad Request',
-          message: 'Missing or invalid "requirement" field',
-          code: 'INVALID_REQUEST',
-        });
-        return;
+    // 检查 JSON body 中的 base64 图片
+    if (req.body.image && typeof req.body.image === 'string' && req.body.image.length > 100) {
+      const match = req.body.image.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (match) {
+        const mimeType = `image/${match[1] === 'jpeg' ? 'jpeg' : match[1]}`;
+        const buffer = Buffer.from(match[2], 'base64');
+        imageAttachment = {
+          data: buffer,
+          mimeType: mimeType,
+          originalName: 'uploaded-image',
+        };
+        console.log('[API] 解析图片成功, 大小:', buffer.length);
       }
+    }
 
-      // Set SSE headers
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+    if (!requirement || typeof requirement !== 'string') {
+      res.status(400).json({
+        error: 'Bad Request',
+        message: 'Missing or invalid "requirement" field',
+        code: 'INVALID_REQUEST',
+      });
+      return;
+    }
 
-      const sendEvent = (event: string, data: unknown) => {
-        res.write(`event: ${event}\n`);
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-      };
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    const sendEvent = (event: string, data: unknown) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
 
     try {
       sendEvent('start', { message: '开始处理您的请求...' });
 
-  const originalLog = console.log;
-  let stepCount = 0;
-  console.log = (...args: unknown[]) => {
-    const msg = args.join(' ');
-    // Capture MainAgent, SubAgent, UnifiedPlanner process messages
-    if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]')) {
-      stepCount++;
-      let agent = 'MainAgent';
-      if (msg.includes('[SubAgent]')) agent = 'SubAgent';
-      else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
-      else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
-      
-      sendEvent('step', {
-        step: stepCount,
-        message: msg,
-        agent,
-        timestamp: new Date().toISOString()
-      });
-    }
-    originalLog.apply(console, args);
-  };
+      const originalLog = console.log;
+      let stepCount = 0;
+      console.log = (...args: unknown[]) => {
+        const msg = args.join(' ');
+        // Capture MainAgent, SubAgent, UnifiedPlanner process messages
+        if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]')) {
+          stepCount++;
+          let agent = 'MainAgent';
+          if (msg.includes('[SubAgent]')) agent = 'SubAgent';
+          else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
+          else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
 
-      // Subscribe to LLM reasoning events
-      const reasoningBuffer: string[] = [];
-      const handleReasoning = (reasoning: string) => {
-        reasoningBuffer.push(reasoning);
-        sendEvent('reasoning', {
-          type: 'thinking',
-          content: reasoning,
-          agent: 'MainAgent',
-          timestamp: new Date().toISOString()
-        });
+          sendEvent('step', {
+            step: stepCount,
+            message: msg,
+            agent,
+            timestamp: new Date().toISOString()
+          });
+        }
+        originalLog.apply(console, args);
       };
-      llmEvents.on('reasoning', handleReasoning);
+
+  // Subscribe to LLM reasoning events
+  const reasoningBuffer: string[] = [];
+  const handleReasoning = (data: string | ReasoningEvent) => {
+    const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
+    reasoningBuffer.push(eventData.content);
+    sendEvent('reasoning', {
+      type: 'thinking',
+      content: eventData.content,
+      agent: eventData.agent,
+      timestamp: new Date().toISOString()
+    });
+  };
+  llmEvents.on('reasoning', handleReasoning);
 
       try {
-        const result = await mainAgent.processRequirement(requirement);
+        const result = await mainAgent.processRequirement(requirement, imageAttachment);
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {
@@ -320,8 +340,11 @@ export function createAPIServer(
       }
 
       } catch (error) {
+        console.error('[API] Error processing request:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         sendEvent('error', { 
-          message: error instanceof Error ? error.message : 'Unknown error' 
+          message: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined
         });
       } finally {
         res.end();

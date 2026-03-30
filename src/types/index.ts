@@ -17,6 +17,8 @@ export interface SkillMetadata {
   metadata?: Record<string, unknown>;
   /** List of allowed tools for this skill */
   allowedTools?: string[];
+  /** Whether this skill is hidden from skill list (built-in) */
+  hidden?: boolean;
 }
 
 /**
@@ -31,6 +33,28 @@ export interface Skill extends SkillMetadata {
   referencesDir?: string;
   /** Path to assets directory */
   assetsDir?: string;
+}
+
+/**
+ * User profile for personalization and tracking
+ */
+export interface UserProfile {
+  /** Unique user identifier */
+  userId: string;
+  /** User's department (optional) */
+  department?: string;
+  /** List of commonly used systems */
+  commonSystems: string[];
+  /** User tags for categorization */
+  tags: string[];
+  /** Number of conversations with this user */
+  conversationCount: number;
+  /** Last active timestamp (ISO 8601) */
+  lastActiveAt: string;
+  /** Profile creation timestamp (ISO 8601) */
+  createdAt: string;
+  /** Profile update timestamp (ISO 8601) */
+  updatedAt: string;
 }
 
 /**
@@ -130,12 +154,14 @@ export interface ToolCall {
 /**
  * Task execution result
  */
+export interface SkillExecutionResult {
+  response: string;
+  needRefs?: string[];
+}
+
 export interface TaskResult {
-  /** Whether the task succeeded */
   success: boolean;
-  /** Task result data */
-  data?: unknown;
-  /** Error information if task failed */
+  data?: SkillExecutionResult | unknown;
   error?: TaskError;
 }
 
@@ -151,6 +177,22 @@ export interface RequirementAnalysis {
   intent?: string;
   /** Suggested skills */
   suggestedSkills?: string[];
+}
+
+/**
+ * 需求分析结果（新）
+ */
+export interface RequirementAnalysisResult {
+  /** 是否闲聊 */
+  isSmallTalk: boolean;
+  /** 匹配的技能名称列表 */
+  matchedSkills: string[];
+  /** 分析过程（可选） */
+  reasoning?: string;
+  /** 闲聊时的建议回复 */
+  suggestedResponse?: string;
+  /** 保底时的推荐列表 */
+  guessRecommendations?: Array<{ system: string; reason: string; }>;
 }
 
 /**
@@ -189,8 +231,8 @@ export const CONFIG = {
   TASK_TIMEOUT_MS: parseInt(process.env.TASK_TIMEOUT_MS || '400000', 10),
   /** Total workflow timeout - for multiple sequential tasks */
   TOTAL_TIMEOUT_MS: parseInt(process.env.TOTAL_TIMEOUT_MS || '600000', 10),
-  /** LLM API timeout - NVIDIA API can be slow for complex prompts */
-  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || '90000', 10),
+  /** LLM API timeout - 优化为 15s 加快匹配速度 */
+  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || '15000', 10),
   /** Script execution timeout - should be less than TASK_TIMEOUT_MS */
   SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
@@ -200,11 +242,20 @@ export const CONFIG = {
   /** LLM API base URL */
   LLM_BASE_URL: 'https://integrate.api.nvidia.com/v1',
   /** LLM temperature */
-  LLM_TEMPERATURE: 0.7,
+  LLM_TEMPERATURE: 0.3,
+  LLM_MAX_TOKENS: 4096,
   /** Task cleanup interval (5 minutes) */
   TASK_CLEANUP_INTERVAL_MS: 300000,
   /** Task retention time (1 hour) */
   TASK_RETENTION_TIME_MS: 3600000,
+  /** Zhipu Vision API Key */
+  ZHIPU_API_KEY: process.env.ZHIPU_API_KEY || '',
+  /** Vision model name */
+  VISION_MODEL: process.env.VISION_MODEL || 'glm-4v-flash',
+  /** Vision API timeout in milliseconds */
+  VISION_TIMEOUT_MS: parseInt(process.env.VISION_TIMEOUT_MS || '60000', 10),
+  /** Vision API max retries */
+  VISION_MAX_RETRIES: parseInt(process.env.VISION_MAX_RETRIES || '3', 10),
 } as const;
 
 // ============================================================================
@@ -231,6 +282,20 @@ export const SkillSchema = SkillMetadataSchema.extend({
   scriptsDir: z.string().optional(),
   referencesDir: z.string().optional(),
   assetsDir: z.string().optional(),
+});
+
+/**
+ * Zod schema for UserProfile
+ */
+export const UserProfileSchema = z.object({
+  userId: z.string(),
+  department: z.string().optional(),
+  commonSystems: z.array(z.string()).default([]),
+  tags: z.array(z.string()).default([]),
+  conversationCount: z.number().default(0),
+  lastActiveAt: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
 });
 
 /**
@@ -303,9 +368,14 @@ export const ToolCallSchema = z.object({
 /**
  * Zod schema for TaskResult
  */
+export const SkillExecutionResultSchema = z.object({
+  response: z.string(),
+  needRefs: z.array(z.string()).optional().default([]),
+});
+
 export const TaskResultSchema = z.object({
   success: z.boolean(),
-  data: z.unknown().optional(),
+  data: SkillExecutionResultSchema.or(z.unknown()).optional(),
   error: TaskErrorSchema.optional(),
 });
 
@@ -317,6 +387,20 @@ export const RequirementAnalysisSchema = z.object({
   entities: z.array(z.string()).optional(),
   intent: z.string().optional(),
   suggestedSkills: z.array(z.string()).optional(),
+});
+
+/**
+ * Zod Schema for RequirementAnalysisResult
+ */
+export const RequirementAnalysisResultSchema = z.object({
+  isSmallTalk: z.boolean().describe('是否闲聊，如你好、谢谢、你是谁等'),
+  matchedSkills: z.array(z.string()).describe('匹配的技能名称列表，按相关性排序'),
+  reasoning: z.string().optional().describe('分析过程'),
+  suggestedResponse: z.string().optional().describe('闲聊时的建议回复'),
+  guessRecommendations: z.array(z.object({
+    system: z.string().describe('推荐的系统名称'),
+    reason: z.string().describe('推荐理由'),
+  })).optional().describe('保底时的推荐列表'),
 });
 
 /**
@@ -342,6 +426,8 @@ export const TaskPlanSchema = z.object({
 
 /** Inferred SkillMetadata type from schema */
 export type SkillMetadataInferred = z.infer<typeof SkillMetadataSchema>;
+/** Inferred UserProfile type from schema */
+export type UserProfileInferred = z.infer<typeof UserProfileSchema>;
 /** Inferred Skill type from schema */
 export type SkillInferred = z.infer<typeof SkillSchema>;
 /** Inferred TaskError type from schema */
