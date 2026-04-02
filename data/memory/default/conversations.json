@@ -1,0 +1,30 @@
+[
+  {
+    "role": "user",
+    "content": "报销发票上传失败了",
+    "timestamp": "2026-04-02T00:58:36.630Z"
+  },
+  {
+    "role": "assistant",
+    "content": "您好！请问上传失败时有提示具体的报错信息吗？\n\nEES 系统目前只支持 **PDF、XML、OFD** 这三种格式的发票文件。您可以先核对一下您上传的文件格式是否正确。如果是 JPG 或 PNG 等图片格式，系统是无法识别的。\n\n如果方便的话，您也可以把报错截图发给我，我帮您具体看看是什么原因。",
+    "timestamp": "2026-04-02T00:58:36.630Z",
+    "skill": "ees-qa",
+    "references": [
+      "invoice-format.md"
+    ]
+  },
+  {
+    "role": "user",
+    "content": "请分析这张图片",
+    "timestamp": "2026-04-02T00:59:52.835Z"
+  },
+  {
+    "role": "assistant",
+    "content": "从您提供的截图中可以看到，系统提示确实是**发票格式错误**。\n\nEES 系统目前只支持 **PDF、XML、OFD** 这三种格式的发票文件，不支持 JPG、PNG 等图片格式。\n\n建议您：\n1. 检查一下您上传的发票文件是否为上述支持的格式。\n2. 如果是图片格式，请先将其转换为 PDF 或 OFD 格式。\n3. 转换完成后，重新上传试试。\n\n您先操作看看，要是改完还是报错，您随时告诉我，我继续帮您处理。",
+    "timestamp": "2026-04-02T00:59:52.835Z",
+    "skill": "ees-qa",
+    "references": [
+      "invoice-format.md"
+    ]
+  }
+]

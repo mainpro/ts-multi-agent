@@ -1,4 +1,4 @@
-import { Message, CONFIG } from '../types';
+import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 
 /**
@@ -95,7 +95,17 @@ interface GLMResponse {
     message: {
       content: string | null;
       reasoning_content?: string | null;
+      reasoning?: string | null;
+      thinking?: string | null;
       role: string;
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: {
+          name: string;
+          arguments: string;
+        };
+      }>;
     };
     finish_reason: string;
     index: number;
@@ -125,10 +135,10 @@ export class LLMClient {
 
   /**
    * Create a new LLM client
-   * @param apiKey - NVIDIA API key (defaults to NVIDIA_API_KEY env var)
+   * @param apiKey - API key (defaults to OPENROUTER_API_KEY or NVIDIA_API_KEY env var)
    */
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.NVIDIA_API_KEY || '';
+    this.apiKey = apiKey || process.env.OPENROUTER_API_KEY || process.env.NVIDIA_API_KEY || '';
     this.baseUrl = CONFIG.LLM_BASE_URL;
     this.model = CONFIG.LLM_MODEL;
     this.temperature = CONFIG.LLM_TEMPERATURE;
@@ -138,7 +148,7 @@ export class LLMClient {
     if (!this.apiKey) {
       throw new LLMError(
         'INVALID_KEY',
-        'NVIDIA_API_KEY environment variable is not set'
+        'OPENROUTER_API_KEY or NVIDIA_API_KEY environment variable is not set'
       );
     }
   }
@@ -533,6 +543,12 @@ const requestBody: Record<string, unknown> = {
               if (delta.reasoning_content) {
                 reasoning += delta.reasoning_content;
                 llmEvents.emit('reasoning', delta.reasoning_content);
+              } else if (delta.reasoning) {
+                reasoning += delta.reasoning;
+                llmEvents.emit('reasoning', delta.reasoning);
+              } else if (delta.thinking) {
+                reasoning += delta.thinking;
+                llmEvents.emit('reasoning', delta.thinking);
               }
 
               if (delta.content) {
@@ -555,6 +571,192 @@ const requestBody: Record<string, unknown> = {
           if (!error.type.includes('RATE_LIMIT') && !error.type.includes('SERVER')) throw error;
         } else {
           lastError = new LLMError('NETWORK_ERROR', error instanceof Error ? error.message : 'Unknown error');
+        }
+
+        if (attempt < this.maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.log(`[LLM] ${delay}ms 后重试`);
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
+  }
+
+  /**
+   * Generate text with tool calling support
+   * Allows LLM to call tools during generation, and continues with tool results
+   */
+  async generateWithTools(
+    prompt: string,
+    tools: ToolDefinition[],
+    toolExecutor: (toolCall: { name: string; arguments: Record<string, unknown> }) => Promise<string>,
+    systemPrompt?: string,
+    signal?: AbortSignal
+  ): Promise<{ content: string; toolCalls: ToolCallResult[] }> {
+    const messages: Message[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt + '\n\n重要：所有思考过程和回复都必须使用中文。' });
+    } else {
+      messages.push({ role: 'system', content: '所有思考过程和回复都必须使用中文。' });
+    }
+
+    messages.push({ role: 'user', content: prompt });
+
+    const toolCallsResults: ToolCallResult[] = [];
+    let maxIterations = 5;
+
+    while (maxIterations-- > 0) {
+      const response = await this.makeToolRequest(messages, tools, signal);
+
+      if (!response.choices || response.choices.length === 0) {
+        throw new LLMError('API_ERROR', 'No choices in response');
+      }
+
+      const message = response.choices[0].message;
+
+      if (message.reasoning_content) {
+        llmEvents.emit('reasoning', message.reasoning_content);
+      } else if (message.reasoning) {
+        llmEvents.emit('reasoning', message.reasoning);
+      } else if (message.thinking) {
+        llmEvents.emit('reasoning', message.thinking);
+      }
+
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        return {
+          content: message.content || '',
+          toolCalls: toolCallsResults,
+        };
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: message.content || '',
+        tool_calls: message.tool_calls,
+      } as Message);
+
+  for (const toolCall of message.tool_calls) {
+      const toolName = toolCall.function.name;
+
+      // 安全解析工具参数 JSON
+      let toolArgs: Record<string, unknown>;
+      try {
+        toolArgs = JSON.parse(toolCall.function.arguments);
+      } catch (parseError) {
+        console.error('[LLM] 工具参数 JSON 解析失败:', toolCall.function.arguments);
+        toolArgs = {};
+      }
+
+      console.log(`[LLM] 执行工具: ${toolName}`, toolArgs);
+
+      // 安全执行工具
+      let toolResult: string;
+      try {
+        toolResult = await toolExecutor({
+          name: toolName,
+          arguments: toolArgs,
+        });
+      } catch (execError) {
+        console.error('[LLM] 工具执行失败:', execError);
+        toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
+      }
+
+        toolCallsResults.push({
+          name: toolName,
+          arguments: toolArgs,
+          result: toolResult,
+        });
+
+        messages.push({
+          role: 'tool',
+          content: toolResult,
+          tool_call_id: toolCall.id,
+        });
+      }
+    }
+
+    throw new LLMError('API_ERROR', 'Max tool call iterations reached');
+  }
+
+  private async makeToolRequest(
+    messages: Message[],
+    tools: ToolDefinition[],
+    signal?: AbortSignal
+  ): Promise<GLMResponse> {
+    let lastError: LLMError | undefined;
+
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        console.log(`[LLM] 工具调用请求 attempt ${attempt + 1}/${this.maxRetries}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+        signal?.addEventListener('abort', () => controller.abort());
+
+        const requestBody = {
+          model: this.model,
+          messages: messages.map(m => ({
+            role: m.role,
+            content: m.content,
+            ...(m.tool_calls && { tool_calls: m.tool_calls }),
+            ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
+          })),
+          tools: tools.map(t => ({
+            type: 'function',
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+            },
+          })),
+          temperature: this.temperature,
+          max_tokens: CONFIG.LLM_MAX_TOKENS || 4096,
+        };
+
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw this.classifyError(response.status, { message: errorText });
+        }
+
+        const data = await response.json() as GLMResponse;
+
+        if (data.error) {
+          throw this.classifyError(response.status, {
+            message: data.error.message,
+            code: data.error.code,
+          });
+        }
+
+        console.log(`[LLM] 工具调用请求完成`);
+        return data;
+      } catch (error) {
+        console.log('[LLM] 工具调用请求错误:', error);
+
+        if (error instanceof LLMError) {
+          lastError = error;
+          if (error.type === 'INVALID_KEY') throw error;
+          if (!error.type.includes('RATE_LIMIT') && !error.type.includes('SERVER')) throw error;
+        } else {
+          lastError = new LLMError(
+            'NETWORK_ERROR',
+            error instanceof Error ? error.message : 'Unknown error'
+          );
         }
 
         if (attempt < this.maxRetries - 1) {

@@ -125,6 +125,15 @@ export interface Message {
   content: string;
   /** Tool call ID (for tool responses) */
   tool_call_id?: string;
+  /** Tool calls (for assistant messages with function calling) */
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
 }
 
 /**
@@ -149,6 +158,18 @@ export interface ToolCall {
   name: string;
   /** Tool arguments */
   arguments: Record<string, unknown>;
+}
+
+/**
+ * Tool call execution result
+ */
+export interface ToolCallResult {
+  /** Tool name */
+  name: string;
+  /** Tool arguments */
+  arguments: Record<string, unknown>;
+  /** Tool execution result */
+  result: string;
 }
 
 /**
@@ -231,18 +252,20 @@ export const CONFIG = {
   TASK_TIMEOUT_MS: parseInt(process.env.TASK_TIMEOUT_MS || '400000', 10),
   /** Total workflow timeout - for multiple sequential tasks */
   TOTAL_TIMEOUT_MS: parseInt(process.env.TOTAL_TIMEOUT_MS || '600000', 10),
-  /** LLM API timeout - 优化为 15s 加快匹配速度 */
-  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || '15000', 10),
+  /** LLM API timeout - 工具调用需要更长超时 (120s) */
+  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || '120000', 10),
   /** Script execution timeout - should be less than TASK_TIMEOUT_MS */
   SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
   SKILL_DIRECTORY: './skills/',
-  /** GLM model name */
-  LLM_MODEL: 'z-ai/glm4.7',
+  /** LLM Provider: nvidia | openrouter */
+  LLM_PROVIDER: process.env.LLM_PROVIDER || 'openrouter',
+  /** LLM model name */
+  LLM_MODEL: process.env.LLM_MODEL || 'qwen/qwen3.6-plus-preview:free',
   /** LLM API base URL */
-  LLM_BASE_URL: 'https://integrate.api.nvidia.com/v1',
+  LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
   /** LLM temperature */
-  LLM_TEMPERATURE: 0.3,
+  LLM_TEMPERATURE: 0.7,
   LLM_MAX_TOKENS: 4096,
   /** Task cleanup interval (5 minutes) */
   TASK_CLEANUP_INTERVAL_MS: 300000,

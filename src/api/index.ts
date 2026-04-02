@@ -22,6 +22,7 @@ interface ApiError {
 interface SubmitTaskRequest {
   requirement: string;
   image?: string;
+  userId?: string; // 可选，默认 'default'
 }
 
 /**
@@ -241,6 +242,7 @@ app.post(
     res: Response<ApiError>
   ) => {
     const { requirement } = req.body;
+    const userId = req.body.userId || 'default';
     let imageAttachment: ImageAttachment | undefined;
 
     // 检查 JSON body 中的 base64 图片
@@ -317,8 +319,8 @@ app.post(
   };
   llmEvents.on('reasoning', handleReasoning);
 
-      try {
-        const result = await mainAgent.processRequirement(requirement, imageAttachment);
+try {
+      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId);
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {
