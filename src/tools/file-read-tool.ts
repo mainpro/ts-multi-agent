@@ -34,8 +34,8 @@ export interface FileReadInput {
  * - Concurrency-safe (read-only operations)
  */
 export class FileReadTool extends BaseTool {
-  name = 'file_read';
-  description = 'Read reference files from skill directories, project root, or working directory';
+  name = 'read';
+  description = 'Read the contents of a file. Returns file content with line numbers.';
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     try {

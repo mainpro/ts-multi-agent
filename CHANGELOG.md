@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - TBD
+
+> Claude Code-Aligned Refactoring - Tool System Overhaul
+
+### 🚀 Planned Breaking Changes
+
+This version aligns the architecture with Claude Code's tool system design while keeping unique multi-agent features.
+
+#### Tool System Redesign (Aligned with Claude Code)
+
+**New Tool Implementations:**
+- **BashTool**: Execute shell commands (scripts in skills)
+- **GlobTool**: Search files by pattern
+- **GrepTool**: Search file contents
+- **EditTool**: Edit file contents
+- **WriteTool**: Write/create files
+- **ReadTool**: Read files (enhanced from FileReadTool)
+
+**Tool Interface Updates:**
+- Standardized `name`, `description`, `inputSchema` for each tool
+- Unified `execute(context)` method signature
+- Tool result standardization
+
+#### Skill System Refactoring
+
+- Skills now expose allowed tools list
+- Script execution via BashTool integration
+- Reference files accessible via ReadTool
+
+#### Architecture Changes
+
+**To be implemented:**
+- ToolRegistry for dynamic tool registration
+- MCP client preparation for external integrations
+- Working directory tracking
+- Tool result streaming support
+
+---
+
 ## [2.0.0] - 2026-04-03
 
 > Claude Code Architecture Upgrade - Major Architecture Refactoring
@@ -26,10 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Circuit Breaker**: Automatic stop after 3 consecutive compression failures
 
 #### Dynamic Context Builder (P1)
-- **CLAUDE.md Integration**: 5-level hierarchy loader
-  - Global → User → Project → Local Config → Current
-- **Git Status**: Automatic branch and last commit detection
-- **Memory Recall**: User profile and conversation history integration
+- **User Memory**: User profile and conversation history integration
+- **Context Injection**: Automatically injected into planning prompts
+- **Note**: CLAUDE.md and Git features removed (not needed for multi-agent systems)
 
 #### Tool Interface (P1)
 - **BaseTool**: Abstract base class with conservative defaults
