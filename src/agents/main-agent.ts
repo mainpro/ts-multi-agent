@@ -1,10 +1,10 @@
 import { LLMClient } from '../llm';
-import { VisionLLMClient } from '../llm/vision-client';
 import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { IntentRouter } from '../routers';
 import { UserProfileService } from '../user-profile';
 import { MemoryService, sessionContextService } from '../memory';
+import { DynamicContextBuilder } from '../context/dynamic-context';
 import { buildReplanPrompt } from '../prompts';
 import {
   Task,
@@ -19,9 +19,9 @@ import {
 export class MainAgent {
   private maxReplanAttempts: number;
   private intentRouter: IntentRouter;
-  private visionClient: VisionLLMClient;
   private userProfileService: UserProfileService;
   private memoryService: MemoryService;
+  private dynamicContextBuilder: DynamicContextBuilder;
 
   constructor(
     private llm: LLMClient,
@@ -31,9 +31,12 @@ export class MainAgent {
   ) {
     this.maxReplanAttempts = maxReplanAttempts;
     this.intentRouter = new IntentRouter(llm, this.skillRegistry);
-    this.visionClient = new VisionLLMClient();
     this.userProfileService = new UserProfileService('data');
     this.memoryService = new MemoryService('data');
+    this.dynamicContextBuilder = new DynamicContextBuilder({
+      projectRoot: process.cwd(),
+      memoryDataDir: 'data',
+    });
   }
 
   async processRequirement(
@@ -67,33 +70,17 @@ export class MainAgent {
         console.log(`[MainAgent] 🎯 Session Context: 当前技能=${sessionContext.currentSkill}, 轮次=${sessionContext.turnCount}`);
       }
 
-    // ========== 步骤 0.5: 图片分析（如果有图片） ==========
-    let enrichedRequirement = requirement;
-    if (imageAttachment) {
-      console.log(`[MainAgent] 🖼️ 检测到图片，调用视觉分析...`);
-      try {
-        const base64 = imageAttachment.data.toString('base64');
-        const visionResult = await this.visionClient.analyzeImage(base64, imageAttachment.mimeType);
-        
-        enrichedRequirement = `${requirement}\n\n[图片分析结果]: ${visionResult.description}`;
-        if (visionResult.system) {
-          enrichedRequirement += `\n系统: ${visionResult.system}`;
-        }
-        if (visionResult.errorType) {
-          enrichedRequirement += `\n错误类型: ${visionResult.errorType}`;
-        }
-        if (visionResult.suggestedAction) {
-          enrichedRequirement += `\n建议操作: ${visionResult.suggestedAction}`;
-        }
-        console.log(`[MainAgent] 🖼️ 图片分析完成`);
-      } catch (error) {
-        console.error(`[MainAgent] 🖼️ 图片分析失败:`, error);
+      let enrichedRequirement = requirement;
+      if (historyPrompt) {
+        enrichedRequirement = historyPrompt + '\n\n' + enrichedRequirement;
       }
-    }
 
-    if (historyPrompt) {
-      enrichedRequirement = historyPrompt + '\n\n' + enrichedRequirement;
-    }
+      // ========== 步骤 0.6: 动态上下文构建（CLAUDE.md + Git + Memory） ==========
+      const dynamicContext = await this.dynamicContextBuilder.build(requirement, userId);
+      if (dynamicContext) {
+        enrichedRequirement = dynamicContext + '\n\n' + enrichedRequirement;
+        console.log(`[MainAgent] 📑 动态上下文已注入`);
+      }
 
     // ========== 步骤 1: 意图路由（快速应答） ==========
     console.log(`[MainAgent] 🔄 正在分类用户意图...`);
