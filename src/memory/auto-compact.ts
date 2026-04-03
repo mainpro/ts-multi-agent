@@ -1,12 +1,34 @@
 /**
  * AutoCompactService - Automatic message compression service
- * 
+ *
  * Implements a four-layer compression strategy inspired by Claude Code:
  * - MICRO: Lightweight, frequent compaction
  * - AUTO: Automatic threshold-based compaction
  * - SESSION: Session-level compaction
  * - REACTIVE: Reactive compaction based on context pressure
  */
+
+/**
+* Time threshold for micro compaction (5 minutes)
+* Tool results older than this will be cleared
+*/
+export const MICRO_COMPACT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+* Placeholder text for cleared tool results
+*/
+export const CLEARED_TOOL_RESULT_PLACEHOLDER = '[Old tool result content cleared]';
+
+/**
+* Auto-compact threshold: 167K tokens (83.5% of 200K context window)
+* Triggers LLM-based summarization when exceeded
+*/
+export const AUTO_COMPACT_THRESHOLD = 167000;
+
+/**
+* Circuit breaker: Maximum consecutive failures before stopping
+*/
+export const MAX_FAILURES = 3;
 
 /**
  * Compression strategy levels
@@ -24,57 +46,80 @@ export enum CompactStrategy {
 export interface Message {
   role: string;
   content: string;
+  /** Optional timestamp for the message (milliseconds since epoch) */
+  timestamp?: number;
   [key: string]: unknown;
 }
 
-/**
- * AutoCompactService - Manages automatic message compression
- * 
- * Wave 1: Skeleton implementation
- * Wave 2: Full compression logic
- */
 export class AutoCompactService {
-  /**
-   * Micro compact - lightweight, frequent compaction
-   * 
-   * @param messages - Messages to compact
-   * @returns Compacted messages
-   */
+  private consecutiveFailures = 0;
+  private llmClient?: import('../llm').LLMClient;
+
+  constructor(llmClient?: import('../llm').LLMClient) {
+    this.llmClient = llmClient;
+  }
+
   microCompact(messages: Message[]): Message[] {
-    // Wave 2: Implement micro compaction logic
-    return [];
+    const now = Date.now();
+    const threshold = now - MICRO_COMPACT_THRESHOLD_MS;
+
+    return messages.map(msg => {
+      if (msg.role === 'tool' && msg.timestamp && msg.timestamp <= threshold) {
+        return {
+          ...msg,
+          content: CLEARED_TOOL_RESULT_PLACEHOLDER
+        };
+      }
+      return msg;
+    });
   }
 
-  /**
-   * Auto compact - automatic threshold-based compaction
-   * 
-   * @param messages - Messages to compact
-   * @returns Promise resolving to compacted messages
-   */
   async autoCompact(messages: Message[]): Promise<Message[]> {
-    // Wave 2: Implement auto compaction logic
-    return Promise.resolve([]);
+    if (this.consecutiveFailures >= MAX_FAILURES) {
+      console.log('[AutoCompact] Circuit breaker open, skipping compaction');
+      return messages;
+    }
+
+    if (!this.llmClient) {
+      console.log('[AutoCompact] No LLM client available');
+      return messages;
+    }
+
+    try {
+      const summary = await this.llmClient.generateText(
+        'Summarize the following conversation history concisely, preserving key information, decisions, and context:\n\n' +
+        messages.map(m => `${m.role}: ${m.content}`).join('\n\n'),
+        'You are a helpful assistant that creates concise summaries of conversations.'
+      );
+
+      this.consecutiveFailures = 0;
+
+      return [
+        { role: 'system', content: 'Previous conversation summary: ' + summary },
+        messages[messages.length - 1]
+      ];
+    } catch (error) {
+      this.consecutiveFailures++;
+      console.error(`[AutoCompact] Compaction failed (${this.consecutiveFailures}/${MAX_FAILURES}):`, error);
+      return messages;
+    }
   }
 
-  /**
-   * Check and compact - conditionally compact based on token threshold
-   * 
-   * @param messages - Messages to check and potentially compact
-   * @returns Promise resolving to messages (compacted if threshold exceeded)
-   */
   async checkAndCompact(messages: Message[]): Promise<Message[]> {
-    // Wave 2: Implement threshold checking and compaction
-    return Promise.resolve(messages);
+    const tokens = this.estimateTokens(messages);
+
+    if (tokens > AUTO_COMPACT_THRESHOLD) {
+      console.log(`[AutoCompact] Token count ${tokens} exceeds threshold ${AUTO_COMPACT_THRESHOLD}, triggering compaction`);
+      return this.autoCompact(messages);
+    }
+
+    return messages;
   }
 
-  /**
-   * Estimate tokens in messages
-   * 
-   * @param messages - Messages to estimate
-   * @returns Estimated token count
-   */
   estimateTokens(messages: Message[]): number {
-    // Wave 2: Implement token estimation logic
-    return 0;
+    return messages.reduce((total, msg) => {
+      const contentLength = typeof msg.content === 'string' ? msg.content.length : 0;
+      return total + Math.ceil(contentLength / 4);
+    }, 0);
   }
 }
