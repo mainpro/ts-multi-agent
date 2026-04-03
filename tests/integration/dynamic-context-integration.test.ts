@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-describe('DynamicContextBuilder Integration', () => {
+describe('DynamicContextBuilder', () => {
   let tempDir: string;
   let builder: DynamicContextBuilder;
 
@@ -12,17 +12,16 @@ describe('DynamicContextBuilder Integration', () => {
     tempDir = path.join('/tmp', `dynamic-context-test-${randomUUID()}`);
     await fs.mkdir(tempDir, { recursive: true });
     builder = new DynamicContextBuilder({
-      projectRoot: tempDir,
       memoryDataDir: tempDir,
     });
   });
 
-  it('should build context with empty directories', async () => {
+  it('should build context with user memory', async () => {
     const result = await builder.build('test input', 'test-user');
     expect(typeof result).toBe('string');
   });
 
-  it('should handle missing CLAUDE.md gracefully', async () => {
+  it('should handle new user gracefully', async () => {
     const result = await builder.build('test', 'user1');
     expect(result).toBeDefined();
   });
@@ -37,29 +36,12 @@ describe('DynamicContextBuilder Integration', () => {
     const result2 = await builder.build('test', 'user-b');
     expect(typeof result1).toBe(typeof result2);
   });
-});
 
-describe('DynamicContextBuilder with CLAUDE.md', () => {
-  let tempDir: string;
-  let builder: DynamicContextBuilder;
-
-  beforeEach(async () => {
-    tempDir = path.join('/tmp', `claude-md-test-${randomUUID()}`);
-    await fs.mkdir(tempDir, { recursive: true });
-    
-    await fs.writeFile(
-      path.join(tempDir, 'CLAUDE.md'),
-      '# Project Config\n\n- Project name: Test\n- Version: 1.0.0'
-    );
-    
-    builder = new DynamicContextBuilder({
-      projectRoot: tempDir,
-      memoryDataDir: tempDir,
+  it('should handle missing memory directory', async () => {
+    const builder = new DynamicContextBuilder({
+      memoryDataDir: '/nonexistent/path',
     });
-  });
-
-  it('should load CLAUDE.md when present', async () => {
-    const result = await builder.build('test input', 'test-user');
-    expect(result).toContain('Project Config');
+    const result = await builder.build('test', 'nonexistent-user');
+    expect(typeof result).toBe('string');
   });
 });
