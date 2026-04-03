@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+// ============================================================================
+// Tool System Types
+// ============================================================================
+
+export { Tool, ToolContext, ToolResult } from '../tools/interfaces';
+
+// ============================================================================
+// Skill System Types
+// ============================================================================
+
 /**
  * Skill metadata from SKILL.md frontmatter
  * Used for skill discovery and matching
