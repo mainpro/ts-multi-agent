@@ -4,11 +4,14 @@ TypeScript-based multi-agent system with MainAgent orchestration and SubAgent sk
 
 ## Architecture
 
-- **MainAgent**: Requirement analysis, task planning, scheduling, monitoring, replanning
+- **MainAgent**: Planning-only orchestration (analyzes requirements, creates plans, dispatches to TaskQueue)
 - **SubAgent**: Skill execution engine
 - **Skill Registry**: Filesystem scanning with progressive disclosure
 - **Task Queue**: DAG-based dependency management with concurrency control
-- **LLM Client**: GLM-4.7-flash integration with retry logic
+- **LLM Client**: OpenRouter (Qwen3.6) + Vision (GLM-4V) integration
+- **AutoCompactService**: 4-layer context compression (MICRO → AUTO → SESSION → REACTIVE)
+- **DynamicContextBuilder**: Dynamic context injection (CLAUDE.md + Git + Memory)
+- **Tool Interface**: Abstract tool layer with concurrency safety checks
 
 ## Quick Start
 
@@ -44,28 +47,35 @@ See [API.md](API.md) for detailed documentation.
 ```
 src/
 ├── agents/
-│   ├── main-agent.ts       # MainAgent planner
+│   ├── main-agent.ts       # MainAgent planner (planning-only)
 │   └── sub-agent.ts        # SubAgent executor
 ├── api/
 │   └── index.ts            # HTTP API service
+├── context/
+│   ├── claude-md-loader.ts # CLAUDE.md loader (5-level hierarchy)
+│   └── dynamic-context.ts  # Dynamic context builder
 ├── llm/
-│   └── index.ts            # GLM-4.7-flash client
+│   └── index.ts            # OpenRouter + Vision client
+├── memory/
+│   ├── auto-compact.ts     # 4-layer context compression
+│   ├── memory-service.ts  # Memory management
+│   └── conversation-memory.ts
 ├── skill-registry/
 │   └── index.ts            # Skill discovery
 ├── task-queue/
 │   └── index.ts            # Task scheduling
+├── tools/
+│   ├── base-tool.ts        # Tool abstract base class
+│   ├── interfaces.ts      # Tool interface definitions
+│   └── file-read-tool.ts  # Example tool implementation
 ├── types/
 │   └── index.ts            # Type definitions
 └── index.ts                # Server entry point
 
 skills/
-└── calculator/             # Example skill
-    ├── SKILL.md
-    ├── scripts/
-    └── references/
-
-public/
-└── test.html               # Web test interface
+├── ees-qa/                 # EES expense system QA skill
+├── geam-qa/               # GEAM image system QA skill
+└── time-management-qa/    # Time management platform QA skill
 ```
 
 ## Configuration
