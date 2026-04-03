@@ -1,4 +1,4 @@
-import { LLMClient, llmEvents } from '../llm';
+import { LLMClient } from '../llm';
 import { VisionLLMClient } from '../llm/vision-client';
 import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
@@ -14,11 +14,7 @@ import {
   TaskPlan,
   CONFIG,
   TaskPlanSchema,
-  ToolDefinition,
 } from '../types';
-
-import { promises as fs } from 'fs';
-import * as path from 'path';
   
 export class MainAgent {
   private maxReplanAttempts: number;
@@ -197,29 +193,8 @@ export class MainAgent {
     console.log(`[MainAgent] 任务 ${idx + 1}: [${task.skillName}] ${task.requirement}`);
   });
 
-    if (plan.tasks.length === 1) {
-      console.log(`[MainAgent] 🎯 单技能任务：MainAgent 直接执行`);
-      const singleTask = plan.tasks[0];
-      const result = await this.executeSingleSkill(singleTask.requirement, singleTask.skillName);
-
-      // 更新 Session Context
-      sessionContextService.updateContext(effectiveSessionId, {
-        currentSkill: singleTask.skillName,
-        currentTopic: 'skill_execution',
-      });
-
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      const resultData = result.data as { response?: string; _metadata?: { skill?: string; references?: string[] } } | undefined;
-      const responseText = resultData?.response || JSON.stringify(result.data);
-      await this.memoryService.saveInteraction(userId, requirement, responseText, {
-        skill: resultData?._metadata?.skill,
-        references: resultData?._metadata?.references,
-      });
-      return result;
-    }
-
-    console.log(`[MainAgent] 🔄 多技能任务：派发给 TaskQueue`);
-    const result = await this.monitorAndReplan(plan);
+  console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
+  const result = await this.monitorAndReplan(plan);
 
     // ========== 步骤 4: 更新用户画像 ==========
     await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
@@ -445,160 +420,6 @@ ${errorSummary}
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private async executeSingleSkill(
-    requirement: string,
-    skillName: string
-  ): Promise<TaskResult> {
-    llmEvents.setAgent('MainAgent');
-
-    try {
-      console.log(`[MainAgent] 📥 执行技能: ${skillName}`);
-
-      const skill = await this.skillRegistry.loadFullSkill(skillName);
-      if (!skill) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: `Skill not found: ${skillName}`, code: 'SKILL_NOT_FOUND' },
-        };
-      }
-
-      console.log(`[MainAgent] skill.body 长度: ${skill.body.length}`);
-      console.log(`[MainAgent] skill.body 前100字: ${skill.body.substring(0, 100)}`);
-
-      // 定义工具：read_reference
-      const tools: ToolDefinition[] = [
-        {
-          name: 'read_reference',
-          description: '读取技能的参考资料文件，用于获取详细的处理流程、话术模板、申请表链接等信息',
-          parameters: {
-            type: 'object',
-            properties: {
-              fileName: {
-                type: 'string',
-                description: '要读取的文件名，如 invoice-format.md、permission.md',
-              },
-            },
-            required: ['fileName'],
-          },
-        },
-      ];
-
-      // 构建执行 prompt
-      const prompt = `## 技能内容
-${skill.body}
-
-## 用户问题
-${requirement}
-
-## 执行规则
-1. 严格按照技能内容执行，不跳过任何步骤
-2. 遇到分支时，根据用户问题选择正确的执行路径
-3. 遇到"读取 references/xxx.md"或需要详细资料时，使用 read_reference 工具
-4. 根据读取的内容继续执行
-5. **重要：如果技能内容无法回答用户问题，不要乱编，请明确告知用户**
-6. 最终输出给用户的完整回复（使用礼貌、专业的中文）
-
-## 无法处理的判断标准
-如果用户问题属于以下情况，请返回"抱歉，我无法处理您当前的需求，我的知识不包含该问题的处理逻辑"：
-- 问题与技能主题无关
-- 技能内容中没有对应的处理流程或答案
-- 用户询问的是技能未覆盖的场景
-
-## 输出格式
-直接输出给用户的回复内容，不要输出 JSON 或其他格式。如果无法处理，使用上述无法处理的回复。`;
-
-      // 调用 LLM（支持工具调用）
-      const result = await this.llm.generateWithTools(
-        prompt,
-        tools,
-  async (toolCall) => {
-        if (toolCall.name === 'read_reference') {
-          // 参数类型验证
-          if (!toolCall.arguments.fileName || typeof toolCall.arguments.fileName !== 'string') {
-            return '错误：缺少 fileName 参数或类型错误';
-          }
-
-          const fileName = toolCall.arguments.fileName as string;
-
-          // 安全验证：防止路径遍历攻击
-          if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
-            return '错误：文件名包含非法字符';
-          }
-
-          // 验证文件扩展名
-          if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
-            return '错误：只支持 .md 和 .txt 文件';
-          }
-
-          console.log(`[MainAgent] 📚 读取参考资料: ${fileName}`);
-
-          if (!skill.referencesDir) {
-            return '错误：技能没有参考资料目录';
-          }
-
-          const content = await this.readReferences(skill.referencesDir, [fileName]);
-          return content || `文件 ${fileName} 不存在或读取失败`;
-        }
-        return `错误：未知工具 "${toolCall.name}"。可用工具：read_reference`;
-      },
-        undefined
-      );
-
-      console.log(`[MainAgent] ✅ 技能执行完成，工具调用次数: ${result.toolCalls.length}`);
-
-      // 记录使用的 references
-      const usedRefs = result.toolCalls
-        .filter(tc => tc.name === 'read_reference')
-        .map(tc => tc.arguments.fileName as string);
-
-      console.log(`[MainAgent] 📚 读取的参考资料: ${usedRefs.join(', ')}`);
-
-      return { 
-        success: true, 
-        data: { 
-          response: result.content,
-          _metadata: {
-            skill: skillName,
-            references: usedRefs
-          }
-        } 
-      };
-    } catch (error) {
-      console.error('[MainAgent] 技能执行错误:', error);
-      return {
-        success: false,
-        error: {
-          type: 'RETRYABLE',
-          message: error instanceof Error ? error.message : 'Unknown error',
-          code: 'EXECUTION_ERROR',
-        },
-      };
-    } finally {
-      llmEvents.setAgent('MainAgent');
-    }
-  }
-
-  private async readReferences(refsDir: string, fileNames: string[]): Promise<string> {
-    let content = '';
-    let totalSize = 0;
-    const maxTotal = 3000;
-
-    for (const file of fileNames) {
-      if (totalSize >= maxTotal) break;
-      const fullPath = path.join(refsDir, file);
-      try {
-        const fileContent = await fs.readFile(fullPath, 'utf-8');
-        const truncated = fileContent.substring(0, maxTotal - totalSize);
-        content += `\n### ${file}\n${truncated}\n`;
-        totalSize += truncated.length;
-      } catch {
-        content += `\n### ${file}\n(读取失败)\n`;
-      }
-    }
-
-    return content;
   }
 
   private async updateProfileAfterRequest(
