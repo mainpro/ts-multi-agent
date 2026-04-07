@@ -79,6 +79,15 @@ This version aligns the architecture with Claude Code's tool system design while
   - `isReadOnly()`: Read-only identification
 - **FileReadTool**: Example tool implementation (read-only, concurrency-safe)
 
+#### NEW: Claude Code-Aligned Tools (v2.1.0)
+- **BashTool**: Execute shell commands (for skill script execution)
+- **GlobTool**: Search files by pattern
+- **GrepTool**: Search file contents
+- **EditTool**: Edit file contents (replace text)
+- **WriteTool**: Write/create files
+- **ReadTool**: Enhanced file reading (renamed from FileReadTool)
+- **ToolRegistry**: Dynamic tool registration and execution
+
 #### MainAgent Refactoring (P1)
 - Removed `executeSingleSkill()` method (182 lines removed)
 - Integrated DynamicContextBuilder for context injection
