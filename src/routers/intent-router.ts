@@ -4,6 +4,10 @@ import { SkillRegistry } from '../skill-registry';
 import { UserProfile } from '../types';
 import { buildSkillMatcherPrompt } from '../prompts';
 import { sessionContextService } from '../memory';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const KEYWORD_CACHE_FILE = 'data/keyword-cache.json';
 
 /**
  * 意图类型
@@ -23,6 +27,7 @@ export interface IntentResult {
   confidence?: number;
   suggestedResponse?: string;
   matchedSkill?: string;
+  matchedSkills?: string[];
   guessedSystem?: string;
 }
 
@@ -41,7 +46,6 @@ const SMALL_TALK_CONFIGS: SmallTalkPattern[] = [
   {
     patterns: [
       /^(你好|您好|hi|hello|hey|早上好|下午好|晚上好)[!.?]?$/i,
-      /^(你好|您好)[^\n]*$/i,
     ],
     responseType: 'greeting',
   },
@@ -144,10 +148,122 @@ const OUT_OF_SCOPE_PATTERNS = [
  * 3. LLM 匹配技能（并行）
  */
 export class IntentRouter {
+  private skillKeywordMap: Map<string, string[]> = new Map();
+
   constructor(
     private llm: LLMClient,
     private skillRegistry: SkillRegistry
-  ) {}
+  ) {
+    this.buildKeywordMap();
+  }
+
+  private buildKeywordMap(): void {
+    const skills = this.skillRegistry.getAllMetadata();
+    const keywordMap = new Map<string, string[]>();
+
+    const cacheKey = JSON.stringify(skills.map(s => ({ name: s.name, description: s.description })));
+    const cachedKeywords = this.loadKeywordCache(cacheKey);
+
+    if (cachedKeywords) {
+      for (const [kw, skillNames] of Object.entries(cachedKeywords)) {
+        keywordMap.set(kw, skillNames);
+      }
+      console.log(`[IntentRouter] 📚 关键词映射已加载缓存: ${keywordMap.size} 个关键词`);
+    } else {
+      for (const skill of skills) {
+        const keywords = this.extractKeywordsFromDescription(skill.description);
+
+        for (const kw of keywords) {
+          if (!keywordMap.has(kw)) {
+            keywordMap.set(kw, []);
+          }
+          keywordMap.get(kw)!.push(skill.name);
+        }
+      }
+      this.saveKeywordCache(cacheKey, Object.fromEntries(keywordMap));
+      console.log(`[IntentRouter] 📚 关键词映射已构建: ${keywordMap.size} 个关键词`);
+    }
+
+    console.log(`[IntentRouter] 🎯 技能: ${skills.map(s => s.name).join(', ')}`);
+    this.skillKeywordMap = keywordMap;
+  }
+
+  private loadKeywordCache(skillKey: string): Record<string, string[]> | null {
+    try {
+      if (!fs.existsSync(KEYWORD_CACHE_FILE)) return null;
+      const cache = JSON.parse(fs.readFileSync(KEYWORD_CACHE_FILE, 'utf-8'));
+      if (cache.key !== skillKey) return null;
+      return cache.keywords;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveKeywordCache(skillKey: string, keywords: Record<string, string[]>): void {
+    try {
+      const dir = path.dirname(KEYWORD_CACHE_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(KEYWORD_CACHE_FILE, JSON.stringify({ key: skillKey, keywords }, null, 2));
+    } catch (e) {
+      console.warn('[IntentRouter] 关键词缓存保存失败:', e);
+    }
+  }
+
+  private extractKeywordsFromDescription(description: string): string[] {
+    const keywords: string[] = [];
+    const fullText = `${description}`.toLowerCase();
+
+    const stopWords = new Set([
+      '的', '了', '是', '在', '和', '与', '或', '及', '等', '及', '可以', '能够', '需要', '可能', '如果', '那么',
+      '用户', '系统', '问题', '情况', '相关', '功能', '操作', '使用', '帮助', '查询', '申请', '处理', '解决',
+      'the', 'and', 'or', 'is', 'are', 'be', 'to', 'of', 'for', 'in', 'on', 'at', 'by', 'with', 'from',
+      '海尔', '集团', '助手', '触发', '场景', '排除', '包含', '涉及', '提到', '询问', '发送', '截图', '地址栏',
+    ]);
+
+    const chinesePattern = /[\u4e00-\u9fff]{2,6}/g;
+    const chineseMatches = fullText.match(chinesePattern) || [];
+    for (const word of chineseMatches) {
+      if (!stopWords.has(word) && word.length >= 2 && !keywords.includes(word)) {
+        keywords.push(word);
+      }
+    }
+
+    const englishPattern = /[a-zA-Z]{2,}/g;
+    const englishMatches = fullText.match(englishPattern) || [];
+    for (const word of englishMatches) {
+      const upper = word.toUpperCase();
+      if (!stopWords.has(upper) && upper.length >= 2 && !keywords.includes(upper)) {
+        keywords.push(upper);
+      }
+    }
+
+    return keywords;
+  }
+
+  private keywordMatchSkill(userInput: string): { matchedSkill?: string; matchedSkills?: string[]; confidence: number; isAmbiguous?: boolean } {
+    const lowerInput = userInput.toLowerCase();
+    const matchedSkills = new Set<string>();
+
+    for (const [keyword, skills] of this.skillKeywordMap) {
+      if (lowerInput.includes(keyword)) {
+        for (const skill of skills) {
+          matchedSkills.add(skill);
+        }
+      }
+    }
+
+    if (matchedSkills.size === 1) {
+      const skill = Array.from(matchedSkills)[0];
+      console.log(`[IntentRouter] ⚡ 关键词命中技能: ${skill} (唯一匹配)`);
+      return { matchedSkill: skill, matchedSkills: [skill], confidence: 0.9 };
+    } else if (matchedSkills.size > 1) {
+      const skillList = Array.from(matchedSkills);
+      console.log(`[IntentRouter] ⚠️ 关键词命中多个技能: ${skillList.join(', ')} (需要LLM决策)`);
+      return { matchedSkill: skillList[0], matchedSkills: skillList, confidence: 0.7, isAmbiguous: true };
+    }
+
+    return { matchedSkill: undefined, matchedSkills: [], confidence: 0 };
+  }
 
   /**
    * 从对话历史中提取最近使用的技能
@@ -239,7 +355,20 @@ export class IntentRouter {
   async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string): Promise<IntentResult> {
     const trimmedInput = userInput.trim();
 
-    // Step 0: 获取 Session Context（作为 LLM 匹配的参考）
+    // Step 0: 关键词快速匹配技能（零延迟，单一命中直接返回）
+    const keywordResult = this.keywordMatchSkill(trimmedInput);
+    if (keywordResult.matchedSkill && keywordResult.confidence >= 0.9 && !keywordResult.isAmbiguous) {
+      return {
+        intent: 'skill_task',
+        confidence: keywordResult.confidence,
+        matchedSkill: keywordResult.matchedSkill,
+      };
+    }
+
+    // Step 0.5: 如果关键词命中多个技能，降低置信度但继续使用 LLM 决策
+    // (isAmbiguous = true 时，让 LLM 进一步判断)
+
+    // Step 1: 获取 Session Context（作为 LLM 匹配的参考）
     let sessionContextHint = '';
     if (sessionId && sessionContextService.hasActiveContext(sessionId)) {
       const sessionContext = sessionContextService.getContext(sessionId);
@@ -307,7 +436,9 @@ export class IntentRouter {
       };
     } catch (error) {
       // LLM 调用失败 → 返回猜你想问作为兜底
-      console.log(`[IntentRouter] ⚠️ LLM 匹配失败:`, error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
+      console.log(`[IntentRouter] ⚠️ LLM 匹配失败: ${errorType} - ${errorMsg}`);
       return {
         intent: 'guess_confirm',
         confidence: 0.7,
@@ -453,6 +584,7 @@ export class IntentRouter {
         intent: 'unclear',
         confidence: 0.8,
         matchedSkill: 'fallback',
+        matchedSkills: [],
       };
     }
 
@@ -460,6 +592,7 @@ export class IntentRouter {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
       matchedSkill: result.matchedSkill,
+      matchedSkills: result.matchedSkill ? [result.matchedSkill] : [],
     };
   }
 

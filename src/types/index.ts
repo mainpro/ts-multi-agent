@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
 // ============================================================================
-// Tool System Types
+// Tool System Types (re-exported for convenience)
 // ============================================================================
 
-export { Tool, ToolContext, ToolResult } from '../tools/interfaces';
+export type { Tool, ToolContext, ToolResult } from '../tools/interfaces';
 
 // ============================================================================
 // Skill System Types
@@ -95,34 +95,19 @@ export interface TaskError {
  * Task definition
  */
 export interface Task {
-  /** Unique task ID */
   id: string;
-  /** Natural language requirement for this task */
   requirement: string;
-  /** Current task status */
-  status: TaskStatus;
-  /** ID of the subagent executing this task */
-  subagentId?: string;
-  /** Name of the skill to execute */
-  skillName?: string;
-  /** Parameters for the skill */
-  params?: Record<string, unknown>;
-  /** Task execution result */
-  result?: unknown;
-  /** Error information if task failed */
-  error?: TaskError;
-  /** IDs of tasks this task depends on */
+  skillName: string;
   dependencies: string[];
-  /** IDs of tasks that depend on this task */
-  dependents: string[];
-  /** Task creation timestamp */
-  createdAt: Date;
-  /** Task start timestamp */
+  status?: TaskStatus;
+  result?: TaskResult;
   startedAt?: Date;
-  /** Task completion timestamp */
   completedAt?: Date;
-  /** Number of retry attempts */
-  retryCount: number;
+  imageAttachment?: {
+    data: Buffer;
+    mimeType: string;
+    originalName?: string;
+  };
 }
 
 /**
@@ -271,7 +256,7 @@ export const CONFIG = {
   /** LLM Provider: nvidia | openrouter */
   LLM_PROVIDER: process.env.LLM_PROVIDER || 'openrouter',
   /** LLM model name */
-  LLM_MODEL: process.env.LLM_MODEL || 'qwen/qwen3.6-plus-preview:free',
+  LLM_MODEL: process.env.LLM_MODEL || 'minimax/minimax-m2.5:free',
   /** LLM API base URL */
   LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
   /** LLM temperature */

@@ -2,9 +2,11 @@ import { LLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { IntentRouter } from '../routers';
+import { UnifiedPlanner } from '../planners';
 import { UserProfileService } from '../user-profile';
 import { MemoryService, sessionContextService } from '../memory';
 import { DynamicContextBuilder } from '../context/dynamic-context';
+import { AutoCompactService } from '../memory/auto-compact';
 import { buildReplanPrompt } from '../prompts';
 import {
   Task,
@@ -22,6 +24,7 @@ export class MainAgent {
   private userProfileService: UserProfileService;
   private memoryService: MemoryService;
   private dynamicContextBuilder: DynamicContextBuilder;
+  private autoCompactService: AutoCompactService;
 
   constructor(
     private llm: LLMClient,
@@ -34,9 +37,9 @@ export class MainAgent {
     this.userProfileService = new UserProfileService('data');
     this.memoryService = new MemoryService('data');
     this.dynamicContextBuilder = new DynamicContextBuilder({
-      projectRoot: process.cwd(),
       memoryDataDir: 'data',
     });
+    this.autoCompactService = new AutoCompactService(llm);
   }
 
   async processRequirement(
@@ -45,10 +48,28 @@ export class MainAgent {
     userId: string = 'default',
     sessionId?: string
   ): Promise<TaskResult> {
-    try {
+  try {
       console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
+      
       if (imageAttachment) {
         console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || 'unnamed'} (${imageAttachment.mimeType})`);
+        
+        console.log(`[MainAgent] 🔍 调用视觉模型分析图片...`);
+        try {
+          const VisionLLMClient = (await import('../llm/vision-client.js')).VisionLLMClient;
+          const visionClient = new VisionLLMClient();
+          
+          const visionResult = await visionClient.analyzeImage(
+            imageAttachment.data.toString('base64'),
+            imageAttachment.mimeType
+          );
+          
+          console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || '未知系统'}, ${visionResult.errorType || '无错误'}`);
+          
+          requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || '未知'}\n错误类型: ${visionResult.errorType || '未知'}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || '无'}`;
+        } catch (visionError) {
+          console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
+        }
       }
 
       const effectiveSessionId = sessionId || userId;
@@ -58,11 +79,37 @@ export class MainAgent {
       console.log(`[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(', ')}`);
 
       // ========== 步骤 0.1: 加载对话历史 ==========
-      const memory = await this.memoryService.loadMemory(userId);
-      const historyPrompt = this.memoryService.buildContextPrompt(memory);
-      if (historyPrompt) {
-        console.log(`[MainAgent] 📚 对话历史: ${memory.conversationHistory.length} 条消息`);
-      }
+    const memory = await this.memoryService.loadMemory(userId);
+    
+    const messages = memory.conversationHistory.map(msg => ({
+      role: msg.role,
+      content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+      timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
+    }));
+    
+    const microCompactedMessages = this.autoCompactService.microCompact(messages);
+    const compactedMessages = await this.autoCompactService.checkAndCompact(microCompactedMessages);
+    
+    const originalTokens = this.autoCompactService.estimateTokens(messages);
+    const compactedTokens = this.autoCompactService.estimateTokens(compactedMessages);
+    if (originalTokens !== compactedTokens) {
+      console.log(`[MainAgent] 🗜️ 上下文压缩: ${originalTokens} → ${compactedTokens} tokens (${Math.round((1 - compactedTokens / originalTokens) * 100)}% reduction)`);
+    }
+    
+    const compactedHistory = compactedMessages.map(msg => ({
+      role: msg.role as 'user' | 'assistant',
+      content: msg.content,
+      timestamp: new Date(msg.timestamp || Date.now()).toISOString(),
+    }));
+    
+    const historyPrompt = this.memoryService.buildContextPrompt({
+      ...memory,
+      conversationHistory: compactedHistory,
+    });
+    
+    if (historyPrompt) {
+      console.log(`[MainAgent] 📚 对话历史: ${compactedHistory.length} 条消息 (${compactedTokens} tokens)`);
+    }
 
       // ========== 步骤 0.2: 检查 Session Context ==========
       const sessionContext = sessionContextService.getContext(effectiveSessionId);
@@ -140,40 +187,55 @@ export class MainAgent {
     }
 
     case 'skill_task':
-        console.log(`[MainAgent] ⚙️ 技能任务：继续处理${intentResult.matchedSkill ? ` (匹配技能: ${intentResult.matchedSkill})` : ''}`);
+        console.log(`[MainAgent] ⚙️ 技能任务：${intentResult.matchedSkills?.length ? `匹配技能: ${intentResult.matchedSkills.join(', ')}` : '待规划'}`);
         break;
       }
 
-      // ========== 步骤 2: 规划（优化：单技能跳过 LLM） ==========
-      const planId = `plan-${Date.now()}`;
+      // ========== 步骤 2: 任务规划 ==========
+      const matchedSkills = intentResult.matchedSkills || [];
       let plan: TaskPlan;
 
-      if (intentResult.matchedSkill && intentResult.matchedSkill !== 'fallback') {
-        console.log(`[MainAgent] 🚀 单技能任务：直接创建计划`);
+      if (matchedSkills.length === 1) {
+        // 单技能：快速路径，直接创建计划
+        console.log(`[MainAgent] 📋 单技能任务：直接创建计划`);
         plan = {
-          id: planId,
+          id: `plan-${Date.now()}`,
           requirement: enrichedRequirement,
           tasks: [{
             id: 'task-1',
             requirement: enrichedRequirement,
-            skillName: intentResult.matchedSkill,
+            skillName: matchedSkills[0],
             dependencies: [],
           }],
         };
-} else {
-      // matchedSkill 是 fallback 或 undefined，不再调用 UnifiedPlanner
-      console.log(`[MainAgent] 🎯 无法匹配技能，返回猜你想问`);
-      const guessResponse = this.intentRouter.generateGuessQuestions(enrichedRequirement, userProfile);
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      return {
-        success: true,
-        data: {
-          message: guessResponse.fullResponse,
-          type: 'guess_confirm',
-          guessedSystem: guessResponse.systems[0],
-        },
-      };
-    }
+      } else if (matchedSkills.length > 1) {
+        // 多技能：调用 UnifiedPlanner 分解任务
+        console.log(`[MainAgent] 📋 多技能任务 (${matchedSkills.length}个)：调用规划器`);
+        const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
+        const planResult = await planner.plan(enrichedRequirement);
+        
+        if (!planResult.success || !planResult.plan) {
+          return {
+            success: false,
+            error: {
+              type: 'FATAL',
+              message: planResult.clarificationPrompt || '规划失败',
+              code: 'PLANNING_FAILED',
+            },
+          };
+        }
+        plan = planResult.plan;
+      } else {
+        // 没有匹配到技能
+        return {
+          success: false,
+          error: {
+            type: 'FATAL',
+            message: '未匹配到合适的技能',
+            code: 'NO_SKILL_MATCHED',
+          },
+        };
+      }
 
   console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);
   plan.tasks.forEach((task, idx) => {

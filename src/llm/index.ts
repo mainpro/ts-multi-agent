@@ -16,6 +16,7 @@ export class LLMEventEmitter {
   private currentAgent: 'MainAgent' | 'SubAgent' = 'MainAgent';
 
   setAgent(agent: 'MainAgent' | 'SubAgent'): void {
+    console.log(`[LLMEvent] setAgent: ${this.currentAgent} -> ${agent}`);
     this.currentAgent = agent;
   }
 
@@ -47,6 +48,7 @@ export class LLMEventEmitter {
         content: data,
         agent: this.currentAgent,
       };
+      console.log(`[LLMEvent] emit ${event} agent=${this.currentAgent}`);
       callbacks.forEach(callback => {
         try {
           callback(enrichedData);
@@ -122,6 +124,32 @@ interface GLMResponse {
   };
 }
 
+type LLMProvider = 'openrouter' | 'nvidia' | 'zhipu';
+
+interface ProviderCapabilities {
+  supportsReasoning: boolean;
+  supportsStreaming: boolean;
+  reasoningField: 'reasoning_content' | 'reasoning' | 'thinking';
+}
+
+const PROVIDER_CONFIGS: Record<LLMProvider, ProviderCapabilities> = {
+  openrouter: {
+    supportsReasoning: true,
+    supportsStreaming: true,
+    reasoningField: 'reasoning_content',
+  },
+  nvidia: {
+    supportsReasoning: false,
+    supportsStreaming: true,
+    reasoningField: 'reasoning_content',
+  },
+  zhipu: {
+    supportsReasoning: true,
+    supportsStreaming: true,
+    reasoningField: 'reasoning_content',
+  },
+};
+
 /**
  * LLM client for interacting with GLM-4.7-flash API
  */
@@ -132,13 +160,28 @@ export class LLMClient {
   private temperature: number;
   private timeoutMs: number;
   private maxRetries: number;
+  private provider: LLMProvider;
+  private capabilities: ProviderCapabilities;
 
   /**
    * Create a new LLM client
    * @param apiKey - API key (defaults to OPENROUTER_API_KEY or NVIDIA_API_KEY env var)
    */
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.OPENROUTER_API_KEY || process.env.NVIDIA_API_KEY || '';
+    this.provider = (process.env.LLM_PROVIDER || 'openrouter') as LLMProvider;
+    this.capabilities = PROVIDER_CONFIGS[this.provider] || PROVIDER_CONFIGS.openrouter;
+
+    if (apiKey) {
+      this.apiKey = apiKey;
+    } else if (this.provider === 'openrouter') {
+      this.apiKey = process.env.OPENROUTER_API_KEY || '';
+    } else if (this.provider === 'nvidia') {
+      this.apiKey = process.env.NVIDIA_API_KEY || '';
+    } else if (this.provider === 'zhipu') {
+      this.apiKey = process.env.ZHIPU_API_KEY || '';
+    } else {
+      this.apiKey = '';
+    }
     this.baseUrl = CONFIG.LLM_BASE_URL;
     this.model = CONFIG.LLM_MODEL;
     this.temperature = CONFIG.LLM_TEMPERATURE;
@@ -148,9 +191,57 @@ export class LLMClient {
     if (!this.apiKey) {
       throw new LLMError(
         'INVALID_KEY',
-        'OPENROUTER_API_KEY or NVIDIA_API_KEY environment variable is not set'
+        `${this.provider} API key environment variable is not set`
       );
     }
+  }
+
+  private buildRequestBody(
+    messages: Message[],
+    options: {
+      responseFormat?: { type: 'json_object' };
+      tools?: ToolDefinition[];
+      stream?: boolean;
+    } = {}
+  ): Record<string, unknown> {
+    const baseRequest: Record<string, unknown> = {
+      model: this.model,
+      messages: messages.map((m) => {
+        const msg: Record<string, unknown> = { role: m.role, content: m.content };
+        if (m.tool_calls) {
+          msg.tool_calls = m.tool_calls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          }));
+        }
+        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+        return msg;
+      }),
+      temperature: this.temperature,
+      max_tokens: CONFIG.LLM_MAX_TOKENS || 4096,
+    };
+
+    if (this.capabilities.supportsReasoning) {
+      baseRequest.reasoning = { enabled: true };
+    }
+
+    if (options.responseFormat) {
+      baseRequest.response_format = options.responseFormat;
+    }
+
+    if (options.tools && options.tools.length > 0) {
+      baseRequest.tools = options.tools.map(t => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }));
+    }
+
+    if (options.stream) {
+      baseRequest.stream = true;
+    }
+
+    return baseRequest;
   }
 
   /**
@@ -221,7 +312,12 @@ export class LLMClient {
    * @returns Delay in milliseconds
    */
   private getRetryDelay(attempt: number): number {
-    return Math.pow(2, attempt) * 1000;
+    // Exponential backoff with jitter for rate limit errors
+    // Base delay: 2s, 4s, 8s for attempts 0, 1, 2
+    const baseDelay = Math.pow(2, attempt + 1) * 1000;
+    // Add jitter (0-500ms) to avoid thundering herd
+    const jitter = Math.random() * 500;
+    return baseDelay + jitter;
   }
 
   /**
@@ -261,20 +357,7 @@ export class LLMClient {
 
         signal?.addEventListener('abort', () => controller.abort());
 
-const requestBody: Record<string, unknown> = {
-      model: this.model,
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-      })),
-      temperature: this.temperature,
-      max_tokens: 4096,
-    };
-
-        if (responseFormat) {
-          requestBody.response_format = responseFormat;
-        }
+        const requestBody = this.buildRequestBody(messages, { responseFormat });
 
         console.log('Sending LLM request to:', `${this.baseUrl}/chat/completions`);
         console.log('Request body:', JSON.stringify(requestBody, null, 2));
@@ -481,18 +564,7 @@ const requestBody: Record<string, unknown> = {
 
         signal?.addEventListener('abort', () => controller.abort());
 
-        const requestBody = {
-          model: this.model,
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-          })),
-          temperature: this.temperature,
-      max_tokens: CONFIG.LLM_MAX_TOKENS || 512,
-          stream: true,
-          response_format: { type: 'json_object' },
-        };
+        const requestBody = this.buildRequestBody(messages, { stream: true });
 
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -560,6 +632,11 @@ const requestBody: Record<string, unknown> = {
         }
 
         console.log(`[LLM] 流式请求完成, reasoning: ${reasoning.length} chars, content: ${content.length} chars`);
+        
+        if (!content && !reasoning) {
+          throw new LLMError('API_ERROR', `Empty response from LLM (reasoning: ${reasoning.length}, content: ${content.length})`);
+        }
+        
         return { reasoning, content };
 
       } catch (error) {
@@ -585,7 +662,7 @@ const requestBody: Record<string, unknown> = {
   }
 
   /**
-   * Generate text with tool calling support
+   * Generate text with tool calling support (streaming)
    * Allows LLM to call tools during generation, and continues with tool results
    */
   async generateWithTools(
@@ -609,33 +686,40 @@ const requestBody: Record<string, unknown> = {
     let maxIterations = 5;
 
     while (maxIterations-- > 0) {
-      const response = await this.makeToolRequest(messages, tools, signal);
+      const result = await this.makeToolRequestStream(messages, tools, signal);
 
-      if (!response.choices || response.choices.length === 0) {
-        throw new LLMError('API_ERROR', 'No choices in response');
+      if (!result.message) {
+        throw new LLMError('API_ERROR', 'No message in response');
       }
 
-      const message = response.choices[0].message;
+      const message = result.message;
 
-      if (message.reasoning_content) {
-        llmEvents.emit('reasoning', message.reasoning_content);
-      } else if (message.reasoning) {
-        llmEvents.emit('reasoning', message.reasoning);
-      } else if (message.thinking) {
-        llmEvents.emit('reasoning', message.thinking);
-      }
+      console.log('[LLM] Response message.content:', message.content?.substring(0, 200));
+      console.log('[LLM] Response message.tool_calls:', message.tool_calls?.length);
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
+        console.log('[LLM] No tool_calls in response, returning content directly');
+        
         return {
           content: message.content || '',
           toolCalls: toolCallsResults,
         };
       }
 
+      console.log('[LLM] Has tool_calls, will execute them');
+     
+
       messages.push({
         role: 'assistant',
         content: message.content || '',
-        tool_calls: message.tool_calls,
+        tool_calls: message.tool_calls?.map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          },
+        })),
       } as Message);
 
   for (const toolCall of message.tool_calls) {
@@ -681,41 +765,23 @@ const requestBody: Record<string, unknown> = {
     throw new LLMError('API_ERROR', 'Max tool call iterations reached');
   }
 
-  private async makeToolRequest(
+  private async makeToolRequestStream(
     messages: Message[],
     tools: ToolDefinition[],
     signal?: AbortSignal
-  ): Promise<GLMResponse> {
+  ): Promise<{ message: Message; reasoning: string }> {
     let lastError: LLMError | undefined;
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        console.log(`[LLM] 工具调用请求 attempt ${attempt + 1}/${this.maxRetries}`);
+        console.log(`[LLM] 工具调用请求(流式) attempt ${attempt + 1}/${this.maxRetries}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
         signal?.addEventListener('abort', () => controller.abort());
 
-        const requestBody = {
-          model: this.model,
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            ...(m.tool_calls && { tool_calls: m.tool_calls }),
-            ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-          })),
-          tools: tools.map(t => ({
-            type: 'function',
-            function: {
-              name: t.name,
-              description: t.description,
-              parameters: t.parameters,
-            },
-          })),
-          temperature: this.temperature,
-          max_tokens: CONFIG.LLM_MAX_TOKENS || 4096,
-        };
+        const requestBody = this.buildRequestBody(messages, { tools, stream: true });
 
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -734,17 +800,108 @@ const requestBody: Record<string, unknown> = {
           throw this.classifyError(response.status, { message: errorText });
         }
 
-        const data = await response.json() as GLMResponse;
-
-        if (data.error) {
-          throw this.classifyError(response.status, {
-            message: data.error.message,
-            code: data.error.code,
-          });
+        if (!response.body) {
+          throw new LLMError('API_ERROR', 'No response body');
         }
 
-        console.log(`[LLM] 工具调用请求完成`);
-        return data;
+          let reasoning = '';
+          let content = '';
+          const toolCallsMap = new Map<string, { id: string; name: string; arguments: string }>();
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const data = trimmed.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const chunk = JSON.parse(data);
+                const delta = chunk.choices?.[0]?.delta;
+                if (!delta) continue;
+
+                if (delta.reasoning_content) {
+                  reasoning += delta.reasoning_content;
+                  llmEvents.emit('reasoning', delta.reasoning_content);
+                } else if (delta.reasoning) {
+                  reasoning += delta.reasoning;
+                  llmEvents.emit('reasoning', delta.reasoning);
+                } else if (delta.thinking) {
+                  reasoning += delta.thinking;
+                  llmEvents.emit('reasoning', delta.thinking);
+                }
+
+                if (delta.content) {
+                  content += delta.content;
+                }
+
+            if (delta.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                console.log(`[LLM] 收到 tool_call chunk:`, JSON.stringify(tc));
+                const toolId = tc.id || `pending-${tc.function?.name || 'unknown'}`;
+                const existing = toolCallsMap.get(toolId);
+
+                if (existing) {
+                  if (tc.id && toolId.startsWith('pending-')) {
+                    console.log(`[LLM] 替换临时 key: ${toolId} -> ${tc.id}`);
+                    toolCallsMap.delete(toolId);
+                    toolCallsMap.set(tc.id, {
+                      id: tc.id,
+                      name: tc.function?.name || existing.name,
+                      arguments: tc.function?.arguments || existing.arguments,
+                    });
+                  } else {
+                    if (tc.function?.name) existing.name = tc.function.name;
+                    if (tc.function?.arguments) {
+                      console.log(`[LLM] 累积 arguments: ${tc.function.arguments.substring(0, 50)}`);
+                      existing.arguments += tc.function.arguments;
+                    }
+                  }
+                } else {
+                  console.log(`[LLM] 新 tool_call: id=${tc.id}, name=${tc.function?.name}, args=${tc.function?.arguments?.substring(0, 50)}`);
+                  toolCallsMap.set(toolId, {
+                    id: tc.id || toolId,
+                    name: tc.function?.name || '',
+                    arguments: tc.function?.arguments || '',
+                  });
+                }
+              }
+            }
+              } catch {
+                continue;
+              }
+            }
+          }
+
+          console.log(`[LLM] 工具调用请求(流式)完成`);
+          const toolCallsArray = Array.from(toolCallsMap.values()).filter(tc => tc.id && !tc.id.startsWith('pending-'));
+          console.log(`[LLM] toolCalls:`, JSON.stringify(toolCallsArray));
+
+          const finalMessage: Message = {
+            role: 'assistant',
+            content,
+            tool_calls: toolCallsArray.length > 0
+              ? toolCallsArray.map(tc => ({
+                  id: tc.id,
+                  type: 'function' as const,
+                  function: {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                  },
+                }))
+              : undefined
+          };
+          return { message: finalMessage, reasoning };
       } catch (error) {
         console.log('[LLM] 工具调用请求错误:', error);
 

@@ -1,10 +1,9 @@
 import { SkillRegistry } from '../skill-registry';
 import { LLMClient, llmEvents } from '../llm';
 import { Task, TaskResult, TaskError, Skill, SkillExecutionResult } from '../types';
-import { buildSkillExecutionPrompt, buildRefinementPrompt } from '../prompts';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { z } from 'zod';
+import { buildSubAgentPrompt } from '../prompts';
 
 export class SubAgent {
   private skillRegistry: SkillRegistry;
@@ -18,7 +17,7 @@ export class SubAgent {
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
     const previousAgent = llmEvents.getAgent();
     llmEvents.setAgent('SubAgent');
-    
+
     try {
       console.log('[SubAgent] 任务ID: ' + task.id + ' 技能: ' + task.skillName);
 
@@ -51,72 +50,56 @@ export class SubAgent {
     skill: Skill,
     signal?: AbortSignal
   ): Promise<SkillExecutionResult> {
-    const Phase1Schema = z.object({
-      response: z.string().describe('给用户的回复'),
-      needRefs: z.array(z.string()).optional().default([]).describe('如需参考资料，在此列出文件名'),
-    });
+    const skillRootDir = skill.referencesDir ? path.dirname(skill.referencesDir) : './skills/' + skill.name;
+    const systemPrompt = buildSubAgentPrompt(skill.body, skillRootDir);
 
-    const refsAvailable = skill.referencesDir ? await this.listReferences(skill.referencesDir) : [];
-    const refsHint = refsAvailable.length > 0
-      ? `\n可用参考资料: ${refsAvailable.join(', ')}`
-      : '';
+    const tools = [
+      {
+        name: 'read',
+        description: '读取技能目录下的文件。参数 filePath 为相对于技能根目录的路径，如 references/attendance.md',
+        parameters: {
+          type: 'object',
+          properties: {
+            filePath: {
+              type: 'string',
+              description: '相对于技能根目录的文件路径，如 references/attendance.md',
+            },
+          },
+          required: ['filePath'],
+        },
+      },
+    ];
 
-    const step1 = await this.llm.generateStructured(
-      buildSkillExecutionPrompt(skill, requirement, refsHint),
-      Phase1Schema,
-      undefined,
+    const result = await this.llm.generateWithTools(
+      requirement,
+      tools,
+      async (toolCall) => {
+        if (toolCall.name === 'read') {
+          const filePath = toolCall.arguments.filePath as string;
+
+          if (!filePath) {
+            return '错误：缺少必需参数 filePath。请提供要读取的文件路径，如 references/attendance.md';
+          }
+
+          const fullPath = path.join(skillRootDir, filePath);
+
+          console.log(`[SubAgent] 读取文件: ${fullPath}`);
+
+          try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const truncated = content.substring(0, 3000);
+            return truncated;
+          } catch (err) {
+            return `读取文件失败: ${filePath}。请检查路径是否正确。`;
+          }
+        }
+        return '未知工具';
+      },
+      systemPrompt,
       signal
     );
 
-    if (!step1.needRefs?.length || !skill.referencesDir) {
-      return { response: step1.response };
-    }
-
-    console.log('[SubAgent] 需要参考资料: ' + step1.needRefs!.join(', '));
-    const refContents = await this.readReferences(skill.referencesDir, step1.needRefs!);
-
-    const Phase2Schema = z.object({
-      response: z.string(),
-    });
-
-    const step2 = await this.llm.generateStructured(
-      buildRefinementPrompt(step1.response, refContents),
-      Phase2Schema,
-      undefined,
-      signal
-    );
-
-    return { response: step2.response };
-  }
-
-  private async listReferences(refsDir: string): Promise<string[]> {
-    try {
-      const files = await fs.readdir(refsDir);
-      return files.filter(f => f.endsWith('.md') || f.endsWith('.txt'));
-    } catch {
-      return [];
-    }
-  }
-
-  private async readReferences(refsDir: string, fileNames: string[]): Promise<string> {
-    let content = '';
-    let totalSize = 0;
-    const maxTotal = 3000;
-
-    for (const file of fileNames) {
-      if (totalSize >= maxTotal) break;
-      const fullPath = path.join(refsDir, file);
-      try {
-        const fileContent = await fs.readFile(fullPath, 'utf-8');
-        const truncated = fileContent.substring(0, maxTotal - totalSize);
-        content += `\n### ${file}\n${truncated}\n`;
-        totalSize += truncated.length;
-      } catch {
-        content += `\n### ${file}\n(读取失败)\n`;
-      }
-    }
-
-    return content;
+    return { response: result.content };
   }
 
   private classifyError(error: unknown): TaskError {

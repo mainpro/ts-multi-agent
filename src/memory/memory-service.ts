@@ -2,6 +2,8 @@ import { UserProfileService } from '../user-profile';
 import { ConversationMemoryService } from './conversation-memory';
 import { ConversationMessage, MemoryConfig } from './types';
 import { UserProfile } from '../types';
+import { AutoCompactService } from './auto-compact';
+import { LLMClient } from '../llm';
 
 /**
  * User memory combining profile and conversation history
@@ -20,18 +22,22 @@ export interface UserMemory {
 export class MemoryService {
   private userProfileService: UserProfileService;
   private conversationMemoryService: ConversationMemoryService;
+  private autoCompactService: AutoCompactService;
 
   /**
    * Create a new MemoryService instance
    * @param dataDir - Directory to store profile data (default: 'data')
    * @param config - Partial memory configuration (merged with defaults)
+   * @param llmClient - Optional LLM client for auto-compaction
    */
   constructor(
     dataDir: string = 'data',
-    config: Partial<MemoryConfig> = {}
+    config: Partial<MemoryConfig> = {},
+    llmClient?: LLMClient
   ) {
     this.userProfileService = new UserProfileService(dataDir);
     this.conversationMemoryService = new ConversationMemoryService(config);
+    this.autoCompactService = new AutoCompactService(llmClient);
   }
 
   /**
@@ -42,15 +48,23 @@ export class MemoryService {
    * @returns UserMemory object with profile and conversationHistory
    */
   async loadMemory(userId: string): Promise<UserMemory> {
-    // Parallel load profile and conversation history
     const [profile, conversationHistory] = await Promise.all([
       this.userProfileService.loadProfile(userId),
       this.conversationMemoryService.loadHistory(userId),
     ]);
 
+    const messagesForCompact = conversationHistory.map(msg => ({
+      ...msg,
+      timestamp: new Date(msg.timestamp).getTime(),
+    }));
+    const compacted = this.autoCompactService.microCompact(messagesForCompact);
+
     return {
       profile,
-      conversationHistory,
+      conversationHistory: compacted.map(msg => ({
+        ...msg,
+        timestamp: new Date(msg.timestamp ?? Date.now()).toISOString(),
+      })) as import('./types').ConversationMessage[],
     };
   }
 

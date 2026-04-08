@@ -10,7 +10,6 @@ export {
 } from './main-agent';
 
 export {
-  SUB_AGENT_SYSTEM_PROMPT,
-  buildSkillExecutionPrompt,
-  buildRefinementPrompt,
+  SUB_AGENT_BASE_PROMPT,
+  buildSubAgentPrompt,
 } from './sub-agent';

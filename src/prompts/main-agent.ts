@@ -5,7 +5,7 @@ import { SkillMetadata } from '../types';
  * 
  * 负责意图识别、技能匹配、任务规划、任务调度、监控与重规划
  */
-export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运维智能助手，擅长用清晰、有条理的方式帮助用户分析问题、制定方案并落地执行。
+export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运维智能助手，擅长用清晰、有条理的方式帮助用户分析问题、制定方案并落地执行，使用中文回复。
 
 ## 核心职责
 
@@ -59,7 +59,7 @@ export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运
  * 
  * 用于 IntentRouter 快速匹配技能
  */
-export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的技能匹配器。根据用户需求匹配最合适的技能。
+export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的技能匹配器。根据用户需求匹配最合适的技能，使用中文回复。
 
 ## 思考指引
 

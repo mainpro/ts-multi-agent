@@ -1,0 +1,157 @@
+{
+  "key": "[{\"name\":\"time-management-qa\",\"description\":\"时间管理平台问答助手。触发场景：(1) 用户提问涉及时间管理相关问题，如考勤打卡、请假、出差、加班、工时补录等；(2) 用户提到出差外勤、补录、开通权限、打卡异常等关键词。排除：EES 报销、GEAM 权限申请。\"},{\"name\":\"geam-qa\",\"description\":\"海尔集团 GEAM 影像系统问答助手。触发场景：(1) 截图地址栏包含 \\\"geam\\\" 或 \\\"影像系统\\\"；(2) 用户提到\\\"申请权限\\\"、\\\"开通凭证\\\"、\\\"上传附件失败\\\"、\\\"没有权限\\\"；(3) 用户询问凭证影像查询、资产扫描、通道申请、回单查询等问题。排除：EES 报销、请假考勤、薪资查询。\"},{\"name\":\"ees-qa\",\"description\":\"海尔集团 EES 报销系统问答助手。触发场景：(1) 截图地址栏包含 \\\"ees\\\" 或 \\\"报销\\\"；(2) 用户提到\\\"发票上传失败\\\"、\\\"提交不了\\\"、\\\"报销不了\\\"；(3) 用户询问报销进度、报销流程、发票格式等问题；(4) 用户发送报销相关报错截图。排除：权限申请 (GEAM)、请假考勤、薪资查询。\"}]",
+  "keywords": {
+    "时间管理平台": [
+      "time-management-qa"
+    ],
+    "问答助手": [
+      "time-management-qa"
+    ],
+    "触发场景": [
+      "time-management-qa",
+      "geam-qa",
+      "ees-qa"
+    ],
+    "用户提问涉及": [
+      "time-management-qa"
+    ],
+    "时间管理相关": [
+      "time-management-qa"
+    ],
+    "如考勤打卡": [
+      "time-management-qa"
+    ],
+    "请假": [
+      "time-management-qa"
+    ],
+    "出差": [
+      "time-management-qa"
+    ],
+    "加班": [
+      "time-management-qa"
+    ],
+    "工时补录等": [
+      "time-management-qa"
+    ],
+    "用户提到出差": [
+      "time-management-qa"
+    ],
+    "外勤": [
+      "time-management-qa"
+    ],
+    "补录": [
+      "time-management-qa"
+    ],
+    "开通权限": [
+      "time-management-qa"
+    ],
+    "打卡异常等关": [
+      "time-management-qa"
+    ],
+    "键词": [
+      "time-management-qa"
+    ],
+    "报销": [
+      "time-management-qa",
+      "geam-qa",
+      "ees-qa"
+    ],
+    "权限申请": [
+      "time-management-qa",
+      "ees-qa"
+    ],
+    "EES": [
+      "time-management-qa",
+      "geam-qa",
+      "ees-qa"
+    ],
+    "GEAM": [
+      "time-management-qa",
+      "geam-qa",
+      "ees-qa"
+    ],
+    "海尔集团": [
+      "geam-qa",
+      "ees-qa"
+    ],
+    "影像系统问答": [
+      "geam-qa"
+    ],
+    "截图地址栏包": [
+      "geam-qa",
+      "ees-qa"
+    ],
+    "影像系统": [
+      "geam-qa"
+    ],
+    "用户提到": [
+      "geam-qa",
+      "ees-qa"
+    ],
+    "申请权限": [
+      "geam-qa"
+    ],
+    "开通凭证": [
+      "geam-qa"
+    ],
+    "上传附件失败": [
+      "geam-qa"
+    ],
+    "没有权限": [
+      "geam-qa"
+    ],
+    "用户询问凭证": [
+      "geam-qa"
+    ],
+    "影像查询": [
+      "geam-qa"
+    ],
+    "资产扫描": [
+      "geam-qa"
+    ],
+    "通道申请": [
+      "geam-qa"
+    ],
+    "回单查询等问": [
+      "geam-qa"
+    ],
+    "请假考勤": [
+      "geam-qa",
+      "ees-qa"
+    ],
+    "薪资查询": [
+      "geam-qa",
+      "ees-qa"
+    ],
+    "报销系统问答": [
+      "ees-qa"
+    ],
+    "发票上传失败": [
+      "ees-qa"
+    ],
+    "提交不了": [
+      "ees-qa"
+    ],
+    "报销不了": [
+      "ees-qa"
+    ],
+    "用户询问报销": [
+      "ees-qa"
+    ],
+    "进度": [
+      "ees-qa"
+    ],
+    "报销流程": [
+      "ees-qa"
+    ],
+    "发票格式等问": [
+      "ees-qa"
+    ],
+    "用户发送报销": [
+      "ees-qa"
+    ],
+    "相关报错截图": [
+      "ees-qa"
+    ]
+  }
+}
