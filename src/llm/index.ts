@@ -1,9 +1,67 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 
-/**
- * Global event emitter for LLM reasoning stream
- */
+interface ToolCallEntry {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+class ToolCallCollector {
+  private entries: Map<string, ToolCallEntry> = new Map();
+
+  processChunk(chunk: {
+    id?: string | null;
+    index?: number;
+    function?: { name?: string; arguments?: string };
+  }): void {
+    if (!chunk.function) return;
+
+    const functionName = chunk.function.name || '';
+    const chunkArgs = chunk.function.arguments || '';
+
+    if (!functionName) return;
+
+    if (chunk.id) {
+      const existing = Array.from(this.entries.values()).find(e => e.name === functionName);
+      if (existing) {
+        existing.id = chunk.id;
+        existing.arguments += chunkArgs;
+        this.entries.delete(existing.id);
+        this.entries.set(chunk.id, existing);
+      } else {
+        this.entries.set(chunk.id, {
+          id: chunk.id,
+          name: functionName,
+          arguments: chunkArgs,
+        });
+      }
+    } else {
+      const pendingEntry = Array.from(this.entries.values()).find(
+        e => e.name === functionName && e.arguments === ''
+      );
+      if (pendingEntry) {
+        pendingEntry.arguments += chunkArgs;
+      } else {
+        const newEntry: ToolCallEntry = {
+          id: `pending-${functionName}-${Date.now()}`,
+          name: functionName,
+          arguments: chunkArgs,
+        };
+        this.entries.set(newEntry.id, newEntry);
+      }
+    }
+  }
+
+  getToolCalls(): ToolCallEntry[] {
+    return Array.from(this.entries.values()).filter(e => !e.id.startsWith('pending-') && e.arguments.length > 0);
+  }
+
+  getToolCallsAsArray(): ToolCallEntry[] {
+    return this.getToolCalls();
+  }
+}
+
 export type LLMEventType = 'reasoning' | 'response';
 
 export interface ReasoningEvent {
@@ -179,6 +237,8 @@ export class LLMClient {
       this.apiKey = process.env.NVIDIA_API_KEY || '';
     } else if (this.provider === 'zhipu') {
       this.apiKey = process.env.ZHIPU_API_KEY || '';
+    } else if (this.provider === 'siliconflow') {
+      this.apiKey = process.env.SILICONFLOW_API_KEY || '';
     } else {
       this.apiKey = '';
     }
@@ -722,31 +782,29 @@ export class LLMClient {
         })),
       } as Message);
 
-  for (const toolCall of message.tool_calls) {
-      const toolName = toolCall.function.name;
+      for (const toolCall of message.tool_calls) {
+        const toolName = toolCall.function.name;
 
-      // 安全解析工具参数 JSON
-      let toolArgs: Record<string, unknown>;
-      try {
-        toolArgs = JSON.parse(toolCall.function.arguments);
-      } catch (parseError) {
-        console.error('[LLM] 工具参数 JSON 解析失败:', toolCall.function.arguments);
-        toolArgs = {};
-      }
+        let toolArgs: Record<string, unknown>;
+        try {
+          toolArgs = JSON.parse(toolCall.function.arguments);
+        } catch {
+          console.error('[LLM] 工具参数 JSON 解析失败:', toolCall.function.arguments);
+          toolArgs = {};
+        }
 
-      console.log(`[LLM] 执行工具: ${toolName}`, toolArgs);
+        console.log(`[LLM] 执行工具: ${toolName}`, toolArgs);
 
-      // 安全执行工具
-      let toolResult: string;
-      try {
-        toolResult = await toolExecutor({
-          name: toolName,
-          arguments: toolArgs,
-        });
-      } catch (execError) {
-        console.error('[LLM] 工具执行失败:', execError);
-        toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
-      }
+        let toolResult: string;
+        try {
+          toolResult = await toolExecutor({
+            name: toolName,
+            arguments: toolArgs,
+          });
+        } catch (execError) {
+          console.error('[LLM] 工具执行失败:', execError);
+          toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
+        }
 
         toolCallsResults.push({
           name: toolName,
@@ -804,104 +862,77 @@ export class LLMClient {
           throw new LLMError('API_ERROR', 'No response body');
         }
 
-          let reasoning = '';
-          let content = '';
-          const toolCallsMap = new Map<string, { id: string; name: string; arguments: string }>();
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
+        let reasoning = '';
+        let content = '';
+        const toolCallCollector = new ToolCallCollector();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data: ')) continue;
-              const data = trimmed.slice(6);
-              if (data === '[DONE]') continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') continue;
 
-              try {
-                const chunk = JSON.parse(data);
-                const delta = chunk.choices?.[0]?.delta;
-                if (!delta) continue;
+            try {
+              const chunk = JSON.parse(data);
+              const delta = chunk.choices?.[0]?.delta;
+              if (!delta) continue;
 
-                if (delta.reasoning_content) {
-                  reasoning += delta.reasoning_content;
-                  llmEvents.emit('reasoning', delta.reasoning_content);
-                } else if (delta.reasoning) {
-                  reasoning += delta.reasoning;
-                  llmEvents.emit('reasoning', delta.reasoning);
-                } else if (delta.thinking) {
-                  reasoning += delta.thinking;
-                  llmEvents.emit('reasoning', delta.thinking);
-                }
+              if (delta.reasoning_content) {
+                reasoning += delta.reasoning_content;
+                llmEvents.emit('reasoning', delta.reasoning_content);
+              } else if (delta.reasoning) {
+                reasoning += delta.reasoning;
+                llmEvents.emit('reasoning', delta.reasoning);
+              } else if (delta.thinking) {
+                reasoning += delta.thinking;
+                llmEvents.emit('reasoning', delta.thinking);
+              }
 
-                if (delta.content) {
-                  content += delta.content;
-                }
+              if (delta.content) {
+                content += delta.content;
+              }
 
-            if (delta.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                console.log(`[LLM] 收到 tool_call chunk:`, JSON.stringify(tc));
-                const toolId = tc.id || `pending-${tc.function?.name || 'unknown'}`;
-                const existing = toolCallsMap.get(toolId);
-
-                if (existing) {
-                  if (tc.id && toolId.startsWith('pending-')) {
-                    console.log(`[LLM] 替换临时 key: ${toolId} -> ${tc.id}`);
-                    toolCallsMap.delete(toolId);
-                    toolCallsMap.set(tc.id, {
-                      id: tc.id,
-                      name: tc.function?.name || existing.name,
-                      arguments: tc.function?.arguments || existing.arguments,
-                    });
-                  } else {
-                    if (tc.function?.name) existing.name = tc.function.name;
-                    if (tc.function?.arguments) {
-                      console.log(`[LLM] 累积 arguments: ${tc.function.arguments.substring(0, 50)}`);
-                      existing.arguments += tc.function.arguments;
-                    }
-                  }
-                } else {
-                  console.log(`[LLM] 新 tool_call: id=${tc.id}, name=${tc.function?.name}, args=${tc.function?.arguments?.substring(0, 50)}`);
-                  toolCallsMap.set(toolId, {
-                    id: tc.id || toolId,
-                    name: tc.function?.name || '',
-                    arguments: tc.function?.arguments || '',
-                  });
+              if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                  toolCallCollector.processChunk(tc);
                 }
               }
-            }
-              } catch {
-                continue;
-              }
+            } catch {
+              continue;
             }
           }
+        }
 
-          console.log(`[LLM] 工具调用请求(流式)完成`);
-          const toolCallsArray = Array.from(toolCallsMap.values()).filter(tc => tc.id && !tc.id.startsWith('pending-'));
-          console.log(`[LLM] toolCalls:`, JSON.stringify(toolCallsArray));
+        console.log(`[LLM] 工具调用请求(流式)完成`);
+        const toolCalls = toolCallCollector.getToolCallsAsArray();
+        console.log(`[LLM] toolCalls:`, JSON.stringify(toolCalls));
 
-          const finalMessage: Message = {
-            role: 'assistant',
-            content,
-            tool_calls: toolCallsArray.length > 0
-              ? toolCallsArray.map(tc => ({
-                  id: tc.id,
-                  type: 'function' as const,
-                  function: {
-                    name: tc.name,
-                    arguments: tc.arguments,
-                  },
-                }))
-              : undefined
-          };
-          return { message: finalMessage, reasoning };
+        const finalMessage: Message = {
+          role: 'assistant',
+          content,
+          tool_calls: toolCalls.length > 0
+            ? toolCalls.map(tc => ({
+                id: tc.id,
+                type: 'function' as const,
+                function: {
+                  name: tc.name,
+                  arguments: tc.arguments,
+                },
+              }))
+            : undefined
+        };
+        return { message: finalMessage, reasoning };
       } catch (error) {
         console.log('[LLM] 工具调用请求错误:', error);
 

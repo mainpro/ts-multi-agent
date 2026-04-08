@@ -1,3 +1,61 @@
 [
-  
+  {
+    "role": "user",
+    "content": "发票上传失败",
+    "timestamp": "2026-04-08T09:22:50.601Z"
+  },
+  {
+    "role": "assistant",
+    "content": "{\"planId\":\"plan-1775640134042\",\"results\":[{\"taskId\":\"plan-1775640134042-task-1\",\"skillName\":\"ees-qa\",\"result\":{\"response\":\"\\n\\n您好！发票上传失败可能有几种情况，为了更好地帮您解决，请您告诉我：\\n\\n1. **上传时提示什么错误信息？** 比如\\\"格式不支持\\\"、\\\"文件过大\\\"或其他提示？\\n2. **您上传的是什么格式的文件？** 是图片（JPG/PNG）还是PDF？\\n\\n您可以截图发给我，或者描述一下具体的报错内容，我帮您判断如何处理。\"}}]}",
+    "timestamp": "2026-04-08T09:22:50.601Z"
+  },
+  {
+    "role": "user",
+    "content": "你好，请假流程是什么，如何申请GEAM权限",
+    "timestamp": "2026-04-08T09:34:16.289Z"
+  },
+  {
+    "role": "assistant",
+    "timestamp": "2026-04-08T09:34:16.289Z"
+  },
+  {
+    "role": "user",
+    "content": "你好，请假流程是什么，如何申请GEAM权限",
+    "timestamp": "2026-04-08T09:35:16.256Z"
+  },
+  {
+    "role": "assistant",
+    "content": "{\"planId\":\"plan-1775640902718\",\"results\":[{\"taskId\":\"plan-1775640902718-task-1\",\"skillName\":\"time-management-qa\",\"result\":{\"response\":\"\\n\\n我来帮您查询请假流程的相关信息。\\n\"}}]}",
+    "timestamp": "2026-04-08T09:35:16.256Z"
+  },
+  {
+    "role": "user",
+    "content": "你好，请假流程是什么，如何申请GEAM权限",
+    "timestamp": "2026-04-08T09:37:59.886Z"
+  },
+  {
+    "role": "assistant",
+    "content": "{\"planId\":\"plan-1775641063354\",\"results\":[{\"taskId\":\"plan-1775641063354-task-1\",\"skillName\":\"time-management-qa\",\"result\":{\"response\":\"\\n\\n我来帮您查询请假流程的相关信息。\\n\\n让我先查看一下请假申请的具体流程：\\n\"}}]}",
+    "timestamp": "2026-04-08T09:37:59.886Z"
+  },
+  {
+    "role": "user",
+    "content": "你好，请假流程是什么，如何申请GEAM权限",
+    "timestamp": "2026-04-08T09:41:42.065Z"
+  },
+  {
+    "role": "assistant",
+    "content": "{\"planId\":\"plan-1775641275505\",\"results\":[{\"taskId\":\"plan-1775641275505-task-1\",\"skillName\":\"time-management-qa\",\"result\":{\"response\":\"\\n\\n\\n\"}},{\"taskId\":\"plan-1775641275505-task-2\",\"skillName\":\"geam-qa\",\"result\":{\"response\":\"\\n\\n您好！关于GEAM系统权限申请，让我先为您查询详细的申请流程和所需材料。\\n\"}}]}",
+    "timestamp": "2026-04-08T09:41:42.065Z"
+  },
+  {
+    "role": "user",
+    "content": "发票上传失败",
+    "timestamp": "2026-04-08T09:42:13.414Z"
+  },
+  {
+    "role": "assistant",
+    "content": "{\"planId\":\"plan-1775641323900\",\"results\":[{\"taskId\":\"plan-1775641323900-task-1\",\"skillName\":\"ees-qa\",\"result\":{\"response\":\"\\n\\n\\n\"}}]}",
+    "timestamp": "2026-04-08T09:42:13.414Z"
+  }
 ]

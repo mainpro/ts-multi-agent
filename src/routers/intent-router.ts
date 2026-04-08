@@ -355,9 +355,18 @@ export class IntentRouter {
   async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string): Promise<IntentResult> {
     const trimmedInput = userInput.trim();
 
+    // Step 0: 检测是否是复合需求（逗号分隔的不同问题）→ 需要 LLM 判断
+    // 逗号后面跟着疑问词（什么、如何、怎么、吗）→ 可能是多个问题
+    const hasFollowUpAfterComma = /，.*(什么|如何|怎么|怎样|吗|呢|？)/.test(trimmedInput);
+    // 多个问号 → 多个问题
+    const multipleQuestions = (trimmedInput.match(/[？?]/g) || []).length > 1;
+
+    const hasMultipleQuestions = hasFollowUpAfterComma || multipleQuestions;
+
     // Step 0: 关键词快速匹配技能（零延迟，单一命中直接返回）
+    // 但如果有逗号分隔的多个问题，跳过快速路径，让 LLM 判断多技能
     const keywordResult = this.keywordMatchSkill(trimmedInput);
-    if (keywordResult.matchedSkill && keywordResult.confidence >= 0.9 && !keywordResult.isAmbiguous) {
+    if (keywordResult.matchedSkill && keywordResult.confidence >= 0.9 && !keywordResult.isAmbiguous && !hasMultipleQuestions) {
       return {
         intent: 'skill_task',
         confidence: keywordResult.confidence,
@@ -408,7 +417,7 @@ export class IntentRouter {
     // Step 3: 调用 LLM 匹配技能（传入 Session Context 和历史技能作为 hint）
     console.log(`[IntentRouter] 🤖 使用 LLM 匹配技能...`);
     try {
-      const llmResult = await this.llmMatchSkill(trimmedInput, recentSkill, recentHistory, userProfile, sessionContextHint);
+      const llmResult = await this.llmMatchSkill(trimmedInput, recentSkill, recentHistory, userProfile, sessionContextHint, sessionId);
 
       // 如果 LLM 匹配到闲聊意图，直接返回
       if (llmResult.intent === 'small_talk') {
@@ -518,25 +527,27 @@ export class IntentRouter {
    * @param userInput 用户输入
    * @param recentSkillHint 历史技能提示（辅助判断，不强制）
    * @param recentHistory 对话历史（用于多轮对话理解）
+   * @param sessionId 会话ID（用于获取当前会话上下文）
    */
   private async llmMatchSkill(
     userInput: string,
     recentSkillHint?: string,
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
     userProfile?: UserProfile,
-    sessionContextHint?: string
+    sessionContextHint?: string,
+    sessionId?: string
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
 
     const IntentSchema = z.object({
       intent: z.enum(['skill_task', 'small_talk', 'unclear'])
-        .describe('意图类型: skill_task=需要使用某个技能执行任务, small_talk=闲聊/对话结束语(如"好的谢谢"), unclear=无法判断'),
+      .describe('意图类型: skill_task=需要使用某个技能执行任务, small_talk=闲聊/对话结束语(如"好的谢谢"), unclear=无法判断'),
       confidence: z.number().min(0).max(1).optional().default(0.8)
-        .describe('置信度 0-1'),
+      .describe('置信度 0-1'),
       matchedSkill: z.string().optional().nullable()
-        .describe('主匹配技能名称，intent=skill_task 时填写'),
+      .describe('主匹配技能名称，intent=skill_task 时填写'),
       matchedSkills: z.array(z.string()).optional().nullable()
-        .describe('所有匹配的技能列表，多意图时填写多个'),
+      .describe('所有匹配的技能列表，多意图时填写多个'),
     });
 
     const systemPrompt = buildSkillMatcherPrompt(skills);
@@ -555,7 +566,16 @@ export class IntentRouter {
       }
     }
 
-    let prompt = `【用户当前输入】\n${userInput}\n\n`;
+    let prompt = '';
+
+    if (sessionId) {
+      const priorityPrompt = sessionContextService.buildPriorityPrompt(sessionId);
+      if (priorityPrompt) {
+        prompt += priorityPrompt + '\n\n';
+      }
+    }
+
+    prompt += `【用户当前输入】\n${userInput}\n\n`;
 
     if (sessionHintText) {
       prompt += `【当前会话上下文 - 参考】\n${sessionHintText}\n\n`;
@@ -630,7 +650,7 @@ export class IntentRouter {
   generateClarificationResponse(): string {
     const skills = this.skillRegistry.getAllMetadata();
     const skillList = skills.length > 0
-      ? skills.map(s => `• ${s.name}：${s.description}`).join('\n')
+      ? skills.map(s => `• ${s.name}`).join('\n')
       : '暂无可用功能';
 
     return `抱歉，我不太理解您的需求。\n\n我是运维智能体，目前我可以帮您解决以下问题：\n\n${skillList}\n\n请告诉我您需要什么帮助？`;

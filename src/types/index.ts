@@ -97,7 +97,7 @@ export interface TaskError {
 export interface Task {
   id: string;
   requirement: string;
-  skillName: string;
+  skillName?: string;
   dependencies: string[];
   dependents?: string[];
   status?: TaskStatus;

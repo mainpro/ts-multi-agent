@@ -49,6 +49,7 @@ export function buildSubRequirementMatcherPrompt(
   context?: {
     recentSkill?: string;
     conversationContext?: string;
+    sessionPriorityContext?: string;
   }
 ): { systemPrompt: string; userPrompt: string } {
   // 构建技能列表
@@ -63,7 +64,13 @@ export function buildSubRequirementMatcherPrompt(
   );
 
   // 构建用户提示词
-  let userPrompt = `【子需求内容】\n${subReq.content}\n\n`;
+  let userPrompt = '';
+
+  if (context?.sessionPriorityContext) {
+    userPrompt += `${context.sessionPriorityContext}\n\n`;
+  }
+
+  userPrompt += `【子需求内容】\n${subReq.content}\n\n`;
   userPrompt += `【标准化内容】\n${subReq.normalizedContent}\n\n`;
 
   if (context?.recentSkill) {

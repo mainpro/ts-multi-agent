@@ -168,15 +168,15 @@ export function createAPIServer(
           ? taskQueue.getTasksByStatus(status as TaskStatus)
           : taskQueue.getAllTasks();
 
-        // Format response
-        const formattedTasks = tasks.map((task) => ({
-          id: task.id,
-          status: task.status,
-          requirement: task.requirement,
-          createdAt: task.createdAt.toISOString(),
-        }));
+  // Format response
+  const formattedTasks = tasks.map((task) => ({
+    id: task.id,
+    status: task.status || 'pending',
+    requirement: task.requirement,
+    createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+  }));
 
-        res.json({ tasks: formattedTasks });
+  res.json({ tasks: formattedTasks });
       } catch (error) {
         console.error('Error listing tasks:', error);
         res.status(500).json({
@@ -374,16 +374,16 @@ try {
           return;
         }
 
-        const response: TaskStatusResponse = {
-          taskId: task.id,
-          status: task.status,
-          requirement: task.requirement,
-          skillName: task.skillName,
-          createdAt: task.createdAt.toISOString(),
-          startedAt: task.startedAt?.toISOString(),
-          completedAt: task.completedAt?.toISOString(),
-          retryCount: task.retryCount,
-        };
+const response: TaskStatusResponse = {
+  taskId: task.id,
+  status: task.status || 'pending',
+  requirement: task.requirement,
+  skillName: task.skillName,
+  createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+  startedAt: task.startedAt?.toISOString(),
+  completedAt: task.completedAt?.toISOString(),
+  retryCount: task.retryCount || 0,
+};
 
         res.json(response);
       } catch (error) {
@@ -417,10 +417,10 @@ try {
           return;
         }
 
-        const response: TaskResultResponse = {
-          taskId: task.id,
-          status: task.status,
-        };
+const response: TaskResultResponse = {
+  taskId: task.id,
+  status: task.status || 'pending',
+};
 
         if (task.status === 'completed') {
           response.result = task.result;
@@ -541,18 +541,18 @@ try {
       const result = await mainAgent.processRequirement(requirement);
       console.log(`Processing task ${taskId} completed with result:`, result);
 
-      const updatedTask = taskQueue.getTask(taskId);
-      if (updatedTask && result.success) {
-        updatedTask.status = 'completed';
-        updatedTask.result = result.data;
-        updatedTask.completedAt = new Date();
-        console.log(`Task ${taskId} updated to completed`);
-      } else if (updatedTask && !result.success) {
-        updatedTask.status = 'failed';
-        updatedTask.error = result.error;
-        updatedTask.completedAt = new Date();
-        console.log(`Task ${taskId} updated to failed with error:`, result.error);
-      }
+const updatedTask = taskQueue.getTask(taskId);
+if (updatedTask && result.success) {
+  updatedTask.status = 'completed';
+  updatedTask.result = { success: true, data: result.data };
+  updatedTask.completedAt = new Date();
+  console.log(`Task ${taskId} updated to completed`);
+} else if (updatedTask && !result.success) {
+  updatedTask.status = 'failed';
+  updatedTask.error = result.error;
+  updatedTask.completedAt = new Date();
+  console.log(`Task ${taskId} updated to failed with error:`, result.error);
+}
     } catch (error) {
       console.error(`Error processing task ${taskId}:`, error);
       const updatedTask = taskQueue.getTask(taskId);

@@ -8,6 +8,7 @@ import {
   SkillMatchType,
 } from '../types/requirement-types';
 import { buildSubRequirementMatcherPrompt } from '../prompts/skill-matcher';
+import { sessionContextService } from '../memory';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -16,6 +17,7 @@ const KEYWORD_CACHE_FILE = 'data/keyword-cache.json';
 export interface MatchContext {
   recentSkill?: string;
   conversationContext?: string;
+  sessionId?: string;
 }
 
 const SkillMatchResponseSchema = z.object({
@@ -163,7 +165,16 @@ export class SkillMatcher {
 
     try {
       const skills = this.skillRegistry.getAllMetadata();
-      const { systemPrompt, userPrompt } = buildSubRequirementMatcherPrompt(skills, subReq, context);
+
+      let sessionPriorityContext: string | undefined;
+      if (context?.sessionId) {
+        sessionPriorityContext = sessionContextService.buildPriorityPrompt(context.sessionId);
+      }
+
+      const { systemPrompt, userPrompt } = buildSubRequirementMatcherPrompt(skills, subReq, {
+        ...context,
+        sessionPriorityContext,
+      });
 
       const result = await this.llm.generateStructured(
         userPrompt,

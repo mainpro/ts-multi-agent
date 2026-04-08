@@ -1,10 +1,10 @@
-import { Task, TaskStatus, TaskError, CONFIG } from '../types';
+import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
 
 type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
 /**
  * TaskQueue manages task scheduling, execution, and dependency resolution
- * 
+ *
  * Features:
  * - DAG-based dependency management with cycle detection
  * - Concurrent execution limiting (MAX_CONCURRENT_SUBAGENTS = 5)
@@ -16,7 +16,8 @@ export class TaskQueue {
   private tasks: Map<string, Task> = new Map();
   private running: Set<string> = new Set();
   private executor: TaskExecutor;
-  private timeoutHandles: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private timeoutHandles: Map<string, ReturnType<typeof setTimeout>> =
+    new Map();
   private isProcessing = false;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private cleanupIntervalMs: number;
@@ -27,12 +28,17 @@ export class TaskQueue {
     tasksFailed: 0,
     tasksTimedOut: 0,
     averageExecutionTime: 0,
-    totalExecutionTime: 0
+    totalExecutionTime: 0,
   };
 
-  constructor(executor: TaskExecutor, cleanupIntervalMs?: number, retentionTimeMs?: number) {
+  constructor(
+    executor: TaskExecutor,
+    cleanupIntervalMs?: number,
+    retentionTimeMs?: number,
+  ) {
     this.executor = executor;
-    this.cleanupIntervalMs = cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
+    this.cleanupIntervalMs =
+      cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
     this.retentionTimeMs = retentionTimeMs ?? CONFIG.TASK_RETENTION_TIME_MS;
 
     this.startCleanupInterval();
@@ -64,11 +70,14 @@ export class TaskQueue {
     const now = new Date().getTime();
 
     for (const [taskId, task] of this.tasks.entries()) {
-      if (task.status !== 'completed' && task.status !== 'failed') {
+      if (task.status !== "completed" && task.status !== "failed") {
         continue;
       }
 
-      if (task.completedAt && (now - task.completedAt.getTime()) > this.retentionTimeMs) {
+      if (
+        task.completedAt &&
+        now - task.completedAt.getTime() > this.retentionTimeMs
+      ) {
         this.clearTaskTimeout(taskId);
 
         for (const otherTask of this.tasks.values()) {
@@ -76,9 +85,11 @@ export class TaskQueue {
           if (index > -1) {
             otherTask.dependencies.splice(index, 1);
           }
-          const depIndex = otherTask.dependents.indexOf(taskId);
-          if (depIndex > -1) {
-            otherTask.dependents.splice(depIndex, 1);
+          if (otherTask.dependents) {
+            const depIndex = otherTask.dependents.indexOf(taskId);
+            if (depIndex > -1) {
+              otherTask.dependents.splice(depIndex, 1);
+            }
           }
         }
 
@@ -95,7 +106,9 @@ export class TaskQueue {
    */
   addTask(task: Task): boolean {
     if (this.tasks.size >= CONFIG.MAX_QUEUE_SIZE) {
-      throw new Error(`Queue full: cannot exceed ${CONFIG.MAX_QUEUE_SIZE} tasks`);
+      throw new Error(
+        `Queue full: cannot exceed ${CONFIG.MAX_QUEUE_SIZE} tasks`,
+      );
     }
 
     if (this.tasks.has(task.id)) {
@@ -109,14 +122,16 @@ export class TaskQueue {
     }
 
     if (this.wouldCreateCycle(task)) {
-      throw new Error(`Adding task "${task.id}" would create a circular dependency`);
+      throw new Error(
+        `Adding task "${task.id}" would create a circular dependency`,
+      );
     }
 
     this.tasks.set(task.id, task);
 
     for (const depId of task.dependencies) {
       const dep = this.tasks.get(depId);
-      if (dep && !dep.dependents.includes(task.id)) {
+      if (dep && dep.dependents && !dep.dependents.includes(task.id)) {
         dep.dependents.push(task.id);
       }
     }
@@ -135,7 +150,7 @@ export class TaskQueue {
   }
 
   getTasksByStatus(status: TaskStatus): Task[] {
-    return this.getAllTasks().filter(task => task.status === status);
+    return this.getAllTasks().filter((task) => task.status === status);
   }
 
   getRunningCount(): number {
@@ -152,14 +167,14 @@ export class TaskQueue {
 
   cancelTask(taskId: string): boolean {
     const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'pending') {
+    if (!task || task.status !== "pending") {
       return false;
     }
 
     this.failTask(taskId, {
-      type: 'USER_ERROR',
-      message: 'Task was cancelled by user',
-      code: 'CANCELLED'
+      type: "USER_ERROR",
+      message: "Task was cancelled by user",
+      code: "CANCELLED",
     });
 
     return true;
@@ -174,12 +189,12 @@ export class TaskQueue {
     this.timeoutHandles.clear();
 
     for (const task of this.tasks.values()) {
-      if (task.status === 'pending' || task.status === 'running') {
-        task.status = 'failed';
+      if (task.status === "pending" || task.status === "running") {
+        task.status = "failed";
         task.error = {
-          type: 'FATAL',
-          message: 'Task queue cleared',
-          code: 'QUEUE_CLEARED'
+          type: "FATAL",
+          message: "Task queue cleared",
+          code: "QUEUE_CLEARED",
         };
         task.completedAt = new Date();
       }
@@ -192,7 +207,7 @@ export class TaskQueue {
   /**
    * DFS-based cycle detection
    * Checks if adding the given task would create a circular dependency
-   * 
+   *
    * Algorithm:
    * 1. Build temporary dependency graph including the new task
    * 2. For each dependency of the new task, check if new task is reachable
@@ -218,7 +233,11 @@ export class TaskQueue {
   /**
    * DFS traversal to check if target is reachable from start
    */
-  private isReachable(start: string, target: string, visited: Set<string>): boolean {
+  private isReachable(
+    start: string,
+    target: string,
+    visited: Set<string>,
+  ): boolean {
     if (visited.has(start)) {
       return false;
     }
@@ -229,7 +248,7 @@ export class TaskQueue {
       return false;
     }
 
-    for (const dependentId of node.dependents) {
+    for (const dependentId of node.dependents || []) {
       if (dependentId === target) {
         return true;
       }
@@ -265,7 +284,10 @@ export class TaskQueue {
     } finally {
       this.isProcessing = false;
 
-      if (this.running.size < CONFIG.MAX_CONCURRENT_SUBAGENTS && this.hasReadyTasks()) {
+      if (
+        this.running.size < CONFIG.MAX_CONCURRENT_SUBAGENTS &&
+        this.hasReadyTasks()
+      ) {
         setImmediate(() => this.processQueue());
       }
     }
@@ -275,7 +297,7 @@ export class TaskQueue {
     const ready: Task[] = [];
 
     for (const task of this.tasks.values()) {
-      if (task.status !== 'pending') {
+      if (task.status !== "pending") {
         continue;
       }
 
@@ -284,9 +306,9 @@ export class TaskQueue {
         continue;
       }
 
-      const allDepsCompleted = task.dependencies.every(depId => {
+      const allDepsCompleted = task.dependencies.every((depId) => {
         const dep = this.tasks.get(depId);
-        return dep && dep.status === 'completed';
+        return dep && dep.status === "completed";
       });
 
       if (allDepsCompleted) {
@@ -294,14 +316,14 @@ export class TaskQueue {
       }
     }
 
-    ready.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    ready.sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
 
     return ready;
   }
 
   private hasReadyTasks(): boolean {
     for (const task of this.tasks.values()) {
-      if (task.status !== 'pending') {
+      if (task.status !== "pending") {
         continue;
       }
 
@@ -310,9 +332,9 @@ export class TaskQueue {
         continue;
       }
 
-      const allDepsCompleted = task.dependencies.every(depId => {
+      const allDepsCompleted = task.dependencies.every((depId) => {
         const dep = this.tasks.get(depId);
-        return dep && dep.status === 'completed';
+        return dep && dep.status === "completed";
       });
 
       if (allDepsCompleted) {
@@ -324,7 +346,7 @@ export class TaskQueue {
   }
 
   private async executeTask(task: Task): Promise<void> {
-    task.status = 'running';
+    task.status = "running";
     task.startedAt = new Date();
     this.running.add(task.id);
 
@@ -345,7 +367,9 @@ export class TaskQueue {
       this.timeoutHandles.delete(task.id);
 
       const executionTime = Date.now() - startTime;
-      console.log(`[TaskQueue] Task ${task.id} completed in ${executionTime}ms`);
+      console.log(
+        `[TaskQueue] Task ${task.id} completed in ${executionTime}ms`,
+      );
       this.completeTask(task.id, result, executionTime);
     } catch (error) {
       console.log(`[TaskQueue] ❌ executor 抛出异常: ${task.id}`, error);
@@ -353,20 +377,24 @@ export class TaskQueue {
       this.timeoutHandles.delete(task.id);
 
       const executionTime = Date.now() - startTime;
-      const isTimeout = error instanceof Error && (
-        error.name === 'AbortError' || error.message.includes('timed out')
-      );
+      const isTimeout =
+        error instanceof Error &&
+        (error.name === "AbortError" || error.message.includes("timed out"));
 
       if (isTimeout) {
-        console.warn(`[TaskQueue] Task ${task.id} timed out after ${executionTime}ms`);
+        console.warn(
+          `[TaskQueue] Task ${task.id} timed out after ${executionTime}ms`,
+        );
       } else {
-        console.warn(`[TaskQueue] Task ${task.id} failed after ${executionTime}ms`);
+        console.warn(
+          `[TaskQueue] Task ${task.id} failed after ${executionTime}ms`,
+        );
       }
 
       const taskError: TaskError = {
-        type: 'RETRYABLE',
+        type: "RETRYABLE",
         message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       };
       this.failTask(task.id, taskError, isTimeout);
     } finally {
@@ -383,7 +411,11 @@ export class TaskQueue {
     }
   }
 
-  private completeTask(taskId: string, result: unknown, executionTime: number): void {
+  private completeTask(
+    taskId: string,
+    result: unknown,
+    executionTime: number,
+  ): void {
     const task = this.tasks.get(taskId);
     if (!task) {
       return;
@@ -391,31 +423,38 @@ export class TaskQueue {
 
     const resultSize = JSON.stringify(result).length;
     if (resultSize > this.MAX_RESULT_SIZE) {
-      console.warn(`[TaskQueue] Task ${taskId} result exceeds size limit (${resultSize} bytes)`);
+      console.warn(
+        `[TaskQueue] Task ${taskId} result exceeds size limit (${resultSize} bytes)`,
+      );
       result = {
-        warning: 'Result truncated due to size limit',
-        partialResult: JSON.stringify(result).substring(0, 1000) + '...'
+        warning: "Result truncated due to size limit",
+        partialResult: JSON.stringify(result).substring(0, 1000) + "...",
       };
     }
 
-    task.status = 'completed';
-    task.result = result;
+    task.status = "completed";
+    task.result = result as TaskResult;
     task.completedAt = new Date();
 
     this.metrics.tasksCompleted++;
     this.metrics.totalExecutionTime += executionTime;
-    this.metrics.averageExecutionTime = this.metrics.totalExecutionTime / this.metrics.tasksCompleted;
+    this.metrics.averageExecutionTime =
+      this.metrics.totalExecutionTime / this.metrics.tasksCompleted;
 
     this.notifyDependents(taskId);
   }
 
-  private failTask(taskId: string, error: TaskError, isTimeout: boolean = false): void {
+  private failTask(
+    taskId: string,
+    error: TaskError,
+    isTimeout: boolean = false,
+  ): void {
     const task = this.tasks.get(taskId);
     if (!task) {
       return;
     }
 
-    task.status = 'failed';
+    task.status = "failed";
     task.error = error;
     task.completedAt = new Date();
 
@@ -434,9 +473,9 @@ export class TaskQueue {
       return;
     }
 
-    for (const dependentId of task.dependents) {
+    for (const dependentId of task.dependents || []) {
       const dependent = this.tasks.get(dependentId);
-      if (dependent && dependent.status === 'pending') {
+      if (dependent && dependent.status === "pending") {
         // Queue will be processed after current execution
       }
     }
@@ -448,16 +487,16 @@ export class TaskQueue {
       return;
     }
 
-    for (const dependentId of failedTask.dependents) {
+    for (const dependentId of failedTask.dependents || []) {
       const dependent = this.tasks.get(dependentId);
-      if (!dependent || dependent.status !== 'pending') {
+      if (!dependent || dependent.status !== "pending") {
         continue;
       }
 
       const propagatedError: TaskError = {
-        type: 'FATAL',
+        type: "FATAL",
         message: `Dependency "${failedTaskId}" failed: ${error.message}`,
-        code: 'DEPENDENCY_FAILED'
+        code: "DEPENDENCY_FAILED",
       };
 
       this.failTask(dependentId, propagatedError);
