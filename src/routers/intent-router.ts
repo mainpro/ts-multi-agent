@@ -534,7 +534,9 @@ export class IntentRouter {
       confidence: z.number().min(0).max(1).optional().default(0.8)
         .describe('置信度 0-1'),
       matchedSkill: z.string().optional().nullable()
-        .describe('匹配的技能名称，intent=skill_task 时填写'),
+        .describe('主匹配技能名称，intent=skill_task 时填写'),
+      matchedSkills: z.array(z.string()).optional().nullable()
+        .describe('所有匹配的技能列表，多意图时填写多个'),
     });
 
     const systemPrompt = buildSkillMatcherPrompt(skills);
@@ -592,7 +594,7 @@ export class IntentRouter {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
       matchedSkill: result.matchedSkill,
-      matchedSkills: result.matchedSkill ? [result.matchedSkill] : [],
+      matchedSkills: result.matchedSkills || [result.matchedSkill],
     };
   }
 

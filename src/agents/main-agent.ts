@@ -1,13 +1,15 @@
-import { LLMClient } from '../llm';
-import { SkillRegistry } from '../skill-registry';
-import { TaskQueue } from '../task-queue';
-import { IntentRouter } from '../routers';
-import { UnifiedPlanner } from '../planners';
-import { UserProfileService } from '../user-profile';
-import { MemoryService, sessionContextService } from '../memory';
-import { DynamicContextBuilder } from '../context/dynamic-context';
-import { AutoCompactService } from '../memory/auto-compact';
-import { buildReplanPrompt } from '../prompts';
+import { LLMClient } from "../llm";
+import { SkillRegistry } from "../skill-registry";
+import { TaskQueue } from "../task-queue";
+import { IntentRouter } from "../routers";
+import { UnifiedPlanner } from "../planners";
+import { UserProfileService } from "../user-profile";
+import { MemoryService, sessionContextService } from "../memory";
+import { DynamicContextBuilder } from "../context/dynamic-context";
+import { AutoCompactService } from "../memory/auto-compact";
+import { buildReplanPrompt } from "../prompts";
+import { RequirementAnalyzer } from "../analyzers/requirement-analyzer";
+import { SkillMatcher } from "../matchers/skill-matcher";
 import {
   Task,
   TaskResult,
@@ -16,8 +18,13 @@ import {
   TaskPlan,
   CONFIG,
   TaskPlanSchema,
-} from '../types';
-  
+} from "../types";
+import {
+  DecompositionResult,
+  SubRequirement,
+  SkillMatchResult,
+} from "../types/requirement-types";
+
 export class MainAgent {
   private maxReplanAttempts: number;
   private intentRouter: IntentRouter;
@@ -25,170 +32,309 @@ export class MainAgent {
   private memoryService: MemoryService;
   private dynamicContextBuilder: DynamicContextBuilder;
   private autoCompactService: AutoCompactService;
+  private requirementAnalyzer: RequirementAnalyzer;
+  private skillMatcher: SkillMatcher;
 
   constructor(
     private llm: LLMClient,
     private skillRegistry: SkillRegistry,
     private taskQueue: TaskQueue,
-    maxReplanAttempts: number = CONFIG.MAX_REPLAN_ATTEMPTS
+    maxReplanAttempts: number = CONFIG.MAX_REPLAN_ATTEMPTS,
   ) {
     this.maxReplanAttempts = maxReplanAttempts;
     this.intentRouter = new IntentRouter(llm, this.skillRegistry);
-    this.userProfileService = new UserProfileService('data');
-    this.memoryService = new MemoryService('data');
+    this.userProfileService = new UserProfileService("data");
+    this.memoryService = new MemoryService("data");
     this.dynamicContextBuilder = new DynamicContextBuilder({
-      memoryDataDir: 'data',
+      memoryDataDir: "data",
     });
     this.autoCompactService = new AutoCompactService(llm);
+    this.requirementAnalyzer = new RequirementAnalyzer(llm);
+    this.skillMatcher = new SkillMatcher(llm, this.skillRegistry);
   }
 
   async processRequirement(
     requirement: string,
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
-    userId: string = 'default',
-    sessionId?: string
+    userId: string = "default",
+    sessionId?: string,
   ): Promise<TaskResult> {
-  try {
+    try {
       console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
-      
+
+      // ========== 步骤 0: 图片分析（优先处理） ==========
       if (imageAttachment) {
-        console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || 'unnamed'} (${imageAttachment.mimeType})`);
-        
+        console.log(
+          `[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`,
+        );
+
         console.log(`[MainAgent] 🔍 调用视觉模型分析图片...`);
         try {
-          const VisionLLMClient = (await import('../llm/vision-client.js')).VisionLLMClient;
+          const VisionLLMClient = (await import("../llm/vision-client.js"))
+            .VisionLLMClient;
           const visionClient = new VisionLLMClient();
-          
+
           const visionResult = await visionClient.analyzeImage(
-            imageAttachment.data.toString('base64'),
-            imageAttachment.mimeType
+            imageAttachment.data.toString("base64"),
+            imageAttachment.mimeType,
           );
-          
-          console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || '未知系统'}, ${visionResult.errorType || '无错误'}`);
-          
-          requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || '未知'}\n错误类型: ${visionResult.errorType || '未知'}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || '无'}`;
+
+          console.log(
+            `[MainAgent] ✅ 视觉分析完成: ${visionResult.system || "未知系统"}, ${visionResult.errorType || "无错误"}`,
+          );
+
+          requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
         } catch (visionError) {
           console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
         }
+      }
+
+      // ========== 步骤 0.5: 需求拆解（图片分析后） ==========
+      if (CONFIG.ENABLE_REQUIREMENT_DECOMPOSITION) {
+        console.log(
+          `[MainAgent] 🔍 Feature flag enabled: checking requirement decomposition`,
+        );
+        const decomposition =
+          await this.requirementAnalyzer.decompose(requirement);
+        if (decomposition.isComposite) {
+          console.log(
+            `[MainAgent] 🔄 Composite requirement detected, using new flow`,
+          );
+          return this.processCompositeRequirement(
+            decomposition,
+            userId,
+            sessionId || userId,
+          );
+        }
+        console.log(
+          `[MainAgent] 📋 Single requirement, falling through to legacy flow`,
+        );
       }
 
       const effectiveSessionId = sessionId || userId;
 
       // ========== 步骤 0: 加载用户画像 ==========
       const userProfile = await this.userProfileService.loadProfile(userId);
-      console.log(`[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(', ')}`);
+      console.log(
+        `[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(", ")}`,
+      );
 
       // ========== 步骤 0.1: 加载对话历史 ==========
-    const memory = await this.memoryService.loadMemory(userId);
-    
-    const messages = memory.conversationHistory.map(msg => ({
-      role: msg.role,
-      content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-      timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-    }));
-    
-    const microCompactedMessages = this.autoCompactService.microCompact(messages);
-    const compactedMessages = await this.autoCompactService.checkAndCompact(microCompactedMessages);
-    
-    const originalTokens = this.autoCompactService.estimateTokens(messages);
-    const compactedTokens = this.autoCompactService.estimateTokens(compactedMessages);
-    if (originalTokens !== compactedTokens) {
-      console.log(`[MainAgent] 🗜️ 上下文压缩: ${originalTokens} → ${compactedTokens} tokens (${Math.round((1 - compactedTokens / originalTokens) * 100)}% reduction)`);
-    }
-    
-    const compactedHistory = compactedMessages.map(msg => ({
-      role: msg.role as 'user' | 'assistant',
-      content: msg.content,
-      timestamp: new Date(msg.timestamp || Date.now()).toISOString(),
-    }));
-    
-    const historyPrompt = this.memoryService.buildContextPrompt({
-      ...memory,
-      conversationHistory: compactedHistory,
-    });
-    
-    if (historyPrompt) {
-      console.log(`[MainAgent] 📚 对话历史: ${compactedHistory.length} 条消息 (${compactedTokens} tokens)`);
-    }
+      const memory = await this.memoryService.loadMemory(userId);
+
+      const messages = memory.conversationHistory.map((msg) => ({
+        role: msg.role,
+        content:
+          typeof msg.content === "string"
+            ? msg.content
+            : JSON.stringify(msg.content),
+        timestamp: msg.timestamp
+          ? new Date(msg.timestamp).getTime()
+          : Date.now(),
+      }));
+
+      const microCompactedMessages =
+        this.autoCompactService.microCompact(messages);
+      const compactedMessages = await this.autoCompactService.checkAndCompact(
+        microCompactedMessages,
+      );
+
+      const originalTokens = this.autoCompactService.estimateTokens(messages);
+      const compactedTokens =
+        this.autoCompactService.estimateTokens(compactedMessages);
+      if (originalTokens !== compactedTokens) {
+        console.log(
+          `[MainAgent] 🗜️ 上下文压缩: ${originalTokens} → ${compactedTokens} tokens (${Math.round((1 - compactedTokens / originalTokens) * 100)}% reduction)`,
+        );
+      }
+
+      const compactedHistory = compactedMessages.map((msg) => ({
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+        timestamp: new Date(msg.timestamp || Date.now()).toISOString(),
+      }));
+
+      const historyPrompt = this.memoryService.buildContextPrompt({
+        ...memory,
+        conversationHistory: compactedHistory,
+      });
+
+      if (historyPrompt) {
+        console.log(
+          `[MainAgent] 📚 对话历史: ${compactedHistory.length} 条消息 (${compactedTokens} tokens)`,
+        );
+      }
 
       // ========== 步骤 0.2: 检查 Session Context ==========
-      const sessionContext = sessionContextService.getContext(effectiveSessionId);
+      const sessionContext =
+        sessionContextService.getContext(effectiveSessionId);
       if (sessionContext.currentSkill) {
-        console.log(`[MainAgent] 🎯 Session Context: 当前技能=${sessionContext.currentSkill}, 轮次=${sessionContext.turnCount}`);
+        console.log(
+          `[MainAgent] 🎯 Session Context: 当前技能=${sessionContext.currentSkill}, 轮次=${sessionContext.turnCount}`,
+        );
       }
 
       let enrichedRequirement = requirement;
       if (historyPrompt) {
-        enrichedRequirement = historyPrompt + '\n\n' + enrichedRequirement;
+        enrichedRequirement = historyPrompt + "\n\n" + enrichedRequirement;
       }
 
       // ========== 步骤 0.6: 动态上下文构建（CLAUDE.md + Git + Memory） ==========
-      const dynamicContext = await this.dynamicContextBuilder.build(requirement, userId);
+      const dynamicContext = await this.dynamicContextBuilder.build(
+        requirement,
+        userId,
+      );
       if (dynamicContext) {
-        enrichedRequirement = dynamicContext + '\n\n' + enrichedRequirement;
+        enrichedRequirement = dynamicContext + "\n\n" + enrichedRequirement;
         console.log(`[MainAgent] 📑 动态上下文已注入`);
       }
 
-    // ========== 步骤 1: 意图路由（快速应答） ==========
-    console.log(`[MainAgent] 🔄 正在分类用户意图...`);
-    const intentResult = await this.intentRouter.classify(requirement, userProfile, memory.conversationHistory);
-      console.log(`[MainAgent] 📊 意图分类: ${intentResult.intent} (置信度: ${intentResult.confidence})`);
+      // ========== 步骤 1: 需求拆解（复合需求检测） ==========
+      console.log(`[MainAgent] 🔍 正在拆解需求...`);
+      const decomposition =
+        await this.requirementAnalyzer.decompose(requirement);
+      console.log(
+        `[MainAgent] 📊 拆解结果: isComposite=${decomposition.isComposite}, subReqs=${decomposition.subRequirements.length}`,
+      );
 
-  switch (intentResult.intent) {
-    case 'small_talk':
-      console.log(`[MainAgent] 💬 闲聊模式：快速应答`);
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      return {
-        success: true,
-        data: {
-          message: intentResult.suggestedResponse,
-          type: 'small_talk',
-        },
-      };
+      // 复合需求：走新流程
+      if (decomposition.isComposite) {
+        console.log(`[MainAgent] 🔄 检测到复合需求，启动复合处理流程`);
+        return this.processCompositeRequirement(
+          decomposition,
+          userId,
+          sessionId || userId,
+        );
+      }
 
-    case 'guess_confirm':
-      console.log(`[MainAgent] 🎯 猜测确认：${intentResult.guessedSystem}`);
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      return {
-        success: true,
-        data: {
-          message: intentResult.suggestedResponse,
-          type: 'guess_confirm',
-          guessedSystem: intentResult.guessedSystem,
-        },
-      };
+      // 单需求：检查整体意图
+      if (decomposition.overallIntent === "small_talk") {
+        console.log(`[MainAgent] 💬 闲聊模式：快速应答`);
+        await this.updateProfileAfterRequest(
+          userProfile,
+          enrichedRequirement,
+          userId,
+        );
+        return {
+          success: true,
+          data: {
+            message: "您好！有什么可以帮助您的吗？",
+            type: "small_talk",
+          },
+        };
+      }
 
-    case 'out_of_scope': {
-      console.log(`[MainAgent] 🔄 无法匹配，返回猜你想问`);
-      const guessResponse = this.intentRouter.generateGuessQuestions(enrichedRequirement, userProfile);
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      return {
-        success: true,
-        data: {
-          message: guessResponse.fullResponse,
-          type: 'guess_confirm',
-          guessedSystem: guessResponse.systems[0],
-        },
-      };
-    }
+      if (decomposition.overallIntent === "unclear") {
+        console.log(`[MainAgent] ❓ 意图不明确：返回猜你想问`);
+        await this.updateProfileAfterRequest(
+          userProfile,
+          enrichedRequirement,
+          userId,
+        );
+        const guessResponse = this.intentRouter.generateGuessQuestions(
+          enrichedRequirement,
+          userProfile,
+        );
+        return {
+          success: true,
+          data: {
+            message: guessResponse.fullResponse,
+            type: "guess_confirm",
+            guessedSystem: guessResponse.systems[0],
+          },
+        };
+      }
 
-    case 'unclear': {
-      console.log(`[MainAgent] ❓ 意图不明确：返回猜你想问`);
-      await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-      const guessResponse = this.intentRouter.generateGuessQuestions(enrichedRequirement, userProfile);
-      return {
-        success: true,
-        data: {
-          message: guessResponse.fullResponse,
-          type: 'guess_confirm',
-          guessedSystem: guessResponse.systems[0],
-        },
-      };
-    }
+      // ========== 步骤 2: 意图路由（快速应答） - 向后兼容 ==========
+      console.log(`[MainAgent] 🔄 正在分类用户意图...`);
+      const intentResult = await this.intentRouter.classify(
+        requirement,
+        userProfile,
+        memory.conversationHistory,
+      );
+      console.log(
+        `[MainAgent] 📊 意图分类: ${intentResult.intent} (置信度: ${intentResult.confidence})`,
+      );
 
-    case 'skill_task':
-        console.log(`[MainAgent] ⚙️ 技能任务：${intentResult.matchedSkills?.length ? `匹配技能: ${intentResult.matchedSkills.join(', ')}` : '待规划'}`);
-        break;
+      switch (intentResult.intent) {
+        case "small_talk":
+          console.log(`[MainAgent] 💬 闲聊模式：快速应答`);
+          await this.updateProfileAfterRequest(
+            userProfile,
+            enrichedRequirement,
+            userId,
+          );
+          return {
+            success: true,
+            data: {
+              message: intentResult.suggestedResponse,
+              type: "small_talk",
+            },
+          };
+
+        case "guess_confirm":
+          console.log(`[MainAgent] 🎯 猜测确认：${intentResult.guessedSystem}`);
+          await this.updateProfileAfterRequest(
+            userProfile,
+            enrichedRequirement,
+            userId,
+          );
+          return {
+            success: true,
+            data: {
+              message: intentResult.suggestedResponse,
+              type: "guess_confirm",
+              guessedSystem: intentResult.guessedSystem,
+            },
+          };
+
+        case "out_of_scope": {
+          console.log(`[MainAgent] 🔄 无法匹配，返回猜你想问`);
+          const guessResponse = this.intentRouter.generateGuessQuestions(
+            enrichedRequirement,
+            userProfile,
+          );
+          await this.updateProfileAfterRequest(
+            userProfile,
+            enrichedRequirement,
+            userId,
+          );
+          return {
+            success: true,
+            data: {
+              message: guessResponse.fullResponse,
+              type: "guess_confirm",
+              guessedSystem: guessResponse.systems[0],
+            },
+          };
+        }
+
+        case "unclear": {
+          console.log(`[MainAgent] ❓ 意图不明确：返回猜你想问`);
+          await this.updateProfileAfterRequest(
+            userProfile,
+            enrichedRequirement,
+            userId,
+          );
+          const guessResponse = this.intentRouter.generateGuessQuestions(
+            enrichedRequirement,
+            userProfile,
+          );
+          return {
+            success: true,
+            data: {
+              message: guessResponse.fullResponse,
+              type: "guess_confirm",
+              guessedSystem: guessResponse.systems[0],
+            },
+          };
+        }
+
+        case "skill_task":
+          console.log(
+            `[MainAgent] ⚙️ 技能任务：${intentResult.matchedSkills?.length ? `匹配技能: ${intentResult.matchedSkills.join(", ")}` : "待规划"}`,
+          );
+          break;
       }
 
       // ========== 步骤 2: 任务规划 ==========
@@ -201,26 +347,30 @@ export class MainAgent {
         plan = {
           id: `plan-${Date.now()}`,
           requirement: enrichedRequirement,
-          tasks: [{
-            id: 'task-1',
-            requirement: enrichedRequirement,
-            skillName: matchedSkills[0],
-            dependencies: [],
-          }],
+          tasks: [
+            {
+              id: "task-1",
+              requirement: enrichedRequirement,
+              skillName: matchedSkills[0],
+              dependencies: [],
+            },
+          ],
         };
       } else if (matchedSkills.length > 1) {
         // 多技能：调用 UnifiedPlanner 分解任务
-        console.log(`[MainAgent] 📋 多技能任务 (${matchedSkills.length}个)：调用规划器`);
+        console.log(
+          `[MainAgent] 📋 多技能任务 (${matchedSkills.length}个)：调用规划器`,
+        );
         const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
         const planResult = await planner.plan(enrichedRequirement);
-        
+
         if (!planResult.success || !planResult.plan) {
           return {
             success: false,
             error: {
-              type: 'FATAL',
-              message: planResult.clarificationPrompt || '规划失败',
-              code: 'PLANNING_FAILED',
+              type: "FATAL",
+              message: planResult.clarificationPrompt || "规划失败",
+              code: "PLANNING_FAILED",
             },
           };
         }
@@ -230,43 +380,59 @@ export class MainAgent {
         return {
           success: false,
           error: {
-            type: 'FATAL',
-            message: '未匹配到合适的技能',
-            code: 'NO_SKILL_MATCHED',
+            type: "FATAL",
+            message: "未匹配到合适的技能",
+            code: "NO_SKILL_MATCHED",
           },
         };
       }
 
-  console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);
-  plan.tasks.forEach((task, idx) => {
-    console.log(`[MainAgent] 任务 ${idx + 1}: [${task.skillName}] ${task.requirement}`);
-  });
+      console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);
+      plan.tasks.forEach((task, idx) => {
+        console.log(
+          `[MainAgent] 任务 ${idx + 1}: [${task.skillName}] ${task.requirement}`,
+        );
+      });
 
-  console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
-  const result = await this.monitorAndReplan(plan);
+      console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
+      const result = await this.monitorAndReplan(plan);
 
-    // ========== 步骤 4: 更新用户画像 ==========
-    await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
-    const resultData = result.data as { response?: string; _metadata?: { skill?: string; references?: string[] } } | undefined;
-    const responseText = resultData?.response || JSON.stringify(result.data);
-    await this.memoryService.saveInteraction(userId, requirement, responseText, {
-      skill: resultData?._metadata?.skill,
-      references: resultData?._metadata?.references,
-    });
+      // ========== 步骤 4: 更新用户画像 ==========
+      await this.updateProfileAfterRequest(
+        userProfile,
+        enrichedRequirement,
+        userId,
+      );
+      const resultData = result.data as
+        | {
+            response?: string;
+            _metadata?: { skill?: string; references?: string[] };
+          }
+        | undefined;
+      const responseText = resultData?.response || JSON.stringify(result.data);
+      await this.memoryService.saveInteraction(
+        userId,
+        requirement,
+        responseText,
+        {
+          skill: resultData?._metadata?.skill,
+          references: resultData?._metadata?.references,
+        },
+      );
 
-    return result;
-  } catch (error) {
-      console.error('Error processing requirement:', error);
+      return result;
+    } catch (error) {
+      console.error("Error processing requirement:", error);
       return {
         success: false,
         error: {
-          type: 'FATAL',
-          message: error instanceof Error ? error.message : 'Unknown error',
-          code: 'PROCESSING_ERROR',
+          type: "FATAL",
+          message: error instanceof Error ? error.message : "Unknown error",
+          code: "PROCESSING_ERROR",
         },
       };
     }
-}
+  }
 
   async monitorAndReplan(plan: TaskPlan): Promise<TaskResult> {
     let replanAttempts = 0;
@@ -292,10 +458,10 @@ export class MainAgent {
       }
 
       const errors = failedTasks.map((t) => t.error!).filter(Boolean);
-      const allRetryable = errors.every((e) => e.type === 'RETRYABLE');
+      const allRetryable = errors.every((e) => e.type === "RETRYABLE");
 
       if (!allRetryable) {
-        const fatalError = errors.find((e) => e.type !== 'RETRYABLE');
+        const fatalError = errors.find((e) => e.type !== "RETRYABLE");
         return {
           success: false,
           error: fatalError || errors[0],
@@ -306,9 +472,9 @@ export class MainAgent {
         return {
           success: false,
           error: {
-            type: 'FATAL',
+            type: "FATAL",
             message: `Max replan attempts (${this.maxReplanAttempts}) exceeded`,
-            code: 'MAX_REPLAN_EXCEEDED',
+            code: "MAX_REPLAN_EXCEEDED",
           },
         };
       }
@@ -320,9 +486,9 @@ export class MainAgent {
     return {
       success: false,
       error: {
-        type: 'FATAL',
-        message: 'Unexpected end of replan loop',
-        code: 'UNEXPECTED',
+        type: "FATAL",
+        message: "Unexpected end of replan loop",
+        code: "UNEXPECTED",
       },
     };
   }
@@ -332,14 +498,16 @@ export class MainAgent {
     for (const taskDef of plan.tasks) {
       // Generate unique task ID by combining plan ID and task ID
       const uniqueTaskId = `${plan.id}-${taskDef.id}`;
-      
+
       // Update dependencies to use unique task IDs
-      const updatedDependencies = taskDef.dependencies.map(depId => `${plan.id}-${depId}`);
-      
+      const updatedDependencies = taskDef.dependencies.map(
+        (depId) => `${plan.id}-${depId}`,
+      );
+
       const task: Task = {
         id: uniqueTaskId,
         requirement: taskDef.requirement,
-        status: 'pending' as TaskStatus,
+        status: "pending" as TaskStatus,
         skillName: taskDef.skillName,
         params: taskDef.params,
         dependencies: updatedDependencies,
@@ -363,7 +531,9 @@ export class MainAgent {
       const allTasks = this.taskQueue.getAllTasks();
 
       // Only check tasks belonging to this specific plan
-      const planTasks = allTasks.filter((t) => t.id.startsWith(planId) && t.skillName);
+      const planTasks = allTasks.filter(
+        (t) => t.id.startsWith(planId) && t.skillName,
+      );
 
       // If no tasks for this plan, return success
       if (planTasks.length === 0) {
@@ -378,22 +548,24 @@ export class MainAgent {
 
       // Check if all plan tasks are completed
       const allCompleted = planTasks.every(
-        (t) => t.status === 'completed' || t.status === 'failed'
+        (t) => t.status === "completed" || t.status === "failed",
       );
 
       if (allCompleted) {
-        const failedTasks = planTasks.filter((t) => t.status === 'failed');
+        const failedTasks = planTasks.filter((t) => t.status === "failed");
 
         if (failedTasks.length === 0) {
           const results = planTasks
-            .filter((t) => t.status === 'completed')
+            .filter((t) => t.status === "completed")
             .map((t) => ({
               taskId: t.id,
               skillName: t.skillName,
               result: t.result,
             }));
 
-          console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`);
+          console.log(
+            `[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`,
+          );
           return {
             success: true,
             data: {
@@ -418,9 +590,9 @@ export class MainAgent {
     return {
       success: false,
       error: {
-        type: 'RETRYABLE',
+        type: "RETRYABLE",
         message: `Workflow timeout after ${maxWaitTime}ms`,
-        code: 'TIMEOUT',
+        code: "TIMEOUT",
       },
     };
   }
@@ -428,18 +600,21 @@ export class MainAgent {
   private getFailedTasks(plan: TaskPlan): Task[] {
     return plan.tasks
       .map((t) => this.taskQueue.getTask(`${plan.id}-${t.id}`))
-      .filter((t): t is Task => t !== undefined && t.status === 'failed');
+      .filter((t): t is Task => t !== undefined && t.status === "failed");
   }
 
   private static replanCounter = 0;
 
-  private async replan(failedPlan: TaskPlan, errors: TaskError[]): Promise<TaskPlan> {
+  private async replan(
+    failedPlan: TaskPlan,
+    errors: TaskError[],
+  ): Promise<TaskPlan> {
     const allSkills = this.skillRegistry.getAllMetadata();
     const systemPrompt = buildReplanPrompt(allSkills);
 
     const errorSummary = errors
-      .map((e) => `- ${e.type}: ${e.message}${e.code ? ` (${e.code})` : ''}`)
-      .join('\n');
+      .map((e) => `- ${e.type}: ${e.message}${e.code ? ` (${e.code})` : ""}`)
+      .join("\n");
 
     const prompt = `原始需求: "${failedPlan.requirement}"
 失败原因:
@@ -447,7 +622,11 @@ ${errorSummary}
 之前有 ${failedPlan.tasks.length} 个任务。创建新计划。`;
 
     try {
-      const newPlan = await this.llm.generateStructured(prompt, TaskPlanSchema, systemPrompt);
+      const newPlan = await this.llm.generateStructured(
+        prompt,
+        TaskPlanSchema,
+        systemPrompt,
+      );
       MainAgent.replanCounter++;
       newPlan.id = `${failedPlan.id}-retry-${MainAgent.replanCounter}-${Date.now()}`;
       newPlan.requirement = failedPlan.requirement;
@@ -456,7 +635,7 @@ ${errorSummary}
       for (const taskDef of failedPlan.tasks) {
         const oldTaskId = `${failedPlan.id}-${taskDef.id}`;
         const task = this.taskQueue.getTask(oldTaskId);
-        if (task && task.status !== 'completed' && task.status !== 'failed') {
+        if (task && task.status !== "completed" && task.status !== "failed") {
           this.taskQueue.cancelTask(oldTaskId);
         }
       }
@@ -474,10 +653,14 @@ ${errorSummary}
   private async updateProfileAfterRequest(
     userProfile: { commonSystems: string[]; conversationCount: number },
     enrichedRequirement: string,
-    userId: string = 'default'
+    userId: string = "default",
   ): Promise<void> {
-    const mentionedSystem = this.userProfileService.inferSystemFromText(enrichedRequirement);
-    if (mentionedSystem && !userProfile.commonSystems.includes(mentionedSystem)) {
+    const mentionedSystem =
+      this.userProfileService.inferSystemFromText(enrichedRequirement);
+    if (
+      mentionedSystem &&
+      !userProfile.commonSystems.includes(mentionedSystem)
+    ) {
       console.log(`[MainAgent] 📝 更新用户画像: 新增系统 ${mentionedSystem}`);
       await this.userProfileService.updateProfile(userId, {
         commonSystems: [...userProfile.commonSystems, mentionedSystem],
@@ -488,6 +671,121 @@ ${errorSummary}
         conversationCount: userProfile.conversationCount + 1,
       });
     }
+  }
+
+  private async processCompositeRequirement(
+    decomposition: DecompositionResult,
+    _userId: string,
+    _sessionId: string,
+  ): Promise<TaskResult> {
+    console.log(
+      `[MainAgent] 🔄 处理复合需求: ${decomposition.subRequirements.length} 个子需求`,
+    );
+
+    const matchResults = await this.skillMatcher.matchSkills(
+      decomposition.subRequirements,
+    );
+
+    const matched = matchResults.filter((r) => r.skill);
+    const unmatched = matchResults.filter((r) => !r.skill);
+
+    console.log(
+      `[MainAgent] 📊 匹配结果: ${matched.length} 个有技能, ${unmatched.length} 个无技能`,
+    );
+
+    if (matched.length === 0) {
+      console.log(`[MainAgent] ⚠️ 所有子需求均无匹配技能`);
+      return {
+        success: true,
+        data: {
+          response: this.buildAggregatedResponse(
+            decomposition.subRequirements,
+            [],
+            unmatched,
+          ),
+          type: "composite_no_skill",
+        },
+      };
+    }
+
+    const tasks = matched.map((match) => {
+      const subReq = decomposition.subRequirements.find(
+        (r) => r.id === match.subReqId,
+      )!;
+      return {
+        id: `task-${match.subReqId}`,
+        requirement: subReq.content,
+        skillName: match.skill!,
+        dependencies: [],
+      };
+    });
+
+    const plan: TaskPlan = {
+      id: `plan-${Date.now()}`,
+      requirement: "composite",
+      tasks,
+    };
+
+    console.log(`[MainAgent] 📤 提交复合任务计划: ${tasks.length} 个任务`);
+    const executionResult = await this.monitorAndReplan(plan);
+
+    return this.aggregateResults(decomposition, executionResult, unmatched);
+  }
+
+  private aggregateResults(
+    decomposition: DecompositionResult,
+    executionResult: TaskResult,
+    unmatched: SkillMatchResult[],
+  ): TaskResult {
+    if (!executionResult.success) {
+      return executionResult;
+    }
+
+    const results =
+      (
+        executionResult.data as {
+          results?: Array<{ taskId: string; result?: { response?: string } }>;
+        }
+      )?.results || [];
+
+    const response = this.buildAggregatedResponse(
+      decomposition.subRequirements,
+      results,
+      unmatched,
+    );
+
+    return {
+      success: true,
+      data: {
+        response,
+        type: "composite",
+      },
+    };
+  }
+
+  private buildAggregatedResponse(
+    subReqs: SubRequirement[],
+    results: Array<{ taskId: string; result?: { response?: string } }>,
+    unmatched: SkillMatchResult[],
+  ): string {
+    let response = "我已经为您处理了以下需求：\n\n";
+
+    subReqs.forEach((req, index) => {
+      const result = results.find((r) => r.taskId?.includes(req.id));
+      const match = unmatched.find((m) => m.subReqId === req.id);
+
+      response += `**需求 ${index + 1}**: ${req.content}\n`;
+
+      if (result?.result?.response) {
+        response += `✅ ${result.result.response}\n\n`;
+      } else if (match) {
+        response += `❓ 抱歉，我暂时无法处理这个问题，请提供更多信息或联系人工客服。\n\n`;
+      } else if (result) {
+        response += `✅ 处理完成\n\n`;
+      }
+    });
+
+    return response;
   }
 }
 

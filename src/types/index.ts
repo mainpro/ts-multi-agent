@@ -99,10 +99,15 @@ export interface Task {
   requirement: string;
   skillName: string;
   dependencies: string[];
+  dependents?: string[];
   status?: TaskStatus;
   result?: TaskResult;
+  error?: TaskError;
   startedAt?: Date;
   completedAt?: Date;
+  createdAt?: Date;
+  retryCount?: number;
+  params?: Record<string, unknown>;
   imageAttachment?: {
     data: Buffer;
     mimeType: string;
@@ -274,6 +279,10 @@ export const CONFIG = {
   VISION_TIMEOUT_MS: parseInt(process.env.VISION_TIMEOUT_MS || '60000', 10),
   /** Vision API max retries */
   VISION_MAX_RETRIES: parseInt(process.env.VISION_MAX_RETRIES || '3', 10),
+  // Feature Flags for Requirement Decomposition
+  ENABLE_REQUIREMENT_DECOMPOSITION: process.env.ENABLE_REQUIREMENT_DECOMPOSITION === 'true',
+  ENABLE_SKILL_MATCHER_EXTRACTION: process.env.ENABLE_SKILL_MATCHER_EXTRACTION === 'true',
+  DECOMPOSITION_MIN_CONFIDENCE: parseFloat(process.env.DECOMPOSITION_MIN_CONFIDENCE || '0.7'),
 } as const;
 
 // ============================================================================

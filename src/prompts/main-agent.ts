@@ -68,8 +68,9 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的技能匹配器
 - 如果是**对话结束语**（"好的谢谢"、"没问题"、"了解了"、"好的"、"谢谢"），这是对当前对话的礼貌收尾，识别为 small_talk
 - 如果是闲聊但**不是**结束语（如问天气、问时间、闲聊其他话题），且没有对应技能，返回 unclear
 - 如果是全新的独立问题，再按关键词匹配
+- **如果用户输入包含多个不同领域的问题**（如"打卡失败了，另外发票上传也有问题"），请将所有匹配的技能都列出来，不要纠结选择哪一个
 
-简单来说：能延续的延续，能结束对话的识别为 small_talk，闲聊但无法处理返回 unclear，实在不行再重新匹配。
+简单来说：能延续的延续，能结束对话的识别为 small_talk，闲聊但无法处理返回 unclear，实在不行再重新匹配，多意图问题返回多个技能。
 
 ## 可用技能
 
@@ -82,11 +83,14 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的技能匹配器
 {
   "intent": "skill_task" | "small_talk" | "unclear",
   "confidence": 0.0-1.0,
-  "matchedSkill": "技能名或null"
+  "matchedSkill": "主技能名或null",
+  "matchedSkills": ["技能1", "技能2"] 或 null
 }
 \`\`\`
 
-**重要区分**：
+**重要规则**：
+- 如果用户输入只涉及一个技能，matchedSkill 和 matchedSkills 都填写该技能
+- 如果用户输入涉及多个技能，matchedSkill 填写第一个提到的技能，matchedSkills 填写所有匹配的技能
 - small_talk：仅用于"对话结束语"，需要礼貌回复结束当前对话
 - unclear：用户输入无法匹配任何技能，且不是对话结束语（如问天气、闲聊无关话题）
 
