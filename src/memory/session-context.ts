@@ -7,6 +7,12 @@
  * - 用于当前聊天窗口内的状态保持
  */
 
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+
 export interface SessionContextData {
   /** 当前激活的技能 */
   currentSkill?: string;
@@ -22,6 +28,8 @@ export interface SessionContextData {
   tempVariables: Map<string, unknown>;
   /** 当前对话轮次 */
   turnCount: number;
+  /** 当前会话的完整对话内容（不压缩，包括闲聊） */
+  conversation: SessionMessage[];
 }
 
 /**
@@ -34,7 +42,6 @@ export class SessionContextService {
 
   /**
    * 获取或创建会话上下文
-   * @param sessionId - 会话ID（如 userId + timestamp）
    */
   getContext(sessionId: string): SessionContextData {
     let context = this.contexts.get(sessionId);
@@ -45,6 +52,7 @@ export class SessionContextService {
         sessionStartAt: Date.now(),
         tempVariables: new Map(),
         turnCount: 0,
+        conversation: [],
       };
       this.contexts.set(sessionId, context);
     }
@@ -57,7 +65,7 @@ export class SessionContextService {
    */
   updateContext(
     sessionId: string,
-    updates: Partial<Omit<SessionContextData, 'tempVariables'>> & { tempVariables?: Record<string, unknown> }
+    updates: Partial<Omit<SessionContextData, 'tempVariables' | 'conversation'>> & { tempVariables?: Record<string, unknown> }
   ): void {
     const context = this.getContext(sessionId);
 
@@ -66,7 +74,6 @@ export class SessionContextService {
     if (updates.currentTopic !== undefined) context.currentTopic = updates.currentTopic;
     if (updates.turnCount !== undefined) context.turnCount = updates.turnCount;
 
-    // 合并临时变量
     if (updates.tempVariables) {
       for (const [key, value] of Object.entries(updates.tempVariables)) {
         context.tempVariables.set(key, value);
@@ -75,6 +82,22 @@ export class SessionContextService {
 
     context.lastInteractionAt = Date.now();
     context.turnCount++;
+  }
+
+  /**
+   * 添加用户消息到当前会话
+   */
+  addUserMessage(sessionId: string, content: string): void {
+    const context = this.getContext(sessionId);
+    context.conversation.push({ role: 'user', content, timestamp: Date.now() });
+  }
+
+  /**
+   * 添加助手回复到当前会话
+   */
+  addAssistantMessage(sessionId: string, content: string): void {
+    const context = this.getContext(sessionId);
+    context.conversation.push({ role: 'assistant', content, timestamp: Date.now() });
   }
 
   /**
@@ -100,14 +123,12 @@ export class SessionContextService {
     const context = this.contexts.get(sessionId);
     if (!context) return false;
 
-    // 超过30分钟无交互认为会话过期
     const thirtyMinutes = 30 * 60 * 1000;
     return Date.now() - context.lastInteractionAt < thirtyMinutes;
   }
 
   /**
-   * 获取当前技能（优先级最高）
-   * @returns 当前技能或undefined
+   * 获取当前技能
    */
   getCurrentSkill(sessionId: string): string | undefined {
     return this.getContext(sessionId).currentSkill;
@@ -135,15 +156,10 @@ export class SessionContextService {
   }
 
   /**
-   * 构建优先级提示
-   * 将会话上下文格式化为LLM提示
+   * 构建优先级提示 - 包含完整对话内容
    */
   buildPriorityPrompt(sessionId: string): string {
     const context = this.getContext(sessionId);
-
-    if (!context.currentSkill && !context.currentSystem && !context.currentTopic) {
-      return '';
-    }
 
     const parts: string[] = ['【当前会话上下文 - 最高优先级】'];
 
@@ -158,7 +174,16 @@ export class SessionContextService {
     }
 
     parts.push(`对话轮次: ${context.turnCount}`);
-    parts.push('\n【重要】用户当前输入很可能是对上文话题的延续或追问，请优先结合上下文理解。');
+
+    if (context.conversation.length > 0) {
+      parts.push('\n【当前会话完整对话】');
+      for (const msg of context.conversation) {
+        const role = msg.role === 'user' ? '用户' : '助手';
+        parts.push(`${role}: ${msg.content}`);
+      }
+    }
+
+    parts.push('\n【重要】请优先结合当前会话上下文理解用户意图，判断是否是闲聊、追问还是新话题。');
 
     return parts.join('\n');
   }

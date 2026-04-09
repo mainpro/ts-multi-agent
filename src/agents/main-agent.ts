@@ -48,10 +48,13 @@ export class MainAgent {
     userId: string = "default",
     sessionId?: string,
   ): Promise<TaskResult> {
+    let assistantResponse = '';
+    const effectiveSessionId = sessionId || userId;
+    
     try {
       console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
 
-      const effectiveSessionId = sessionId || userId;
+      sessionContextService.addUserMessage(effectiveSessionId, requirement);
 
       // ========== 步骤 1: 图片分析（如有附件） ==========
       if (imageAttachment) {
@@ -173,19 +176,23 @@ export class MainAgent {
         );
 
         if (intentResult.intent === "small_talk") {
+          assistantResponse = intentResult.suggestedResponse || "您好！有什么可以帮助您的吗？";
+          sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
           return {
             success: true,
             data: {
-              message: intentResult.suggestedResponse || "您好！有什么可以帮助您的吗？",
+              message: assistantResponse,
               type: "small_talk",
             },
           };
         }
 
+        assistantResponse = intentResult.suggestedResponse || "";
+        sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
         return {
           success: true,
           data: {
-            message: intentResult.suggestedResponse || "",
+            message: assistantResponse,
             type: "guess_confirm",
             guessedSystem: intentResult.guessedSystem,
           },
@@ -286,11 +293,14 @@ export class MainAgent {
             _metadata?: { skill?: string; references?: string[] };
           }
         | undefined;
-      const responseText = resultData?.response || JSON.stringify(result.data);
+      assistantResponse = resultData?.response || JSON.stringify(result.data);
+      
+      sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
+      
       await this.memoryService.saveInteraction(
         userId,
         requirement,
-        responseText,
+        assistantResponse,
         {
           skill: resultData?._metadata?.skill,
           references: resultData?._metadata?.references,
@@ -308,6 +318,10 @@ export class MainAgent {
           code: "PROCESSING_ERROR",
         },
       };
+    } finally {
+      if (!assistantResponse) {
+        sessionContextService.getContext(effectiveSessionId).conversation.pop();
+      }
     }
   }
 

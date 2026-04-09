@@ -12,4 +12,4 @@ export { MemoryService } from './memory-service';
 export { SessionContextService, sessionContextService } from './session-context';
 
 export type { UserMemory } from './memory-service';
-export type { SessionContextData } from './session-context';
+export type { SessionContextData, SessionMessage } from './session-context';

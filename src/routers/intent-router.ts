@@ -35,19 +35,12 @@ export interface IntentResult {
  * 辅助信息结构（传递给 LLM 的信号）
  */
 export interface AuxiliarySignals {
-  // 当前会话上下文（最新鲜）
+  // 当前会话上下文
   sessionContext: {
     skill: string;
     confidence: number;
     turnCount: number;
   } | null;
-
-  // 追问检测
-  followup: {
-    detected: boolean;
-    confidence: number;
-    pattern?: string;
-  };
 
   // 关键词匹配
   keywordMatch: {
@@ -56,7 +49,7 @@ export interface AuxiliarySignals {
     matchedKeywords: string[];
   } | null;
 
-  // 历史技能（较旧）
+  // 历史技能
   historicalSkill: {
     skill: string;
     confidence: number;
@@ -333,68 +326,6 @@ export class IntentRouter {
     return undefined;
   }
 
-  private isFollowUpQuestion(
-    userInput: string,
-    recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>
-  ): { isFollowUp: boolean; matchedSkill?: string; confidence: number } {
-    if (!recentHistory || recentHistory.length === 0) {
-      return { isFollowUp: false, confidence: 0 };
-    }
-
-    const lastAssistantMsg = recentHistory
-      .slice()
-      .reverse()
-      .find(m => m.role === 'assistant' && m.content);
-
-    if (!lastAssistantMsg) {
-      return { isFollowUp: false, confidence: 0 };
-    }
-
-    const trimmedInput = userInput.trim().toLowerCase();
-    const assistantContent = lastAssistantMsg.content?.toLowerCase() || '';
-
-    const followUpPatterns = [
-      /^(那|但是|可是|不过|那如果|那请问|那能否|那能不能|那可以|那麻烦|那能否)/,
-      /^(我|我们)?(不|没|没有)?.*?(的话|的话呢)?[，,]?(那|但是|可是|不过)?.*?[能|可以|麻烦|请|帮].*?([吗|呢|吧])?$/,
-      /^(为什么|怎么|能否|可以|麻烦|请帮|能不能|那能|那可以|那不|如果|要是|假设)/,
-      /^(好的|行|可以|没问题|不行|不对|不是|但是|可是).*?(那|那能|那可以|那请问|那如果|那麻烦)/,
-      /那.*?(能|可以|麻烦|请|帮|怎么|为什么).*?([吗呢吧])$/,
-    ];
-
-    const isFollowUpPattern = followUpPatterns.some(pattern => pattern.test(trimmedInput));
-
-    const keywords = ['权限', '开通', '申请', '添加', '配置', '财务', 'GEAM', 'EES', '报销', '凭证'];
-    const hasContextKeyword = keywords.some(kw =>
-      trimmedInput.includes(kw) && assistantContent.includes(kw)
-    );
-
-    const pronounPatterns = [/这个/, /那个/, /它/, /这样/, /那样/, /上述/, /前面/, /刚才/, /之前/];
-    const hasPronoun = pronounPatterns.some(p => p.test(trimmedInput));
-
-    const isShortInput = trimmedInput.length < 10;
-
-    const recentSkill = this.extractRecentSkill(recentHistory);
-
-    if (recentSkill) {
-      if (isFollowUpPattern && (hasContextKeyword || hasPronoun)) {
-        console.log(`[IntentRouter] 🔄 检测到高置信度追问: "${userInput}" -> ${recentSkill}`);
-        return { isFollowUp: true, matchedSkill: recentSkill, confidence: 0.95 };
-      }
-
-      if (isFollowUpPattern) {
-        console.log(`[IntentRouter] 🔄 检测到追问模式: "${userInput}" -> ${recentSkill}`);
-        return { isFollowUp: true, matchedSkill: recentSkill, confidence: 0.85 };
-      }
-
-      if (isShortInput && hasContextKeyword) {
-        console.log(`[IntentRouter] 🔄 检测到短追问: "${userInput}" -> ${recentSkill}`);
-        return { isFollowUp: true, matchedSkill: recentSkill, confidence: 0.8 };
-      }
-    }
-
-    return { isFollowUp: false, confidence: 0 };
-  }
-
   /**
    * 收集所有信号
    */
@@ -406,12 +337,10 @@ export class IntentRouter {
   ): AuxiliarySignals {
     const trimmedInput = userInput.trim();
 
-    // 1. Session Context（最高优先级之一）
     let sessionContext: AuxiliarySignals['sessionContext'] = null;
     if (sessionId && sessionContextService.hasActiveContext(sessionId)) {
       const ctx = sessionContextService.getContext(sessionId);
       if (ctx.currentSkill) {
-        // 轮次越少，置信度越高
         const turnPenalty = Math.min(0.15, ctx.turnCount * 0.03);
         const confidence = Math.max(0.70, 0.90 - turnPenalty);
         sessionContext = {
@@ -419,19 +348,9 @@ export class IntentRouter {
           confidence,
           turnCount: ctx.turnCount,
         };
-        console.log(`[IntentRouter] 💡 Session Context: ${ctx.currentSkill} (置信度: ${confidence.toFixed(2)}, 轮次: ${ctx.turnCount})`);
       }
     }
 
-    // 2. 追问检测
-    const followUpResult = this.isFollowUpQuestion(trimmedInput, recentHistory);
-    const followup: AuxiliarySignals['followup'] = {
-      detected: followUpResult.isFollowUp,
-      confidence: followUpResult.confidence,
-      pattern: followUpResult.isFollowUp ? 'followup_pattern' : undefined,
-    };
-
-    // 3. 关键词匹配
     const keywordResult = this.keywordMatchSkill(trimmedInput);
     let keywordMatch: AuxiliarySignals['keywordMatch'] = null;
     if (keywordResult.matchedSkill && keywordResult.confidence > 0) {
@@ -440,10 +359,8 @@ export class IntentRouter {
         confidence: keywordResult.confidence,
         matchedKeywords: [],
       };
-      console.log(`[IntentRouter] 🔑 关键词匹配: ${keywordResult.matchedSkill} (置信度: ${keywordResult.confidence})`);
     }
 
-    // 4. 历史技能
     let historicalSkill: AuxiliarySignals['historicalSkill'] = null;
     const recentSkill = this.extractRecentSkill(recentHistory || []);
     if (recentSkill && recentSkill !== sessionContext?.skill) {
@@ -454,22 +371,17 @@ export class IntentRouter {
         confidence,
         turnsAgo: historyCount,
       };
-      console.log(`[IntentRouter] 📜 历史技能: ${recentSkill} (置信度: ${confidence.toFixed(2)})`);
     }
-
-    // 5. 用户画像
-    const userProfileSignal: AuxiliarySignals['userProfile'] = {
-      department: userProfile?.department,
-      commonSystems: userProfile?.commonSystems || [],
-      confidence: 0.60,
-    };
 
     return {
       sessionContext,
-      followup,
       keywordMatch,
       historicalSkill,
-      userProfile: userProfileSignal,
+      userProfile: {
+        department: userProfile?.department,
+        commonSystems: userProfile?.commonSystems || [],
+        confidence: 0.60,
+      },
     };
   }
 
@@ -479,10 +391,8 @@ export class IntentRouter {
   private decide(signals: AuxiliarySignals, userInput: string): DecisionResult {
     const trimmedInput = userInput.trim();
 
-    // 1. 快速闲聊检测（零延迟）
     const fastResult = this.fastClassify(trimmedInput, undefined);
     if (fastResult && fastResult.intent === 'small_talk') {
-      console.log(`[IntentRouter] ⚡ 快速闲聊匹配`);
       return {
         intent: 'small_talk',
         confidence: 0.98,
@@ -492,48 +402,18 @@ export class IntentRouter {
       };
     }
 
-    // 2. 追问检测（高优先级）
-    if (signals.followup.detected && signals.followup.confidence >= 0.85) {
-      let matchedSkill: string | undefined;
-      
-      if (signals.followup.confidence >= 0.95) {
-        matchedSkill = signals.sessionContext?.skill || signals.historicalSkill?.skill;
-      } else {
-        matchedSkill = signals.historicalSkill?.skill;
-      }
-
-      if (matchedSkill) {
-        console.log(`[IntentRouter] ⚡ 追问检测 → 沿用技能: ${matchedSkill}`);
-        return {
-          intent: 'skill_task',
-          confidence: signals.followup.confidence,
-          matchedSkill,
-          matchedSkills: [matchedSkill],
-          method: 'fast_followup',
-          needLLM: false,
-        };
-      }
-    }
-
-    // 3. Session Context 单独命中
-    if (signals.sessionContext && signals.sessionContext.confidence >= 0.88) {
-      const skill = signals.sessionContext.skill;
-      console.log(`[IntentRouter] ⚡ Session Context 直接匹配: ${skill}`);
+    if (signals.sessionContext && signals.sessionContext.confidence >= 0.88 && trimmedInput.length < 20) {
       return {
         intent: 'skill_task',
         confidence: signals.sessionContext.confidence,
-        matchedSkill: skill,
-        matchedSkills: [skill],
+        matchedSkill: signals.sessionContext.skill,
+        matchedSkills: [signals.sessionContext.skill],
         method: 'fast_session',
         needLLM: false,
       };
     }
 
-    // 4. 关键词单命中 + 输入简单
-    if (signals.keywordMatch && 
-        signals.keywordMatch.confidence >= 0.85 && 
-        trimmedInput.length < 20) {
-      console.log(`[IntentRouter] ⚡ 关键词快速匹配: ${signals.keywordMatch.skill}`);
+    if (signals.keywordMatch && signals.keywordMatch.confidence >= 0.9 && trimmedInput.length < 15) {
       return {
         intent: 'skill_task',
         confidence: signals.keywordMatch.confidence,
@@ -544,24 +424,17 @@ export class IntentRouter {
       };
     }
 
-    // 5. 多信号一致（Session + Keyword）
-    if (signals.sessionContext && signals.keywordMatch) {
-      if (signals.sessionContext.skill === signals.keywordMatch.skill) {
-        const confidence = Math.min(0.92, signals.sessionContext.confidence + 0.05);
-        console.log(`[IntentRouter] ⚡ 多信号一致 → 提高置信度: ${confidence}`);
-        return {
-          intent: 'skill_task',
-          confidence,
-          matchedSkill: signals.sessionContext.skill,
-          matchedSkills: [signals.sessionContext.skill],
-          method: 'multi_signal_agree',
-          needLLM: false,
-        };
-      }
+    if (signals.sessionContext && signals.keywordMatch && signals.sessionContext.skill === signals.keywordMatch.skill) {
+      return {
+        intent: 'skill_task',
+        confidence: Math.min(0.92, signals.sessionContext.confidence + 0.05),
+        matchedSkill: signals.sessionContext.skill,
+        matchedSkills: [signals.sessionContext.skill],
+        method: 'multi_signal_agree',
+        needLLM: false,
+      };
     }
 
-    // 6. 需要 LLM 综合判断
-    console.log(`[IntentRouter] 🤖 需要 LLM 综合判断`);
     return {
       intent: 'skill_task',
       confidence: 0.70,
@@ -614,7 +487,9 @@ export class IntentRouter {
       const llmResult = await this.llmMatchSkillWithSignals(
         userInput,
         decision.auxiliarySignals!,
-        userProfile
+        userProfile,
+        sessionId,
+        recentHistory
       );
 
       if (llmResult.intent === 'small_talk') {
@@ -722,7 +597,9 @@ export class IntentRouter {
   private async llmMatchSkillWithSignals(
     userInput: string,
     signals: AuxiliarySignals,
-    userProfile?: UserProfile
+    userProfile?: UserProfile,
+    sessionId?: string,
+    recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
 
@@ -741,40 +618,43 @@ export class IntentRouter {
 
     const systemPrompt = buildSkillMatcherPrompt(skills);
 
-    let prompt = `【用户当前输入】
+    let prompt = '';
+
+    if (sessionId) {
+      const priorityPrompt = sessionContextService.buildPriorityPrompt(sessionId);
+      if (priorityPrompt) {
+        prompt += priorityPrompt + '\n\n';
+      }
+    }
+
+    if (recentHistory && recentHistory.length > 0) {
+      prompt += '【对话历史】\n';
+      for (const msg of recentHistory.slice(-10)) {
+        const role = msg.role === 'user' ? '用户' : '助手';
+        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        prompt += `${role}: ${content}\n`;
+      }
+      prompt += '\n';
+    }
+
+    prompt += `【用户当前输入】
 ${userInput}
 
-【辅助信息（置信度评分）】`;
-
-    if (signals.sessionContext) {
-      prompt += `\n- Session Context: ${signals.sessionContext.skill} (置信度: ${signals.sessionContext.confidence.toFixed(2)}, 轮次: ${signals.sessionContext.turnCount})`;
-    }
-
-    if (signals.followup.detected) {
-      prompt += `\n- 追问检测: 是 (置信度: ${signals.followup.confidence.toFixed(2)})`;
-    }
+【辅助信息】`;
 
     if (signals.keywordMatch) {
-      prompt += `\n- 关键词命中: ${signals.keywordMatch.skill} (置信度: ${signals.keywordMatch.confidence.toFixed(2)})`;
+      prompt += `\n- 关键词匹配: ${signals.keywordMatch.skill}`;
     }
 
     if (signals.historicalSkill) {
-      prompt += `\n- 历史技能: ${signals.historicalSkill.skill} (置信度: ${signals.historicalSkill.confidence.toFixed(2)})`;
+      prompt += `\n- 历史使用技能: ${signals.historicalSkill.skill}`;
     }
 
     if (signals.userProfile.commonSystems.length > 0) {
       prompt += `\n- 常用系统: ${signals.userProfile.commonSystems.join(', ')}`;
     }
 
-    prompt += `
-
-【决策指引】
-1. 如果是闲聊/结束语（你好、好的、谢谢等）→ intent=small_talk
-2. 如果追问检测命中，且有历史/Session技能 → 沿用该技能
-3. 如果多个信号指向同一技能 → 提高置信度
-4. 如果用户输入包含多个问题（逗号/问号分隔）→ 返回多个技能
-
-请综合以上信息判断用户意图。`;
+    prompt += '\n\n请根据会话上下文和辅助信息判断用户意图。';
 
     const result = await this.llm.generateStructured(
       prompt,
@@ -786,7 +666,7 @@ ${userInput}
       return {
         intent: 'small_talk',
         confidence: result.confidence || 0.9,
-        suggestedResponse: this.generateSmallTalkResponse('thanks', userProfile),
+        suggestedResponse: this.generateSmallTalkResponse('', userProfile),
       };
     }
 
@@ -821,7 +701,7 @@ ${userInput}
     const department = userProfile?.department || '';
 
     const responses: Record<string, string> = {
-      greeting: `您好！${department ? department + '的同事，' : ''}我可以帮您处理${systems.length > 0 ? systems.join('、') : '相关业务'}问题。${skillList}\n\n请问您需要什么帮助？`,
+      greeting: `您好！${department ? department + '的同事，' : ''}我可以帮您处理${systems.length > 0 ? systems.join('、') : '相关业务'}的问题。请问您需要什么帮助？`,
       empathy: `听起来您今天状态不太好呀～工作生活中难免有低潮的时候。如果有什么我能帮您处理的，比如报销、差旅这些问题，可以随时告诉我。`,
       identity: `我是运维智能体，一个智能助手。${department ? department + '的同事，' : ''}我可以帮您处理${systems.length > 0 ? systems.join('、') : '相关业务'}问题。${skillList}\n\n请告诉我您需要什么帮助？`,
       thanks: `不客气！如果还有其他问题，随时可以问我。${skillList}`,
