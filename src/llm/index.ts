@@ -1,67 +1,6 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 
-interface ToolCallEntry {
-  id: string;
-  name: string;
-  arguments: string;
-}
-
-class ToolCallCollector {
-  private entries: Map<string, ToolCallEntry> = new Map();
-
-  processChunk(chunk: {
-    id?: string | null;
-    index?: number;
-    function?: { name?: string; arguments?: string };
-  }): void {
-    if (!chunk.function) return;
-
-    const functionName = chunk.function.name || '';
-    const chunkArgs = chunk.function.arguments || '';
-
-    if (!functionName) return;
-
-    if (chunk.id) {
-      const existing = Array.from(this.entries.values()).find(e => e.name === functionName);
-      if (existing) {
-        existing.id = chunk.id;
-        existing.arguments += chunkArgs;
-        this.entries.delete(existing.id);
-        this.entries.set(chunk.id, existing);
-      } else {
-        this.entries.set(chunk.id, {
-          id: chunk.id,
-          name: functionName,
-          arguments: chunkArgs,
-        });
-      }
-    } else {
-      const pendingEntry = Array.from(this.entries.values()).find(
-        e => e.name === functionName && e.arguments === ''
-      );
-      if (pendingEntry) {
-        pendingEntry.arguments += chunkArgs;
-      } else {
-        const newEntry: ToolCallEntry = {
-          id: `pending-${functionName}-${Date.now()}`,
-          name: functionName,
-          arguments: chunkArgs,
-        };
-        this.entries.set(newEntry.id, newEntry);
-      }
-    }
-  }
-
-  getToolCalls(): ToolCallEntry[] {
-    return Array.from(this.entries.values()).filter(e => !e.id.startsWith('pending-') && e.arguments.length > 0);
-  }
-
-  getToolCallsAsArray(): ToolCallEntry[] {
-    return this.getToolCalls();
-  }
-}
-
 export type LLMEventType = 'reasoning' | 'response';
 
 export interface ReasoningEvent {
@@ -832,14 +771,14 @@ export class LLMClient {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        console.log(`[LLM] 工具调用请求(流式) attempt ${attempt + 1}/${this.maxRetries}`);
+        console.log(`[LLM] 工具调用请求 attempt ${attempt + 1}/${this.maxRetries}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
         signal?.addEventListener('abort', () => controller.abort());
 
-        const requestBody = this.buildRequestBody(messages, { tools, stream: true });
+        const requestBody = this.buildRequestBody(messages, { tools, stream: false });
 
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -858,81 +797,37 @@ export class LLMClient {
           throw this.classifyError(response.status, { message: errorText });
         }
 
-        if (!response.body) {
-          throw new LLMError('API_ERROR', 'No response body');
+        const data = await response.json() as GLMResponse;
+        const choice = data.choices?.[0];
+        
+        if (!choice?.message) {
+          throw new LLMError('API_ERROR', 'No message in response');
         }
 
-        let reasoning = '';
-        let content = '';
-        const toolCallCollector = new ToolCallCollector();
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        const message = choice.message;
+        const reasoning = message.reasoning_content || message.reasoning || '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const data = trimmed.slice(6);
-            if (data === '[DONE]') continue;
-
-            try {
-              const chunk = JSON.parse(data);
-              const delta = chunk.choices?.[0]?.delta;
-              if (!delta) continue;
-
-              if (delta.reasoning_content) {
-                reasoning += delta.reasoning_content;
-                llmEvents.emit('reasoning', delta.reasoning_content);
-              } else if (delta.reasoning) {
-                reasoning += delta.reasoning;
-                llmEvents.emit('reasoning', delta.reasoning);
-              } else if (delta.thinking) {
-                reasoning += delta.thinking;
-                llmEvents.emit('reasoning', delta.thinking);
-              }
-
-              if (delta.content) {
-                content += delta.content;
-              }
-
-              if (delta.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  toolCallCollector.processChunk(tc);
-                }
-              }
-            } catch {
-              continue;
-            }
-          }
+        if (reasoning) {
+          llmEvents.emit('reasoning', reasoning);
         }
 
-        console.log(`[LLM] 工具调用请求(流式)完成`);
-        const toolCalls = toolCallCollector.getToolCallsAsArray();
-        console.log(`[LLM] toolCalls:`, JSON.stringify(toolCalls));
+        console.log(`[LLM] 工具调用请求完成, reasoning: ${reasoning.length} chars, content: ${(message.content || '').length} chars, tool_calls: ${message.tool_calls?.length || 0}`);
 
-        const finalMessage: Message = {
-          role: 'assistant',
-          content,
-          tool_calls: toolCalls.length > 0
-            ? toolCalls.map(tc => ({
-                id: tc.id,
-                type: 'function' as const,
-                function: {
-                  name: tc.name,
-                  arguments: tc.arguments,
-                },
-              }))
-            : undefined
+        return {
+          message: {
+            role: 'assistant',
+            content: message.content || '',
+            tool_calls: message.tool_calls?.map(tc => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              },
+            })),
+          },
+          reasoning,
         };
-        return { message: finalMessage, reasoning };
       } catch (error) {
         console.log('[LLM] 工具调用请求错误:', error);
 

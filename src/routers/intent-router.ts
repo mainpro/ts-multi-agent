@@ -32,6 +32,59 @@ export interface IntentResult {
 }
 
 /**
+ * 辅助信息结构（传递给 LLM 的信号）
+ */
+export interface AuxiliarySignals {
+  // 当前会话上下文（最新鲜）
+  sessionContext: {
+    skill: string;
+    confidence: number;
+    turnCount: number;
+  } | null;
+
+  // 追问检测
+  followup: {
+    detected: boolean;
+    confidence: number;
+    pattern?: string;
+  };
+
+  // 关键词匹配
+  keywordMatch: {
+    skill: string;
+    confidence: number;
+    matchedKeywords: string[];
+  } | null;
+
+  // 历史技能（较旧）
+  historicalSkill: {
+    skill: string;
+    confidence: number;
+    turnsAgo: number;
+  } | null;
+
+  // 用户画像
+  userProfile: {
+    department?: string;
+    commonSystems: string[];
+    confidence: number;
+  };
+}
+
+/**
+ * 决策结果
+ */
+interface DecisionResult {
+  intent: IntentType;
+  confidence: number;
+  matchedSkill?: string;
+  matchedSkills?: string[];
+  method: 'fast_small_talk' | 'fast_followup' | 'fast_session' | 'fast_keyword' | 'multi_signal_agree' | 'llm_decision';
+  needLLM: boolean;
+  auxiliarySignals?: AuxiliarySignals;
+}
+
+/**
  * 闲聊模式定义
  */
 interface SmallTalkPattern {
@@ -343,89 +396,232 @@ export class IntentRouter {
   }
 
   /**
-   * 分类用户意图
-   *
-   * 策略：
-   * 1. 先用关键词快速匹配闲聊/超出范围
-   * 2. 检查对话历史，如果有已知技能则快速定位
-   * 3. 立即生成猜你想问（不等待 LLM）
-   * 4. 并行调用 LLM 匹配技能
-   * 5. 根据 LLM 结果决定返回猜你想问还是技能
+   * 收集所有信号
    */
-  async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string): Promise<IntentResult> {
+  private collectSignals(
+    userInput: string,
+    userProfile?: UserProfile,
+    recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
+    sessionId?: string
+  ): AuxiliarySignals {
     const trimmedInput = userInput.trim();
 
-    // Step 0: 检测是否是复合需求（逗号分隔的不同问题）→ 需要 LLM 判断
-    // 逗号后面跟着疑问词（什么、如何、怎么、吗）→ 可能是多个问题
-    const hasFollowUpAfterComma = /，.*(什么|如何|怎么|怎样|吗|呢|？)/.test(trimmedInput);
-    // 多个问号 → 多个问题
-    const multipleQuestions = (trimmedInput.match(/[？?]/g) || []).length > 1;
-
-    const hasMultipleQuestions = hasFollowUpAfterComma || multipleQuestions;
-
-    // Step 0: 关键词快速匹配技能（零延迟，单一命中直接返回）
-    // 但如果有逗号分隔的多个问题，跳过快速路径，让 LLM 判断多技能
-    const keywordResult = this.keywordMatchSkill(trimmedInput);
-    if (keywordResult.matchedSkill && keywordResult.confidence >= 0.9 && !keywordResult.isAmbiguous && !hasMultipleQuestions) {
-      return {
-        intent: 'skill_task',
-        confidence: keywordResult.confidence,
-        matchedSkill: keywordResult.matchedSkill,
-      };
-    }
-
-    // Step 0.5: 如果关键词命中多个技能，降低置信度但继续使用 LLM 决策
-    // (isAmbiguous = true 时，让 LLM 进一步判断)
-
-    // Step 1: 获取 Session Context（作为 LLM 匹配的参考）
-    let sessionContextHint = '';
+    // 1. Session Context（最高优先级之一）
+    let sessionContext: AuxiliarySignals['sessionContext'] = null;
     if (sessionId && sessionContextService.hasActiveContext(sessionId)) {
-      const sessionContext = sessionContextService.getContext(sessionId);
-      if (sessionContext.currentSkill) {
-        sessionContextHint = sessionContext.currentSkill;
-        console.log(`[IntentRouter] 💡 Session Context: 当前技能=${sessionContext.currentSkill}, 轮次=${sessionContext.turnCount}`);
+      const ctx = sessionContextService.getContext(sessionId);
+      if (ctx.currentSkill) {
+        // 轮次越少，置信度越高
+        const turnPenalty = Math.min(0.15, ctx.turnCount * 0.03);
+        const confidence = Math.max(0.70, 0.90 - turnPenalty);
+        sessionContext = {
+          skill: ctx.currentSkill,
+          confidence,
+          turnCount: ctx.turnCount,
+        };
+        console.log(`[IntentRouter] 💡 Session Context: ${ctx.currentSkill} (置信度: ${confidence.toFixed(2)}, 轮次: ${ctx.turnCount})`);
       }
     }
 
-    // Step 1: 快速闲聊匹配（零延迟）
-    const fastResult = this.fastClassify(trimmedInput, userProfile);
-    if (fastResult && (fastResult.confidence ?? 0) >= 0.95) {
-      console.log(`[IntentRouter] ⚡ 快速匹配: ${fastResult.intent}`);
-      return fastResult;
+    // 2. 追问检测
+    const followUpResult = this.isFollowUpQuestion(trimmedInput, recentHistory);
+    const followup: AuxiliarySignals['followup'] = {
+      detected: followUpResult.isFollowUp,
+      confidence: followUpResult.confidence,
+      pattern: followUpResult.isFollowUp ? 'followup_pattern' : undefined,
+    };
+
+    // 3. 关键词匹配
+    const keywordResult = this.keywordMatchSkill(trimmedInput);
+    let keywordMatch: AuxiliarySignals['keywordMatch'] = null;
+    if (keywordResult.matchedSkill && keywordResult.confidence > 0) {
+      keywordMatch = {
+        skill: keywordResult.matchedSkill,
+        confidence: keywordResult.confidence,
+        matchedKeywords: [],
+      };
+      console.log(`[IntentRouter] 🔑 关键词匹配: ${keywordResult.matchedSkill} (置信度: ${keywordResult.confidence})`);
     }
 
-    // Step 1.5: 检测是否是追问，如果是直接沿用技能
-    const followUpResult = this.isFollowUpQuestion(trimmedInput, recentHistory);
-    if (followUpResult.isFollowUp && followUpResult.matchedSkill) {
-      console.log(`[IntentRouter] 🔄 检测到追问，沿用技能: ${followUpResult.matchedSkill}`);
+    // 4. 历史技能
+    let historicalSkill: AuxiliarySignals['historicalSkill'] = null;
+    const recentSkill = this.extractRecentSkill(recentHistory || []);
+    if (recentSkill && recentSkill !== sessionContext?.skill) {
+      const historyCount = recentHistory?.length || 0;
+      const confidence = Math.max(0.60, 0.75 - historyCount * 0.02);
+      historicalSkill = {
+        skill: recentSkill,
+        confidence,
+        turnsAgo: historyCount,
+      };
+      console.log(`[IntentRouter] 📜 历史技能: ${recentSkill} (置信度: ${confidence.toFixed(2)})`);
+    }
+
+    // 5. 用户画像
+    const userProfileSignal: AuxiliarySignals['userProfile'] = {
+      department: userProfile?.department,
+      commonSystems: userProfile?.commonSystems || [],
+      confidence: 0.60,
+    };
+
+    return {
+      sessionContext,
+      followup,
+      keywordMatch,
+      historicalSkill,
+      userProfile: userProfileSignal,
+    };
+  }
+
+  /**
+   * 决策引擎：根据信号计算置信度，决定是否需要 LLM
+   */
+  private decide(signals: AuxiliarySignals, userInput: string): DecisionResult {
+    const trimmedInput = userInput.trim();
+
+    // 1. 快速闲聊检测（零延迟）
+    const fastResult = this.fastClassify(trimmedInput, undefined);
+    if (fastResult && fastResult.intent === 'small_talk') {
+      console.log(`[IntentRouter] ⚡ 快速闲聊匹配`);
       return {
-        intent: 'skill_task',
-        confidence: followUpResult.confidence,
-        matchedSkill: followUpResult.matchedSkill,
+        intent: 'small_talk',
+        confidence: 0.98,
+        matchedSkill: undefined,
+        method: 'fast_small_talk',
+        needLLM: false,
       };
     }
 
-    // Step 1.6: 从历史中获取最近技能作为 LLM 匹配的提示
-    const recentSkill = this.extractRecentSkill(recentHistory || []);
-    if (recentSkill) {
-      console.log(`[IntentRouter] 💡 历史技能: ${recentSkill}，作为 LLM 匹配的提示`);
+    // 2. 追问检测（高优先级）
+    if (signals.followup.detected && signals.followup.confidence >= 0.85) {
+      let matchedSkill: string | undefined;
+      
+      if (signals.followup.confidence >= 0.95) {
+        matchedSkill = signals.sessionContext?.skill || signals.historicalSkill?.skill;
+      } else {
+        matchedSkill = signals.historicalSkill?.skill;
+      }
+
+      if (matchedSkill) {
+        console.log(`[IntentRouter] ⚡ 追问检测 → 沿用技能: ${matchedSkill}`);
+        return {
+          intent: 'skill_task',
+          confidence: signals.followup.confidence,
+          matchedSkill,
+          matchedSkills: [matchedSkill],
+          method: 'fast_followup',
+          needLLM: false,
+        };
+      }
     }
 
-    // Step 2: 立即生成猜你想问（用户无需等待）
-    const guessResponse = this.generateGuessQuestions(trimmedInput, userProfile);
+    // 3. Session Context 单独命中
+    if (signals.sessionContext && signals.sessionContext.confidence >= 0.88) {
+      const skill = signals.sessionContext.skill;
+      console.log(`[IntentRouter] ⚡ Session Context 直接匹配: ${skill}`);
+      return {
+        intent: 'skill_task',
+        confidence: signals.sessionContext.confidence,
+        matchedSkill: skill,
+        matchedSkills: [skill],
+        method: 'fast_session',
+        needLLM: false,
+      };
+    }
 
-    // Step 3: 调用 LLM 匹配技能（传入 Session Context 和历史技能作为 hint）
+    // 4. 关键词单命中 + 输入简单
+    if (signals.keywordMatch && 
+        signals.keywordMatch.confidence >= 0.85 && 
+        trimmedInput.length < 20) {
+      console.log(`[IntentRouter] ⚡ 关键词快速匹配: ${signals.keywordMatch.skill}`);
+      return {
+        intent: 'skill_task',
+        confidence: signals.keywordMatch.confidence,
+        matchedSkill: signals.keywordMatch.skill,
+        matchedSkills: [signals.keywordMatch.skill],
+        method: 'fast_keyword',
+        needLLM: false,
+      };
+    }
+
+    // 5. 多信号一致（Session + Keyword）
+    if (signals.sessionContext && signals.keywordMatch) {
+      if (signals.sessionContext.skill === signals.keywordMatch.skill) {
+        const confidence = Math.min(0.92, signals.sessionContext.confidence + 0.05);
+        console.log(`[IntentRouter] ⚡ 多信号一致 → 提高置信度: ${confidence}`);
+        return {
+          intent: 'skill_task',
+          confidence,
+          matchedSkill: signals.sessionContext.skill,
+          matchedSkills: [signals.sessionContext.skill],
+          method: 'multi_signal_agree',
+          needLLM: false,
+        };
+      }
+    }
+
+    // 6. 需要 LLM 综合判断
+    console.log(`[IntentRouter] 🤖 需要 LLM 综合判断`);
+    return {
+      intent: 'skill_task',
+      confidence: 0.70,
+      matchedSkill: signals.keywordMatch?.skill || signals.sessionContext?.skill,
+      method: 'llm_decision',
+      needLLM: true,
+      auxiliarySignals: signals,
+    };
+  }
+
+  /**
+   * 分类用户意图
+   *
+   * 策略：
+   * 1. 收集所有信号（Session Context, 追问, 关键词, 历史, 用户画像）
+   * 2. 决策引擎计算置信度
+   * 3. 高置信度 → 快速返回
+   * 4. 低置信度 → LLM 综合判断
+   */
+  async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string): Promise<IntentResult> {
+    // Step 1: 收集所有信号
+    const signals = this.collectSignals(userInput, userProfile, recentHistory, sessionId);
+
+    // Step 2: 决策引擎判断
+    const decision = this.decide(signals, userInput);
+
+    // Step 3: 快速路径 - 不需要 LLM
+    if (!decision.needLLM) {
+      if (decision.intent === 'small_talk') {
+        const fastResult = this.fastClassify(userInput, userProfile);
+        return {
+          intent: 'small_talk',
+          confidence: decision.confidence,
+          suggestedResponse: fastResult?.suggestedResponse,
+        };
+      }
+      return {
+        intent: decision.intent,
+        confidence: decision.confidence,
+        matchedSkill: decision.matchedSkill,
+        matchedSkills: decision.matchedSkills,
+      };
+    }
+
+    // Step 4: LLM 综合判断（传入所有辅助信息）
+    const guessResponse = this.generateGuessQuestions(userInput, userProfile);
+
     console.log(`[IntentRouter] 🤖 使用 LLM 匹配技能...`);
     try {
-      const llmResult = await this.llmMatchSkill(trimmedInput, recentSkill, recentHistory, userProfile, sessionContextHint, sessionId);
+      const llmResult = await this.llmMatchSkillWithSignals(
+        userInput,
+        decision.auxiliarySignals!,
+        userProfile
+      );
 
-      // 如果 LLM 匹配到闲聊意图，直接返回
       if (llmResult.intent === 'small_talk') {
         console.log(`[IntentRouter] 💬 LLM 识别为闲聊/对话结束语`);
         return llmResult;
       }
 
-      // 如果 LLM 匹配到了有效技能，直接返回
       if (llmResult.matchedSkill && llmResult.matchedSkill !== 'fallback') {
         console.log(`[IntentRouter] ✅ LLM 匹配到技能: ${llmResult.matchedSkill}`);
         return {
@@ -434,7 +630,6 @@ export class IntentRouter {
         };
       }
 
-      // LLM 没匹配到技能 → 返回猜你想问
       console.log(`[IntentRouter] 💡 返回猜你想问`);
       return {
         intent: 'guess_confirm',
@@ -444,7 +639,6 @@ export class IntentRouter {
         matchedSkill: 'fallback',
       };
     } catch (error) {
-      // LLM 调用失败 → 返回猜你想问作为兜底
       const errorMsg = error instanceof Error ? error.message : String(error);
       const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
       console.log(`[IntentRouter] ⚠️ LLM 匹配失败: ${errorType} - ${errorMsg}`);
@@ -523,69 +717,64 @@ export class IntentRouter {
   }
 
   /**
-   * LLM 技能匹配
-   * @param userInput 用户输入
-   * @param recentSkillHint 历史技能提示（辅助判断，不强制）
-   * @param recentHistory 对话历史（用于多轮对话理解）
-   * @param sessionId 会话ID（用于获取当前会话上下文）
+   * LLM 技能匹配（使用辅助信号）
    */
-  private async llmMatchSkill(
+  private async llmMatchSkillWithSignals(
     userInput: string,
-    recentSkillHint?: string,
-    recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
-    userProfile?: UserProfile,
-    sessionContextHint?: string,
-    sessionId?: string
+    signals: AuxiliarySignals,
+    userProfile?: UserProfile
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
 
     const IntentSchema = z.object({
       intent: z.enum(['skill_task', 'small_talk', 'unclear'])
-      .describe('意图类型: skill_task=需要使用某个技能执行任务, small_talk=闲聊/对话结束语(如"好的谢谢"), unclear=无法判断'),
+        .describe('意图类型'),
       confidence: z.number().min(0).max(1).optional().default(0.8)
-      .describe('置信度 0-1'),
+        .describe('置信度 0-1'),
       matchedSkill: z.string().optional().nullable()
-      .describe('主匹配技能名称，intent=skill_task 时填写'),
+        .describe('主匹配技能名称'),
       matchedSkills: z.array(z.string()).optional().nullable()
-      .describe('所有匹配的技能列表，多意图时填写多个'),
+        .describe('所有匹配的技能列表'),
+      reasoning: z.string().optional()
+        .describe('决策理由（简短）'),
     });
 
     const systemPrompt = buildSkillMatcherPrompt(skills);
 
-    const hintText = recentSkillHint ? `上次使用的技能: "${recentSkillHint}"` : '无';
-    const sessionHintText = sessionContextHint ? `当前会话激活的技能: "${sessionContextHint}"（几率为大，但请根据当前输入确认）` : '';
+    let prompt = `【用户当前输入】
+${userInput}
 
-    let contextHint = '';
-    if (recentHistory && recentHistory.length > 0) {
-      const lastFew = recentHistory.slice(-4);
-      const contextLines = lastFew
-        .filter(m => m.content && m.content.length > 0)
-        .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content!.substring(0, 150)}`);
-      if (contextLines.length > 0) {
-        contextHint = contextLines.join('\n');
-      }
+【辅助信息（置信度评分）】`;
+
+    if (signals.sessionContext) {
+      prompt += `\n- Session Context: ${signals.sessionContext.skill} (置信度: ${signals.sessionContext.confidence.toFixed(2)}, 轮次: ${signals.sessionContext.turnCount})`;
     }
 
-    let prompt = '';
-
-    if (sessionId) {
-      const priorityPrompt = sessionContextService.buildPriorityPrompt(sessionId);
-      if (priorityPrompt) {
-        prompt += priorityPrompt + '\n\n';
-      }
+    if (signals.followup.detected) {
+      prompt += `\n- 追问检测: 是 (置信度: ${signals.followup.confidence.toFixed(2)})`;
     }
 
-    prompt += `【用户当前输入】\n${userInput}\n\n`;
-
-    if (sessionHintText) {
-      prompt += `【当前会话上下文 - 参考】\n${sessionHintText}\n\n`;
+    if (signals.keywordMatch) {
+      prompt += `\n- 关键词命中: ${signals.keywordMatch.skill} (置信度: ${signals.keywordMatch.confidence.toFixed(2)})`;
     }
 
-    if (contextHint) {
-      prompt += `【最近对话历史】\n${contextHint}\n\n`;
+    if (signals.historicalSkill) {
+      prompt += `\n- 历史技能: ${signals.historicalSkill.skill} (置信度: ${signals.historicalSkill.confidence.toFixed(2)})`;
     }
 
-    prompt += `【历史技能参考】\n${hintText}\n\n请综合以上信息判断。注意：当前技能只是参考，如果用户明显切换了新话题，请匹配新的技能。`;
+    if (signals.userProfile.commonSystems.length > 0) {
+      prompt += `\n- 常用系统: ${signals.userProfile.commonSystems.join(', ')}`;
+    }
+
+    prompt += `
+
+【决策指引】
+1. 如果是闲聊/结束语（你好、好的、谢谢等）→ intent=small_talk
+2. 如果追问检测命中，且有历史/Session技能 → 沿用该技能
+3. 如果多个信号指向同一技能 → 提高置信度
+4. 如果用户输入包含多个问题（逗号/问号分隔）→ 返回多个技能
+
+请综合以上信息判断用户意图。`;
 
     const result = await this.llm.generateStructured(
       prompt,
