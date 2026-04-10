@@ -3,14 +3,12 @@
     "userId": "default",
     "department": "市场部",
     "commonSystems": [
-      "报销系统",
-      "差旅系统",
       "GEAM"
     ],
     "tags": [],
-    "conversationCount": 35,
-    "lastActiveAt": "2026-04-09T03:00:41.197Z",
+    "conversationCount": 47,
+    "lastActiveAt": "2026-04-10T00:43:24.516Z",
     "createdAt": "2026-03-26T00:00:00.000Z",
-    "updatedAt": "2026-04-09T03:00:41.197Z"
+    "updatedAt": "2026-04-10T00:43:24.516Z"
   }
 }

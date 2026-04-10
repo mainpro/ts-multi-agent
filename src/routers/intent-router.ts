@@ -465,11 +465,23 @@ export class IntentRouter {
     if (!decision.needLLM) {
       if (decision.intent === 'small_talk') {
         const fastResult = this.fastClassify(userInput, userProfile);
-        return {
-          intent: 'small_talk',
-          confidence: decision.confidence,
-          suggestedResponse: fastResult?.suggestedResponse,
-        };
+        if (fastResult) {
+          return {
+            intent: 'small_talk',
+            confidence: decision.confidence,
+            suggestedResponse: fastResult.suggestedResponse,
+          };
+        }
+        if (userInput.length < 25) {
+          const llmResult = await this.llmClassifyChat(userInput);
+          if (llmResult && llmResult.type !== 'other') {
+            return {
+              intent: 'small_talk',
+              confidence: 0.85,
+              suggestedResponse: this.generateSmallTalkResponse(llmResult.type, userProfile),
+            };
+          }
+        }
       }
       return {
         intent: decision.intent,
@@ -553,7 +565,6 @@ export class IntentRouter {
    * 快速关键词匹配
    */
   private fastClassify(userInput: string, userProfile?: UserProfile): IntentResult | null {
-    // 检查闲聊模式
     for (const config of SMALL_TALK_CONFIGS) {
       for (const pattern of config.patterns) {
         if (pattern.test(userInput)) {
@@ -566,8 +577,7 @@ export class IntentRouter {
       }
     }
 
-  // 检查超出范围
-  for (const pattern of OUT_OF_SCOPE_PATTERNS) {
+    for (const pattern of OUT_OF_SCOPE_PATTERNS) {
     if (pattern.test(userInput)) {
       if (userProfile?.commonSystems?.length) {
         const guessedSystem = this.findBestMatch(userInput, userProfile.commonSystems);
@@ -688,29 +698,61 @@ ${userInput}
   }
 
   /**
-   * 生成闲聊回复
+   * 生成闲聊回复 - Claude 风格
+   * 规则：
+   * - 默认不主动闲聊，聚焦任务
+   * - 用户闲聊时：1-3 句自然回复，不超过 4 行
+   * - 禁止主动扩展话题、使用 emoji
+   * - 不确定时直接问"需要我帮什么？"
    */
   private generateSmallTalkResponse(type: string, userProfile?: UserProfile): string {
-    const skills = this.skillRegistry.getAllMetadata();
-    const skillNames = skills.map(s => s.name).join('、');
-    const skillList = skills.length > 0
-      ? `我可以帮您解决${skillNames}等问题。`
-      : '目前暂无可用功能。';
-
-    const systems = userProfile?.commonSystems || [];
     const department = userProfile?.department || '';
+    const deptStr = department ? `${department}的同事，` : '';
 
-    const responses: Record<string, string> = {
-      greeting: `您好！${department ? department + '的同事，' : ''}我可以帮您处理${systems.length > 0 ? systems.join('、') : '相关业务'}的问题。请问您需要什么帮助？`,
-      empathy: `听起来您今天状态不太好呀～工作生活中难免有低潮的时候。如果有什么我能帮您处理的，比如报销、差旅这些问题，可以随时告诉我。`,
-      identity: `我是运维智能体，一个智能助手。${department ? department + '的同事，' : ''}我可以帮您处理${systems.length > 0 ? systems.join('、') : '相关业务'}问题。${skillList}\n\n请告诉我您需要什么帮助？`,
-      thanks: `不客气！如果还有其他问题，随时可以问我。${skillList}`,
-      goodbye: `再见！有需要随时找我。${skillList}`,
-      help: `您好！我是运维智能体。${skillList}\n\n请直接告诉我您需要什么帮助，我会尽力为您解决。`,
-      capability: `我是运维智能体，目前我可以帮您解决以下问题：\n\n${skills.map(s => `• ${s.name}：${s.description}`).join('\n')}\n\n请告诉我您需要什么帮助？`,
+    const templates: Record<string, () => string> = {
+      greeting: () => `您好！${deptStr}请问需要什么帮助？`,
+      empathy: () => `听起来状态不太好，有我能帮的随时说。`,
+      identity: () => `我是运维智能体，${deptStr}可以帮您处理报销、考勤、权限等问题。`,
+      thanks: () => '不客气，有其他问题随时问我。',
+      goodbye: () => '再见，有需要随时找我。',
+      help: () => `我是运维智能体，可以帮您处理报销、考勤、权限等问题。请告诉我需要什么？`,
+      capability: () => {
+        const skills = this.skillRegistry.getAllMetadata();
+        return `我能帮您处理：${skills.map(s => s.name).join('、')}等问题。请问需要什么？`;
+      },
     };
 
-    return responses[type] || responses.greeting;
+    const response = templates[type]?.() || templates.greeting();
+    return response;
+  }
+
+  /**
+   * LLM 闲聊分类 - 当快速匹配失败时使用
+   * 只分类，不生成内容，确保不乱回复
+   */
+  async llmClassifyChat(userInput: string): Promise<{ type: string } | null> {
+    try {
+      const schema = z.object({
+        type: z.enum(['greeting', 'thanks', 'goodbye', 'empathy', 'identity', 'help', 'other']),
+      });
+
+      const prompt = `判断用户意图类型：
+- greeting: 打招呼（你好、早上好等）
+- thanks: 感谢（谢谢、多谢等）
+- goodbye: 告别（再见、拜拜等）
+- empathy: 同理���（心情不好、累等）
+- identity: 询问身份（你是谁、你是什么等）
+- help: 请求帮助（怎么用、怎么操作等）
+- other: 其他闲聊
+
+用户输入: ${userInput}
+只输出 JSON：{"type": "类型"}`;
+
+      const result = await this.llm.generateStructured(prompt, schema);
+      return { type: result.type };
+    } catch {
+      return null;
+    }
   }
 
   /**
