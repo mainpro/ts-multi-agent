@@ -4,20 +4,13 @@ import { SkillRegistry } from '../skill-registry';
 import { UserProfile } from '../types';
 import { buildSkillMatcherPrompt } from '../prompts';
 import { sessionContextService } from '../memory';
-import * as fs from 'fs';
-import * as path from 'path';
 
-const KEYWORD_CACHE_FILE = 'data/keyword-cache.json';
-
-/**
- * 意图类型
- */
 export type IntentType =
   | 'small_talk' // 闲聊：你好、你是谁、谢谢
   | 'skill_task' // 技能任务：需要执行技能
   | 'out_of_scope' // 超出范围：天气、新闻等
-  | 'guess_confirm' // 猜测确认：根据常用系统猜测意图
-  | 'unclear'; // 不明确
+  | 'confirm_system' // 系统确认：需要用户确认具体系统
+  | 'unclear'; // 无法匹配
 
 /**
  * 意图分类结果
@@ -26,9 +19,9 @@ export interface IntentResult {
   intent: IntentType;
   confidence?: number;
   suggestedResponse?: string;
-  matchedSkill?: string;
-  matchedSkills?: string[];
+  matchedSkills: string[];
   guessedSystem?: string;
+  confirmOptions?: string[];
 }
 
 /**
@@ -70,8 +63,7 @@ export interface AuxiliarySignals {
 interface DecisionResult {
   intent: IntentType;
   confidence: number;
-  matchedSkill?: string;
-  matchedSkills?: string[];
+  matchedSkills: string[];
   method: 'fast_small_talk' | 'fast_followup' | 'fast_session' | 'fast_keyword' | 'multi_signal_agree' | 'llm_decision';
   needLLM: boolean;
   auxiliarySignals?: AuxiliarySignals;
@@ -207,86 +199,22 @@ export class IntentRouter {
     const skills = this.skillRegistry.getAllMetadata();
     const keywordMap = new Map<string, string[]>();
 
-    const cacheKey = JSON.stringify(skills.map(s => ({ name: s.name, description: s.description })));
-    const cachedKeywords = this.loadKeywordCache(cacheKey);
-
-    if (cachedKeywords) {
-      for (const [kw, skillNames] of Object.entries(cachedKeywords)) {
-        keywordMap.set(kw, skillNames);
-      }
-      console.log(`[IntentRouter] 📚 关键词映射已加载缓存: ${keywordMap.size} 个关键词`);
-    } else {
-      for (const skill of skills) {
-        const keywords = this.extractKeywordsFromDescription(skill.description);
-
-        for (const kw of keywords) {
-          if (!keywordMap.has(kw)) {
-            keywordMap.set(kw, []);
-          }
-          keywordMap.get(kw)!.push(skill.name);
+    for (const skill of skills) {
+      const keywords = (skill.metadata?.keywords as string[]) || [];
+      for (const kw of keywords) {
+        if (!keywordMap.has(kw)) {
+          keywordMap.set(kw, []);
         }
+        keywordMap.get(kw)!.push(skill.name);
       }
-      this.saveKeywordCache(cacheKey, Object.fromEntries(keywordMap));
-      console.log(`[IntentRouter] 📚 关键词映射已构建: ${keywordMap.size} 个关键词`);
     }
 
+    console.log(`[IntentRouter] 📚 关键词映射已构建: ${keywordMap.size} 个关键词`);
     console.log(`[IntentRouter] 🎯 技能: ${skills.map(s => s.name).join(', ')}`);
     this.skillKeywordMap = keywordMap;
   }
 
-  private loadKeywordCache(skillKey: string): Record<string, string[]> | null {
-    try {
-      if (!fs.existsSync(KEYWORD_CACHE_FILE)) return null;
-      const cache = JSON.parse(fs.readFileSync(KEYWORD_CACHE_FILE, 'utf-8'));
-      if (cache.key !== skillKey) return null;
-      return cache.keywords;
-    } catch {
-      return null;
-    }
-  }
-
-  private saveKeywordCache(skillKey: string, keywords: Record<string, string[]>): void {
-    try {
-      const dir = path.dirname(KEYWORD_CACHE_FILE);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(KEYWORD_CACHE_FILE, JSON.stringify({ key: skillKey, keywords }, null, 2));
-    } catch (e) {
-      console.warn('[IntentRouter] 关键词缓存保存失败:', e);
-    }
-  }
-
-  private extractKeywordsFromDescription(description: string): string[] {
-    const keywords: string[] = [];
-    const fullText = `${description}`.toLowerCase();
-
-    const stopWords = new Set([
-      '的', '了', '是', '在', '和', '与', '或', '及', '等', '及', '可以', '能够', '需要', '可能', '如果', '那么',
-      '用户', '系统', '问题', '情况', '相关', '功能', '操作', '使用', '帮助', '查询', '申请', '处理', '解决',
-      'the', 'and', 'or', 'is', 'are', 'be', 'to', 'of', 'for', 'in', 'on', 'at', 'by', 'with', 'from',
-      '海尔', '集团', '助手', '触发', '场景', '排除', '包含', '涉及', '提到', '询问', '发送', '截图', '地址栏',
-    ]);
-
-    const chinesePattern = /[\u4e00-\u9fff]{2,6}/g;
-    const chineseMatches = fullText.match(chinesePattern) || [];
-    for (const word of chineseMatches) {
-      if (!stopWords.has(word) && word.length >= 2 && !keywords.includes(word)) {
-        keywords.push(word);
-      }
-    }
-
-    const englishPattern = /[a-zA-Z]{2,}/g;
-    const englishMatches = fullText.match(englishPattern) || [];
-    for (const word of englishMatches) {
-      const upper = word.toUpperCase();
-      if (!stopWords.has(upper) && upper.length >= 2 && !keywords.includes(upper)) {
-        keywords.push(upper);
-      }
-    }
-
-    return keywords;
-  }
-
-  private keywordMatchSkill(userInput: string): { matchedSkill?: string; matchedSkills?: string[]; confidence: number; isAmbiguous?: boolean } {
+  private keywordMatchSkill(userInput: string): { matchedSkills: string[]; confidence: number; isAmbiguous?: boolean } {
     const lowerInput = userInput.toLowerCase();
     const matchedSkills = new Set<string>();
 
@@ -301,14 +229,14 @@ export class IntentRouter {
     if (matchedSkills.size === 1) {
       const skill = Array.from(matchedSkills)[0];
       console.log(`[IntentRouter] ⚡ 关键词命中技能: ${skill} (唯一匹配)`);
-      return { matchedSkill: skill, matchedSkills: [skill], confidence: 0.9 };
+      return { matchedSkills: [skill], confidence: 0.9 };
     } else if (matchedSkills.size > 1) {
       const skillList = Array.from(matchedSkills);
       console.log(`[IntentRouter] ⚠️ 关键词命中多个技能: ${skillList.join(', ')} (需要LLM决策)`);
-      return { matchedSkill: skillList[0], matchedSkills: skillList, confidence: 0.7, isAmbiguous: true };
+      return { matchedSkills: skillList, confidence: 0.7, isAmbiguous: true };
     }
 
-    return { matchedSkill: undefined, matchedSkills: [], confidence: 0 };
+    return { matchedSkills: [], confidence: 0 };
   }
 
   /**
@@ -316,10 +244,9 @@ export class IntentRouter {
    * 用于快速定位，跳过 LLM 匹配
    */
   extractRecentSkill(conversationHistory: Array<{ skill?: string }>): string | undefined {
-    // 倒序查找，找到最近一个有 skill 的记录
     for (let i = conversationHistory.length - 1; i >= 0; i--) {
       const msg = conversationHistory[i];
-      if (msg.skill && msg.skill !== 'fallback') {
+      if (msg.skill) {
         return msg.skill;
       }
     }
@@ -353,9 +280,9 @@ export class IntentRouter {
 
     const keywordResult = this.keywordMatchSkill(trimmedInput);
     let keywordMatch: AuxiliarySignals['keywordMatch'] = null;
-    if (keywordResult.matchedSkill && keywordResult.confidence > 0) {
+    if (keywordResult.matchedSkills.length > 0 && keywordResult.confidence > 0) {
       keywordMatch = {
-        skill: keywordResult.matchedSkill,
+        skill: keywordResult.matchedSkills[0],
         confidence: keywordResult.confidence,
         matchedKeywords: [],
       };
@@ -396,49 +323,17 @@ export class IntentRouter {
       return {
         intent: 'small_talk',
         confidence: 0.98,
-        matchedSkill: undefined,
+        matchedSkills: [],
         method: 'fast_small_talk',
         needLLM: false,
       };
     }
 
-    if (signals.sessionContext && signals.sessionContext.confidence >= 0.88 && trimmedInput.length < 20) {
-      return {
-        intent: 'skill_task',
-        confidence: signals.sessionContext.confidence,
-        matchedSkill: signals.sessionContext.skill,
-        matchedSkills: [signals.sessionContext.skill],
-        method: 'fast_session',
-        needLLM: false,
-      };
-    }
-
-    if (signals.keywordMatch && signals.keywordMatch.confidence >= 0.9 && trimmedInput.length < 15) {
-      return {
-        intent: 'skill_task',
-        confidence: signals.keywordMatch.confidence,
-        matchedSkill: signals.keywordMatch.skill,
-        matchedSkills: [signals.keywordMatch.skill],
-        method: 'fast_keyword',
-        needLLM: false,
-      };
-    }
-
-    if (signals.sessionContext && signals.keywordMatch && signals.sessionContext.skill === signals.keywordMatch.skill) {
-      return {
-        intent: 'skill_task',
-        confidence: Math.min(0.92, signals.sessionContext.confidence + 0.05),
-        matchedSkill: signals.sessionContext.skill,
-        matchedSkills: [signals.sessionContext.skill],
-        method: 'multi_signal_agree',
-        needLLM: false,
-      };
-    }
-
+    const firstMatched = signals.keywordMatch?.skill || signals.sessionContext?.skill;
     return {
       intent: 'skill_task',
       confidence: 0.70,
-      matchedSkill: signals.keywordMatch?.skill || signals.sessionContext?.skill,
+      matchedSkills: firstMatched ? [firstMatched] : [],
       method: 'llm_decision',
       needLLM: true,
       auxiliarySignals: signals,
@@ -469,6 +364,7 @@ export class IntentRouter {
           return {
             intent: 'small_talk',
             confidence: decision.confidence,
+            matchedSkills: [],
             suggestedResponse: fastResult.suggestedResponse,
           };
         }
@@ -478,6 +374,7 @@ export class IntentRouter {
             return {
               intent: 'small_talk',
               confidence: 0.85,
+              matchedSkills: [],
               suggestedResponse: this.generateSmallTalkResponse(llmResult.type, userProfile),
             };
           }
@@ -486,13 +383,12 @@ export class IntentRouter {
       return {
         intent: decision.intent,
         confidence: decision.confidence,
-        matchedSkill: decision.matchedSkill,
         matchedSkills: decision.matchedSkills,
       };
     }
 
     // Step 4: LLM 综合判断（传入所有辅助信息）
-    const guessResponse = this.generateGuessQuestions(userInput, userProfile);
+    const guessResponse = this.generateGuessQuestions();
 
     console.log(`[IntentRouter] 🤖 使用 LLM 匹配技能...`);
     try {
@@ -509,56 +405,52 @@ export class IntentRouter {
         return llmResult;
       }
 
-      if (llmResult.matchedSkill && llmResult.matchedSkill !== 'fallback') {
-        console.log(`[IntentRouter] ✅ LLM 匹配到技能: ${llmResult.matchedSkill}`);
+      if (llmResult.intent === 'confirm_system') {
+        console.log(`[IntentRouter] ❓ LLM 需要确认系统`);
+        return {
+          intent: 'confirm_system',
+          confidence: llmResult.confidence || 0.9,
+          matchedSkills: [],
+          suggestedResponse: llmResult.suggestedResponse,
+        };
+      }
+
+      if (llmResult.matchedSkills.length > 0) {
+        console.log(`[IntentRouter] ✅ LLM 匹配到技能: ${llmResult.matchedSkills.join(', ')}`);
         return {
           ...llmResult,
           suggestedResponse: undefined,
         };
       }
 
-      console.log(`[IntentRouter] 💡 返回猜你想问`);
+      console.log(`[IntentRouter] 💡 返回转人工`);
       return {
-        intent: 'guess_confirm',
+        intent: 'unclear',
         confidence: 0.8,
-        guessedSystem: guessResponse.systems[0] || undefined,
+        matchedSkills: [],
         suggestedResponse: guessResponse.fullResponse,
-        matchedSkill: 'fallback',
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
       console.log(`[IntentRouter] ⚠️ LLM 匹配失败: ${errorType} - ${errorMsg}`);
       return {
-        intent: 'guess_confirm',
+        intent: 'unclear',
         confidence: 0.7,
-        guessedSystem: guessResponse.systems[0] || undefined,
+        matchedSkills: [],
         suggestedResponse: guessResponse.fullResponse,
-        matchedSkill: 'fallback',
       };
     }
   }
 
   /**
-   * 生成猜你想问（毫秒级，不调用 LLM）
+   * 匹配不到技能时返回转人工消息
    */
-  generateGuessQuestions(userInput: string, userProfile?: UserProfile): { systems: string[]; fullResponse: string } {
-    const department = userProfile?.department || '';
-    const systems = userProfile?.commonSystems || [];
-
-    // 截断过长输入，防止对话历史泄露到回复中
-    const displayInput = userInput.length > 50 ? userInput.substring(0, 50) + '...' : userInput;
-
-    let fullResponse: string;
-
-    if (systems.length > 0) {
-      const systemNames = systems.join('和');
-      fullResponse = `您好～我看您是${department ? department + '的' : ''}平时使用${systemNames}较多，看您说"${displayInput}"，请问具体是哪个系统呀？另外大概多久前开始出现这个情况的呢？`;
-    } else {
-      fullResponse = this.generateClarificationResponse();
-    }
-
-    return { systems, fullResponse };
+  generateGuessQuestions(): { systems: string[]; fullResponse: string } {
+    return {
+      systems: [],
+      fullResponse: '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。',
+    };
   }
 
   /**
@@ -571,6 +463,7 @@ export class IntentRouter {
           return {
             intent: 'small_talk',
             confidence: 0.98,
+            matchedSkills: [],
             suggestedResponse: this.generateSmallTalkResponse(config.responseType, userProfile),
           };
         }
@@ -583,17 +476,18 @@ export class IntentRouter {
         const guessedSystem = this.findBestMatch(userInput, userProfile.commonSystems);
         if (guessedSystem) {
           return {
-            intent: 'guess_confirm',
+            intent: 'confirm_system',
             confidence: 0.85,
             guessedSystem,
-            suggestedResponse: `您是想查询${guessedSystem}相关的问题吗？请确认或告诉我具体需求。`,
+            matchedSkills: [],
+            suggestedResponse: `请问您说的是"${guessedSystem}"吗？`,
           };
         }
       }
       return {
         intent: 'out_of_scope',
         confidence: 0.95,
-        matchedSkill: 'fallback',
+        matchedSkills: [],
       };
     }
   }
@@ -612,16 +506,19 @@ export class IntentRouter {
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
+    const systemNames = skills
+      .map(s => s.metadata?.systemName as string)
+      .filter(Boolean);
 
     const IntentSchema = z.object({
-      intent: z.enum(['skill_task', 'small_talk', 'unclear'])
+      intent: z.enum(['skill_task', 'small_talk', 'confirm_system', 'unclear'])
         .describe('意图类型'),
       confidence: z.number().min(0).max(1).optional().default(0.8)
         .describe('置信度 0-1'),
-      matchedSkill: z.string().optional().nullable()
-        .describe('主匹配技能名称'),
-      matchedSkills: z.array(z.string()).optional().nullable()
+      matchedSkills: z.array(z.string()).nullable().optional()
         .describe('所有匹配的技能列表'),
+      suggestedResponse: z.string().nullable().optional()
+        .describe('确认系统时的反问内容'),
       reasoning: z.string().optional()
         .describe('决策理由（简短）'),
     });
@@ -676,15 +573,25 @@ ${userInput}
       return {
         intent: 'small_talk',
         confidence: result.confidence || 0.9,
+        matchedSkills: [],
         suggestedResponse: this.generateSmallTalkResponse('', userProfile),
       };
     }
 
-    if (result.intent === 'unclear' || !result.matchedSkill) {
+    if (result.intent === 'confirm_system') {
+      const confirmOptions = systemNames.join('"、"');
+      return {
+        intent: 'confirm_system',
+        confidence: result.confidence || 0.9,
+        matchedSkills: [],
+        suggestedResponse: result.suggestedResponse || `请问您说的是"${confirmOptions}"中的哪一个？`,
+      };
+    }
+
+    if (result.intent === 'unclear' || !result.matchedSkills || result.matchedSkills.length === 0) {
       return {
         intent: 'unclear',
         confidence: 0.8,
-        matchedSkill: 'fallback',
         matchedSkills: [],
       };
     }
@@ -692,8 +599,7 @@ ${userInput}
     return {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
-      matchedSkill: result.matchedSkill,
-      matchedSkills: result.matchedSkills || [result.matchedSkill],
+      matchedSkills: result.matchedSkills,
     };
   }
 

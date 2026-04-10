@@ -83,11 +83,14 @@ export class MainAgent {
         }
       }
 
-      // ========== 步骤 2: 上下文加载 ==========
-      const userProfile = await this.userProfileService.loadProfile(userId);
-      console.log(
-        `[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(", ")}`,
-      );
+    // ========== 步骤 2: 上下文加载 ==========
+    const skillsMetadata = this.skillRegistry.getAllMetadata();
+    this.userProfileService.setSkillsMetadata(skillsMetadata);
+    
+    const userProfile = await this.userProfileService.loadProfile(userId);
+    console.log(
+      `[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(", ")}`,
+    );
 
       const memory = await this.memoryService.loadMemory(userId);
       const messages = memory.conversationHistory.map((msg) => ({
@@ -169,11 +172,6 @@ export class MainAgent {
 
       if (intentResult.intent !== "skill_task") {
         console.log(`[MainAgent] ⏭️ 非技能任务，直接返回`);
-        await this.updateProfileAfterRequest(
-          userProfile,
-          enrichedRequirement,
-          userId,
-        );
 
         if (intentResult.intent === "small_talk") {
           assistantResponse = intentResult.suggestedResponse || "您好！有什么可以帮助您的吗？";
@@ -187,19 +185,30 @@ export class MainAgent {
           };
         }
 
+        if (intentResult.intent === "confirm_system") {
+          assistantResponse = intentResult.suggestedResponse || "请问您说的是哪个系统？";
+          sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
+          return {
+            success: true,
+            data: {
+              message: assistantResponse,
+              type: "confirm_system",
+            },
+          };
+        }
+
         assistantResponse = intentResult.suggestedResponse || "";
         sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
         return {
           success: true,
           data: {
             message: assistantResponse,
-            type: "guess_confirm",
-            guessedSystem: intentResult.guessedSystem,
+            type: "unclear",
           },
         };
       }
 
-      const matchedSkills = intentResult.matchedSkills || (intentResult.matchedSkill ? [intentResult.matchedSkill] : []);
+      const matchedSkills = intentResult.matchedSkills;
 
       if (matchedSkills.length === 0) {
         console.log(`[MainAgent] ⚠️ 未匹配到技能`);

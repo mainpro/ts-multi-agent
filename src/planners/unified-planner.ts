@@ -68,12 +68,9 @@ export class UnifiedPlanner {
    * 执行统一规划
    * 一次 LLM 调用完成：需求分析 + 技能匹配 + 任务规划
    */
-  async plan(requirement: string, matchedSkill?: string): Promise<PlanResult> {
+  async plan(requirement: string): Promise<PlanResult> {
     console.log(`[UnifiedPlanner] 🚀 开始统一规划...`);
     console.log(`[UnifiedPlanner] 📥 需求: "${requirement}"`);
-    if (matchedSkill) {
-      console.log(`[UnifiedPlanner] 🎯 已匹配技能: ${matchedSkill}`);
-    }
 
     const allSkills = this.skillRegistry.getAllMetadata();
     console.log(`[UnifiedPlanner] 📋 可用技能: ${allSkills.map(s => s.name).join(', ')}`);
@@ -89,9 +86,7 @@ export class UnifiedPlanner {
 
   const systemPrompt = buildTaskPlannerPrompt(allSkills);
 
-  const userPrompt = matchedSkill
-    ? `需求: "${requirement}"\n匹配技能: ${matchedSkill}\n为该技能创建任务计划。`
-    : `需求: "${requirement}"`;
+  const userPrompt = `需求: "${requirement}"`;
 
   try {
     console.log(`[UnifiedPlanner] 🤖 发送统一规划请求...`);

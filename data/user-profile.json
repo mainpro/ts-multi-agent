@@ -3,12 +3,12 @@
     "userId": "default",
     "department": "市场部",
     "commonSystems": [
-      "GEAM"
+      "报销系统（EES）"
     ],
     "tags": [],
-    "conversationCount": 47,
-    "lastActiveAt": "2026-04-10T00:43:24.516Z",
-    "createdAt": "2026-03-26T00:00:00.000Z",
-    "updatedAt": "2026-04-10T00:43:24.516Z"
+    "conversationCount": 10,
+    "lastActiveAt": "2026-04-10T06:15:41.292Z",
+    "createdAt": "2026-04-10T05:02:51.375Z",
+    "updatedAt": "2026-04-10T06:15:41.292Z"
   }
 }
