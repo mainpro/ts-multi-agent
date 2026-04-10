@@ -208,9 +208,9 @@ export class MainAgent {
         };
       }
 
-      const matchedSkills = intentResult.matchedSkills;
+      const tasks = intentResult.tasks;
 
-      if (matchedSkills.length === 0) {
+      if (tasks.length === 0) {
         console.log(`[MainAgent] ⚠️ 未匹配到技能`);
         await this.updateProfileAfterRequest(
           userProfile,
@@ -227,37 +227,65 @@ export class MainAgent {
         };
       }
 
-      if (matchedSkills.length > 0) {
+      // 按技能分组：有技能的 vs 无技能的
+      const tasksWithSkill = tasks.filter(t => t.skillName);
+      const tasksWithoutSkill = tasks.filter(t => !t.skillName);
+
+      console.log(`[MainAgent] 📊 任务分析: 共${tasks.length}个, 有技能=${tasksWithSkill.length}, 无技能=${tasksWithoutSkill.length}`);
+
+      // 检测转人工任务
+      const transferTask = tasksWithoutSkill.find(t => t.intent === 'unclear');
+      const hasTransferRequest = !!transferTask;
+      if (hasTransferRequest) {
+        console.log(`[MainAgent] ⚠️ 检测到转人工请求`);
+      }
+
+      // 更新 SessionContext（如果有技能任务）
+      if (tasksWithSkill.length > 0) {
         sessionContextService.updateContext(effectiveSessionId, {
-          currentSkill: matchedSkills[0],
-          currentSystem: matchedSkills[0],
+          currentSkill: tasksWithSkill[0].skillName!,
+          currentSystem: tasksWithSkill[0].skillName!,
           currentTopic: 'skill_task',
         });
         console.log(
-          `[MainAgent] 📝 SessionContext 已更新: currentSkill=${matchedSkills[0]}, turn=${sessionContextService.getContext(effectiveSessionId).turnCount}`,
+          `[MainAgent] 📝 SessionContext 已更新: currentSkill=${tasksWithSkill[0].skillName}, turn=${sessionContextService.getContext(effectiveSessionId).turnCount}`,
         );
       }
 
       // ========== 步骤 4: 任务规划与执行 ==========
       let plan: TaskPlan;
 
-      if (matchedSkills.length === 1) {
+      // 只执行有技能的任务
+      const tasksToExecute = tasksWithSkill;
+
+      if (tasksToExecute.length === 0) {
+        // 没有需要执行的技能任务，直接返回转人工
+        assistantResponse = '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。';
+        sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
+        return {
+          success: true,
+          data: {
+            message: assistantResponse,
+            type: 'unclear',
+          },
+        };
+      }
+
+      if (tasksToExecute.length === 1) {
         console.log(`[MainAgent] 📋 单技能任务：直接创建计划`);
         plan = {
           id: `plan-${Date.now()}`,
           requirement: enrichedRequirement,
-          tasks: [
-            {
-              id: "task-1",
-              requirement: enrichedRequirement,
-              skillName: matchedSkills[0],
-              dependencies: [],
-            },
-          ],
+          tasks: tasksToExecute.map((t, idx) => ({
+            id: `task-${idx + 1}`,
+            requirement: t.requirement,
+            skillName: t.skillName!,
+            dependencies: [],
+          })),
         };
       } else {
         console.log(
-          `[MainAgent] 📋 多技能任务 (${matchedSkills.length}个)：调用规划器`,
+          `[MainAgent] 📋 多任务 (${tasksToExecute.length}个)：调用规划器`,
         );
         const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
         const planResult = await planner.plan(enrichedRequirement);
@@ -300,9 +328,41 @@ export class MainAgent {
         | {
             response?: string;
             _metadata?: { skill?: string; references?: string[] };
+            results?: Array<{
+              taskId: string;
+              skillName: string;
+              requirement: string;
+              result?: { response?: string; _metadata?: { skill?: string; references?: string[] } };
+              status?: string;
+            }>;
           }
         | undefined;
-      assistantResponse = resultData?.response || JSON.stringify(result.data);
+
+      const taskResults = resultData?.results || [];
+
+      const taskList = taskResults.map((tr, idx) => ({
+        taskId: tr.taskId || `task-${idx + 1}`,
+        skillName: tr.skillName || '',
+        requirement: tr.requirement || '',
+        response: tr.result?.response || '',
+        status: tr.status || 'completed',
+      }));
+
+      let combinedResponse = taskList
+        .map(t => t.response)
+        .filter(r => r)
+        .join('\n\n---\n\n');
+
+      if (!combinedResponse && taskList.length === 0) {
+        combinedResponse = JSON.stringify(result.data);
+      }
+
+      if (hasTransferRequest) {
+        const transferMsg = '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。\n\n';
+        combinedResponse = transferMsg + combinedResponse;
+      }
+      
+      assistantResponse = combinedResponse;
       
       sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
       
@@ -311,12 +371,17 @@ export class MainAgent {
         requirement,
         assistantResponse,
         {
-          skill: resultData?._metadata?.skill,
-          references: resultData?._metadata?.references,
+          skill: taskList[0]?.skillName || '',
         },
       );
 
-      return result;
+      return {
+        success: result.success,
+        data: {
+          results: taskList,
+          type: hasTransferRequest ? 'unclear' : 'skill_task',
+        },
+      };
     } catch (error) {
       console.error("Error processing requirement:", error);
       return {

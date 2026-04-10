@@ -12,14 +12,17 @@ export type IntentType =
   | 'confirm_system' // 系统确认：需要用户确认具体系统
   | 'unclear'; // 无法匹配
 
-/**
- * 意图分类结果
- */
+export interface TaskItem {
+  requirement: string;
+  skillName?: string;
+  intent: 'skill_task' | 'unclear';
+}
+
 export interface IntentResult {
   intent: IntentType;
   confidence?: number;
   suggestedResponse?: string;
-  matchedSkills: string[];
+  tasks: TaskItem[];
   guessedSystem?: string;
   confirmOptions?: string[];
 }
@@ -63,7 +66,6 @@ export interface AuxiliarySignals {
 interface DecisionResult {
   intent: IntentType;
   confidence: number;
-  matchedSkills: string[];
   method: 'fast_small_talk' | 'fast_followup' | 'fast_session' | 'fast_keyword' | 'multi_signal_agree' | 'llm_decision';
   needLLM: boolean;
   auxiliarySignals?: AuxiliarySignals;
@@ -323,17 +325,14 @@ export class IntentRouter {
       return {
         intent: 'small_talk',
         confidence: 0.98,
-        matchedSkills: [],
         method: 'fast_small_talk',
         needLLM: false,
       };
     }
 
-    const firstMatched = signals.keywordMatch?.skill || signals.sessionContext?.skill;
     return {
       intent: 'skill_task',
       confidence: 0.70,
-      matchedSkills: firstMatched ? [firstMatched] : [],
       method: 'llm_decision',
       needLLM: true,
       auxiliarySignals: signals,
@@ -364,7 +363,7 @@ export class IntentRouter {
           return {
             intent: 'small_talk',
             confidence: decision.confidence,
-            matchedSkills: [],
+            tasks: [],
             suggestedResponse: fastResult.suggestedResponse,
           };
         }
@@ -374,7 +373,7 @@ export class IntentRouter {
             return {
               intent: 'small_talk',
               confidence: 0.85,
-              matchedSkills: [],
+              tasks: [],
               suggestedResponse: this.generateSmallTalkResponse(llmResult.type, userProfile),
             };
           }
@@ -383,7 +382,7 @@ export class IntentRouter {
       return {
         intent: decision.intent,
         confidence: decision.confidence,
-        matchedSkills: decision.matchedSkills,
+        tasks: [],
       };
     }
 
@@ -410,13 +409,13 @@ export class IntentRouter {
         return {
           intent: 'confirm_system',
           confidence: llmResult.confidence || 0.9,
-          matchedSkills: [],
+          tasks: [],
           suggestedResponse: llmResult.suggestedResponse,
         };
       }
 
-      if (llmResult.matchedSkills.length > 0) {
-        console.log(`[IntentRouter] ✅ LLM 匹配到技能: ${llmResult.matchedSkills.join(', ')}`);
+      if (llmResult.tasks && llmResult.tasks.length > 0) {
+        console.log(`[IntentRouter] ✅ LLM 返回任务: ${llmResult.tasks.length}个`);
         return {
           ...llmResult,
           suggestedResponse: undefined,
@@ -427,7 +426,7 @@ export class IntentRouter {
       return {
         intent: 'unclear',
         confidence: 0.8,
-        matchedSkills: [],
+        tasks: [],
         suggestedResponse: guessResponse.fullResponse,
       };
     } catch (error) {
@@ -437,7 +436,7 @@ export class IntentRouter {
       return {
         intent: 'unclear',
         confidence: 0.7,
-        matchedSkills: [],
+        tasks: [],
         suggestedResponse: guessResponse.fullResponse,
       };
     }
@@ -449,7 +448,7 @@ export class IntentRouter {
   generateGuessQuestions(): { systems: string[]; fullResponse: string } {
     return {
       systems: [],
-      fullResponse: '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。',
+      fullResponse: '您好，我帮您转到人工这边，让工程师进一步帮您排查一下。',
     };
   }
 
@@ -463,7 +462,7 @@ export class IntentRouter {
           return {
             intent: 'small_talk',
             confidence: 0.98,
-            matchedSkills: [],
+            tasks: [],
             suggestedResponse: this.generateSmallTalkResponse(config.responseType, userProfile),
           };
         }
@@ -479,7 +478,7 @@ export class IntentRouter {
             intent: 'confirm_system',
             confidence: 0.85,
             guessedSystem,
-            matchedSkills: [],
+            tasks: [],
             suggestedResponse: `请问您说的是"${guessedSystem}"吗？`,
           };
         }
@@ -487,7 +486,7 @@ export class IntentRouter {
       return {
         intent: 'out_of_scope',
         confidence: 0.95,
-        matchedSkills: [],
+        tasks: [],
       };
     }
   }
@@ -515,8 +514,12 @@ export class IntentRouter {
         .describe('意图类型'),
       confidence: z.number().min(0).max(1).optional().default(0.8)
         .describe('置信度 0-1'),
-      matchedSkills: z.array(z.string()).nullable().optional()
-        .describe('所有匹配的技能列表'),
+      tasks: z.array(z.object({
+        requirement: z.string().describe('任务描述'),
+        skillName: z.string().optional().describe('匹配的技能名，无技能时省略'),
+        intent: z.enum(['skill_task', 'unclear']).describe('任务意图'),
+      })).optional().default([])
+        .describe('任务列表，每个任务包含requirement、skillName、intent'),
       suggestedResponse: z.string().nullable().optional()
         .describe('确认系统时的反问内容'),
       reasoning: z.string().optional()
@@ -573,7 +576,7 @@ ${userInput}
       return {
         intent: 'small_talk',
         confidence: result.confidence || 0.9,
-        matchedSkills: [],
+        tasks: [],
         suggestedResponse: this.generateSmallTalkResponse('', userProfile),
       };
     }
@@ -583,23 +586,24 @@ ${userInput}
       return {
         intent: 'confirm_system',
         confidence: result.confidence || 0.9,
-        matchedSkills: [],
+        tasks: [],
         suggestedResponse: result.suggestedResponse || `请问您说的是"${confirmOptions}"中的哪一个？`,
       };
     }
 
-    if (result.intent === 'unclear' || !result.matchedSkills || result.matchedSkills.length === 0) {
+    const tasks = result.tasks || [];
+    if (result.intent === 'unclear' || tasks.length === 0) {
       return {
         intent: 'unclear',
         confidence: 0.8,
-        matchedSkills: [],
+        tasks: [],
       };
     }
 
     return {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
-      matchedSkills: result.matchedSkills,
+      tasks,
     };
   }
 

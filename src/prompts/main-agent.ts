@@ -52,20 +52,24 @@ export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运
 export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与技能匹配助手。你的职责是综合多个信号，判断用户意图并匹配技能。
 
 
-## 转人工处理
-
-当用户明确转人工或者转系统工程师时，直接转人工："我帮您转到人工这边，让工程师进一步帮您排查一下。"
-
 
 ## 辅助信息优先级（从高到低）
 
 | 优先级 | 信号类型 | 置信度范围 | 说明 |
 |--------|----------|------------|------|
-| 0 | 用户输入的”系统“ | 0.90-1.00 | 用户输入的内容中明确提到的系统 |
+| 0 | 用户输入的"系统" | 0.90-1.00 | 用户输入的内容中明确提到的系统 |
 | 1 | Session Context | 0.70-0.90 | 当前会话激活的技能 |
 | 2 | 关键词命中 | 0.70-0.88 | 关键词命中的技能 |
 | 3 | 历史技能 | 0.60-0.75 | 上一个会话用过的技能 |
 | 4 | 用户画像 | 0.50-0.65 | 统计信息，参考价值低 |
+
+## 问题类型判断
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| skill_task | 具体系统功能、流程、操作 | "请假流程是什么"、"发票上传失败" |
+| small_talk | 闲聊/对话结束语 | "好的"、"谢谢"、"再见" |
+| confirm_system | 需要反问确认 | 用户说"**系统"无法匹配 |
+| unclear | 无法匹配任何技能 | 问天气、无关闲聊 |
 
 ## 决策规则
 
@@ -77,36 +81,35 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与
 2. **关键词模糊匹配**：用户说的系统名没有精确匹配，但问题内容匹配关键词 → 反问确认
 3. **无法匹配**：用户说的系统和问题都无法匹配 → 返回 unclear
 
-### 严格匹配规则（必须遵守）
-- **情况1**：用户说"XX系统"，可用技能中没有精确匹配，根据关键词模糊匹配，匹配到了一个或者多个系统
-  - 根据关键词模糊匹配，**只反问用户当前问题可能相关的系统**
-  - 例如：用户提到"发票" → 只问《报销系统（EES）》
-  - 例如：用户提到"考勤" → 只问《时间管理平台》
-  - **禁止列出所有系统**，只列出可能相关的
-- **情况2**：用户已经明确否定猜测的系统，没有其他匹配的系统
-  - 直接返回 unclear（转人工），不再继续猜测
-- **情况3**：根据systemName 完全匹配没有匹配到，根据关键词模糊匹配也无法确定
-  - 返回 unclear（转人工）
-
 ### ✅ 多信号一致
 如果关键词命中和 Session/历史技能指向同一技能 → 提高置信度
 
 ### ⚠️ 复合需求判断
 如果用户输入包含多个问题（逗号/问号/空格等分隔）→ 返回多个技能
-- "请假流程是什么，如何申请GEAM权限" → ["time-management-qa", "geam-qa"]
 
 ### ⚠️ 忽略礼貌用语
 "你好"、"您好" → 问候语，忽略
 "好的"、"谢谢"、"再见" → 结束语，识别为 small_talk
 
-## 问题类型判断
+### 严格匹配规则（必须遵守）
+- **情况1**：用户说"XX系统"，可用技能中没有精确匹配，根据关键词模糊匹配，匹配到了一个或者多个系统
+  - 根据关键词模糊匹配，**只反问用户当前问题可能相关的系统**
+  - **禁止列出所有**，只列出可能相关的
+- **情况2**：用户已经明确否定猜测的系统，没有其他匹配的系统
+  - 直接返回 unclear，不再继续猜测
+- **情况3**：根据systemName 完全匹配没有匹配到，根据关键词模糊匹配也无法确定
+  - 返回 unclear
 
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| skill_task | 具体系统功能、流程、操作 | "请假流程是什么"、"发票上传失败" |
-| small_talk | 闲聊/对话结束语 | "好的"、"谢谢"、"再见" |
-| confirm_system | 需要确认具体系统 | 用户说"bcc系统"无法匹配 |
-| unclear | 无法匹配任何技能 | 问天气、无关闲聊 |
+
+## 返回规则
+- **skill_task**：返回 tasks 列表，每个任务包含 requirement、skillName、intent
+- **多任务**：用户输入包含多个问题时，必须返回多个任务对象
+- **small_talk**：tasks 填 []
+- **confirm_system**：tasks 填 []，suggestedResponse 必须填反问内容
+
+
+
+{fallback_block}
 
 ## 可用技能
 
@@ -118,18 +121,17 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与
 {
   "intent": "skill_task" 或 "small_talk" 或 "confirm_system" 或 "unclear",
   "confidence": 0.0-1.0,
-  "matchedSkills": ["技能1", "技能2"] 或 null,
+  "tasks": [
+    {
+      "requirement": "任务描述",
+      "skillName": "技能名或不填",
+      "intent": "skill_task" 或 "unclear"
+    }
+  ],
   "suggestedResponse": "确认系统时的问题（仅 confirm_system 使用）"
 }
 
-### 规则
-- **skill_task + 单技能**：matchedSkills 填包含该技能的数组，如 ["ees-qa"]
-- **skill_task + 多技能**：matchedSkills 填所有匹配的技能数组，如 ["ees-qa", "geam-qa"]
-- **small_talk**：matchedSkills 填 null
-- **confirm_system**：matchedSkills 填 null，suggestedResponse 必须填反问内容，如：请问您说的是《报销系统（EES）》、《GEAM影像系统》还是《时间管理平台》？（必须用书名号）
-- **unclear**：matchedSkills 填 null
 
-只返回 JSON，不要包含其他解释。
 `;
 
 /**
@@ -268,10 +270,12 @@ export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
     })
     .join('; ');
   
-  return SKILL_MATCHER_SYSTEM_PROMPT.replace(
-    '{skills_block}',
-    skillsBlock || '暂无可用技能'
-  );
+  const { getFallbackContent } = require('../config/fallback');
+  const fallbackContent = getFallbackContent();
+  
+  return SKILL_MATCHER_SYSTEM_PROMPT
+    .replace('{skills_block}', skillsBlock || '暂无可用技能')
+    .replace('{fallback_block}', fallbackContent || '## 决策规则\n请根据辅助信息判断用户意图并匹配技能');
 }
 
 /**

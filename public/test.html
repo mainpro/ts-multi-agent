@@ -186,6 +186,15 @@
     .result-icon { width: 22px; height: 22px; background: var(--success); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; }
     .result-title { font-size: 13px; font-weight: 600; }
     .result-body { font-size: 14px; color: var(--text-sec); line-height: 1.6; }
+    .result-table-wrapper { overflow-x: auto; margin-top: 8px; }
+    .result-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .result-table th { text-align: left; padding: 8px; background: var(--bg); border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-sec); }
+    .result-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .result-table tr:last-child td { border-bottom: none; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; }
+    .status-badge.completed { background: #d1fae5; color: #065f46; }
+    .status-badge.pending { background: #fef3c7; color: #92400e; }
+    .status-badge.failed { background: #fee2e2; color: #991b1b; }
 
     .input-bar { padding: 16px 20px; background: var(--bg-white); border-top: 1px solid var(--border); }
     .input-row { max-width: 700px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
@@ -372,22 +381,65 @@ function appendThink(id, text) {
   b.content += text;
   b.el.textContent = b.content;
   if (!b.bubble.classList.contains('open')) b.bubble.classList.add('open');
-  b.el.parentElement.parentElement.parentElement.parentElement.scrollTop = 999999;
+  
+  // 自动滚动到内容底部
+  b.el.scrollTop = b.el.scrollHeight;
+  
+  // 同时滚动聊天区域到底部
+  const chatContainer = document.getElementById('chatMessages');
+  if (chatContainer) {
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  }
 }
 
 function showResult(data) {
   const c = document.getElementById('chatMessages');
   const el = document.createElement('div');
   el.className = 'msg ai';
-  let text = '';
-  if (data?.results?.[0]?.result?.response) text = data.results[0].result.response;
-  else if (data?.message) text = data.message;
-  else text = JSON.stringify(data, null, 2);
-  el.innerHTML = `<div class="msg-avatar">🤖</div>
-    <div><div class="result-card">
-      <div class="result-header"><div class="result-icon">✓</div><div class="result-title">处理完成</div></div>
-      <div class="result-body">${esc(text)}</div>
-    </div></div>`;
+
+  const taskResults = data?.results || [];
+  
+  if (taskResults.length === 0) {
+    const text = data?.message || JSON.stringify(data, null, 2);
+    el.innerHTML = `<div class="msg-avatar">🤖</div>
+      <div><div class="result-card">
+        <div class="result-header"><div class="result-icon">✓</div><div class="result-title">处理完成</div></div>
+        <div class="result-body">${esc(text)}</div>
+      </div></div>`;
+  } else {
+    let tableRows = '';
+    taskResults.forEach((task, idx) => {
+      tableRows += `<tr>
+        <td>${idx + 1}</td>
+        <td>${task.skillName ? esc(task.skillName) : '-'}</td>
+        <td>${task.requirement ? esc(task.requirement) : '-'}</td>
+        <td>${task.response ? esc(task.response) : '-'}</td>
+        <td><span class="status-badge ${task.status || 'completed'}">${task.status || '完成'}</span></td>
+      </tr>`;
+    });
+
+    el.innerHTML = `<div class="msg-avatar">🤖</div>
+      <div><div class="result-card">
+        <div class="result-header"><div class="result-icon">✓</div><div class="result-title">处理完成 (${taskResults.length}个任务)</div></div>
+        <div class="result-table-wrapper">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>技能</th>
+                <th>任务</th>
+                <th>结果</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+        </div>
+      </div></div>`;
+  }
+  
   c.appendChild(el);
   c.scrollTop = c.scrollHeight;
 }
@@ -516,16 +568,24 @@ function handleEvent(ev) {
     else if (msg.includes('⚡ 快速匹配')) { 
       setStep('intent', 'active', '快速匹配', logMsg); 
     }
-    else if (msg.includes('📊 意图分类')) { 
+    else if (msg.includes('📊 意图分类') || msg.includes('📊 任务分析')) { 
       setStep('intent', 'done', '完成', logMsg); 
+      setStep('plan', 'active', '开始规划', logMsg);
+    }
+    else if (msg.includes('✅ LLM 返回任务')) { 
+      setStep('intent', 'done', '完成', logMsg); 
+      setStep('plan', 'active', '开始规划', logMsg);
     }
     
     // 规划阶段  
-    else if (msg.includes('🚀 单技能任务') || msg.includes('🚀 使用统一规划器')) { 
-      setStep('plan', 'active', '规划中', logMsg); 
+    else if (msg.includes('⚠️ 检测到转人工')) { 
+      setStep('plan', 'active', '检测转人工', logMsg); 
     }
-    else if (msg.includes('🎯 已匹配技能') || msg.includes('📊 选中技能')) { 
-      setStep('plan', 'active', '匹配技能', logMsg); 
+    else if (msg.includes('📝 SessionContext')) { 
+      setStep('plan', 'active', '更新上下文', logMsg); 
+    }
+    else if (msg.includes('📋')) { 
+      setStep('plan', 'active', '规划中', logMsg); 
     }
     else if (msg.includes('✅ 规划完成')) { 
       setStep('plan', 'done', '完成', logMsg); 
