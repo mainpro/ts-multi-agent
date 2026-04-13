@@ -1,73 +1,15 @@
 {
-  "test": {
-    "userId": "test",
+  
+  "default": {
+    "userId": "default",
     "department": "市场部",
     "commonSystems": [
-      "报销系统",
-      "差旅系统",
-      "报销系统（EES）",
-      "时间管理平台"
+ 
     ],
     "tags": [],
-    "conversationCount": 16,
-    "lastActiveAt": "2026-04-10T09:52:05.707Z",
-    "createdAt": "2026-04-10T08:25:24.107Z",
-    "updatedAt": "2026-04-10T09:52:05.707Z"
-  },
-  "test-multi": {
-    "userId": "test-multi",
-    "department": "市场部",
-    "commonSystems": [
-      "报销系统",
-      "差旅系统",
-      "时间管理平台"
-    ],
-    "tags": [],
-    "conversationCount": 1,
-    "lastActiveAt": "2026-04-10T09:52:54.354Z",
-    "createdAt": "2026-04-10T09:52:54.354Z",
-    "updatedAt": "2026-04-10T09:52:54.354Z"
-  },
-  "test-edge-7": {
-    "userId": "test-edge-7",
-    "department": "市场部",
-    "commonSystems": [
-      "报销系统",
-      "差旅系统",
-      "时间管理平台"
-    ],
-    "tags": [],
-    "conversationCount": 1,
-    "lastActiveAt": "2026-04-10T10:02:15.957Z",
-    "createdAt": "2026-04-10T10:02:15.957Z",
-    "updatedAt": "2026-04-10T10:02:15.957Z"
-  },
-  "test-edge-11": {
-    "userId": "test-edge-11",
-    "department": "市场部",
-    "commonSystems": [
-      "报销系统",
-      "差旅系统",
-      "报销系统（EES）"
-    ],
-    "tags": [],
-    "conversationCount": 1,
-    "lastActiveAt": "2026-04-10T10:02:38.610Z",
-    "createdAt": "2026-04-10T10:02:38.610Z",
-    "updatedAt": "2026-04-10T10:02:38.610Z"
-  },
-  "test-edge-10": {
-    "userId": "test-edge-10",
-    "department": "市场部",
-    "commonSystems": [
-      "报销系统",
-      "差旅系统",
-      "时间管理平台"
-    ],
-    "tags": [],
-    "conversationCount": 1,
-    "lastActiveAt": "2026-04-10T10:02:40.708Z",
-    "createdAt": "2026-04-10T10:02:40.708Z",
-    "updatedAt": "2026-04-10T10:02:40.708Z"
+    "conversationCount": 5,
+    "lastActiveAt": "2026-04-13T00:59:37.608Z",
+    "createdAt": "2026-04-13T00:54:42.815Z",
+    "updatedAt": "2026-04-13T00:59:37.607Z"
   }
 }

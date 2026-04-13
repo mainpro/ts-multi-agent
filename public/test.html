@@ -284,6 +284,10 @@ let busy = false;
 const thinkingBubbles = {};
 let selectedImage = null;
 
+// 生成唯一的 userId 和 sessionId，每个浏览器窗口独立
+const userId = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+const sessionId = 'session-' + Date.now();
+
 const STEPS = [
 { id: 'intent', icon: '🧠', title: '意图分类' },
 { id: 'plan', icon: '📋', title: '任务规划' },
@@ -657,7 +661,11 @@ const userContent = selectedImage
   : text;
 addMsg('user', userContent);
 
-const requestBody = { requirement: text || '请分析这张图片' };
+const requestBody = { 
+  userId, 
+  sessionId,
+  requirement: text || '请分析这张图片' 
+};
 if (selectedImage && selectedImage.length > 100) {
   requestBody.image = selectedImage;
 }
