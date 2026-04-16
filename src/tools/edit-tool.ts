@@ -11,6 +11,12 @@ export interface EditInput {
 export class EditTool implements Tool {
   name = 'edit';
   description = 'Edit an existing file by replacing a specific string with new content.';
+  parameters = {
+    filePath: { type: 'string', description: '要编辑的文件路径' },
+    oldString: { type: 'string', description: '要替换的旧内容' },
+    newString: { type: 'string', description: '要替换成的新内容' },
+  };
+  required = ['filePath', 'oldString', 'newString'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { filePath, oldString, newString } = input as EditInput;

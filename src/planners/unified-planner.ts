@@ -143,6 +143,7 @@ export class UnifiedPlanner {
           id: task.id,
           requirement: task.requirement || task.description || requirement,
           skillName: task.skillName || task.skill || selectedSkillNames[0] || '',
+          params: task.params || {},
           dependencies: task.dependencies || [],
         })),
       };

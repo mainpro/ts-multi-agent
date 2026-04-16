@@ -251,39 +251,6 @@ export class SkillRegistry {
         body,
       };
 
-      // Check for optional directories
-      const scriptsDir = path.join(entry.skillDir, 'scripts');
-      const referencesDir = path.join(entry.skillDir, 'references');
-      const assetsDir = path.join(entry.skillDir, 'assets');
-
-      // Only add directory paths if they exist
-      try {
-        const scriptsStat = await fs.stat(scriptsDir);
-        if (scriptsStat.isDirectory()) {
-          skill.scriptsDir = scriptsDir;
-        }
-      } catch {
-        // Directory doesn't exist, don't add
-      }
-
-      try {
-        const referencesStat = await fs.stat(referencesDir);
-        if (referencesStat.isDirectory()) {
-          skill.referencesDir = referencesDir;
-        }
-      } catch {
-        // Directory doesn't exist, don't add
-      }
-
-      try {
-        const assetsStat = await fs.stat(assetsDir);
-        if (assetsStat.isDirectory()) {
-          skill.assetsDir = assetsDir;
-        }
-      } catch {
-        // Directory doesn't exist, don't add
-      }
-
       return skill;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);

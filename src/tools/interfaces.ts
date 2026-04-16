@@ -7,6 +7,20 @@
  */
 
 /**
+ * JSON Schema for tool parameters
+ */
+export interface ToolParameterSchema {
+  type: string;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+}
+
+export interface ToolParameters {
+  [key: string]: ToolParameterSchema;
+}
+
+/**
  * Context provided to tool execution
  * Contains session and user information for tool operations
  */
@@ -46,6 +60,10 @@ export interface Tool {
   name: string;
   /** Human-readable description of what the tool does */
   description: string;
+  /** JSON Schema for tool parameters */
+  parameters?: ToolParameters;
+  /** Required parameter names */
+  required?: string[];
   
   /**
    * Execute the tool with given input and context

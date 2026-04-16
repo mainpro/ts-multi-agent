@@ -10,24 +10,14 @@ export type { Tool, ToolContext, ToolResult } from '../tools/interfaces';
 // Skill System Types
 // ============================================================================
 
-/**
- * Skill metadata from SKILL.md frontmatter
- * Used for skill discovery and matching
- */
+// Skill metadata from SKILL.md frontmatter
 export interface SkillMetadata {
-  /** Unique name of the skill */
   name: string;
-  /** Human-readable description */
   description: string;
-  /** License identifier (e.g., MIT, Apache-2.0) */
   license?: string;
-  /** Compatibility information */
   compatibility?: string;
-  /** Additional metadata */
   metadata?: Record<string, unknown>;
-  /** List of allowed tools for this skill */
   allowedTools?: string[];
-  /** Whether this skill is hidden from skill list (built-in) */
   hidden?: boolean;
 }
 
@@ -37,12 +27,6 @@ export interface SkillMetadata {
 export interface Skill extends SkillMetadata {
   /** Body content from SKILL.md (everything after frontmatter) */
   body: string;
-  /** Path to scripts directory */
-  scriptsDir?: string;
-  /** Path to references directory */
-  referencesDir?: string;
-  /** Path to assets directory */
-  assetsDir?: string;
 }
 
 /**
@@ -108,11 +92,27 @@ export interface Task {
   createdAt?: Date;
   retryCount?: number;
   params?: Record<string, unknown>;
+  sessionId?: string;
+  userId?: string;
   imageAttachment?: {
     data: Buffer;
     mimeType: string;
     originalName?: string;
   };
+  
+  // 询问历史（统一询问机制）
+  questionHistory?: Array<{
+    question: {
+      type: string;
+      content: string;
+      metadata?: Record<string, unknown>;
+    };
+    answer: string;
+    timestamp: Date;
+  }>;
+  
+  // 执行状态（技能自己决定格式）
+  executionState?: Record<string, unknown>;
 }
 
 /**
@@ -178,12 +178,26 @@ export interface ToolCallResult {
 export interface SkillExecutionResult {
   response: string;
   needRefs?: string[];
+  status?: 'completed' | 'waiting_user_input';
+  question?: {
+    type: 'skill_question';
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 export interface TaskResult {
   success: boolean;
+  status?: 'completed' | 'waiting_user_input';
   data?: SkillExecutionResult | unknown;
   error?: TaskError;
+  
+  // 统一询问字段
+  question?: {
+    type: 'skill_question';
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -302,9 +316,6 @@ export const SkillMetadataSchema = z.object({
  */
 export const SkillSchema = SkillMetadataSchema.extend({
   body: z.string(),
-  scriptsDir: z.string().optional(),
-  referencesDir: z.string().optional(),
-  assetsDir: z.string().optional(),
 });
 
 /**

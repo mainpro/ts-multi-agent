@@ -12,6 +12,11 @@ export interface BashInput {
 export class BashTool implements Tool {
   name = 'bash';
   description = 'Execute shell commands. Use for running scripts, installing dependencies, or any system operations.';
+  parameters = {
+    command: { type: 'string', description: '要执行的 shell 命令' },
+    timeout: { type: 'number', description: '超时时间（毫秒），默认 30000' },
+  };
+  required = ['command'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { command, timeout = 30000 } = input as BashInput;
@@ -36,9 +41,16 @@ export class BashTool implements Tool {
         },
       };
     } catch (error: any) {
+      const errorMsg = [
+        `Command failed: ${command}`,
+        error.stdout ? `\n[stdout]:\n${error.stdout}` : '',
+        error.stderr ? `\n[stderr]:\n${error.stderr}` : '',
+        error.message && !error.stdout && !error.stderr ? `\n[error]: ${error.message}` : '',
+      ].join('');
+
       return {
         success: false,
-        error: error.message || 'Command execution failed',
+        error: errorMsg,
         data: {
           stdout: error.stdout || '',
           stderr: error.stderr || '',

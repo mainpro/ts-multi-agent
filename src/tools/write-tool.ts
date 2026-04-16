@@ -10,6 +10,11 @@ export interface WriteInput {
 export class WriteTool implements Tool {
   name = 'write';
   description = 'Write or create a file with specified content.';
+  parameters = {
+    filePath: { type: 'string', description: '要写入的文件路径' },
+    content: { type: 'string', description: '要写入的内容' },
+  };
+  required = ['filePath', 'content'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { filePath, content } = input as WriteInput;

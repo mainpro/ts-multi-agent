@@ -13,7 +13,6 @@ export class LLMEventEmitter {
   private currentAgent: 'MainAgent' | 'SubAgent' = 'MainAgent';
 
   setAgent(agent: 'MainAgent' | 'SubAgent'): void {
-    console.log(`[LLMEvent] setAgent: ${this.currentAgent} -> ${agent}`);
     this.currentAgent = agent;
   }
 
@@ -45,7 +44,6 @@ export class LLMEventEmitter {
         content: data,
         agent: this.currentAgent,
       };
-      console.log(`[LLMEvent] emit ${event} agent=${this.currentAgent}`);
       callbacks.forEach(callback => {
         try {
           callback(enrichedData);
@@ -682,7 +680,7 @@ export class LLMClient {
     messages.push({ role: 'user', content: prompt });
 
     const toolCallsResults: ToolCallResult[] = [];
-    let maxIterations = 5;
+    let maxIterations = 10;
 
     while (maxIterations-- > 0) {
       const result = await this.makeToolRequestStream(messages, tools, signal);

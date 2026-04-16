@@ -16,15 +16,21 @@ export interface TaskItem {
   requirement: string;
   skillName?: string;
   intent: 'skill_task' | 'unclear';
+  params?: Record<string, unknown>;
 }
 
 export interface IntentResult {
   intent: IntentType;
   confidence?: number;
-  suggestedResponse?: string;
   tasks: TaskItem[];
   guessedSystem?: string;
   confirmOptions?: string[];
+  
+  question?: {
+    type: 'system_confirm' | 'skill_confirm';
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -364,7 +370,10 @@ export class IntentRouter {
             intent: 'small_talk',
             confidence: decision.confidence,
             tasks: [],
-            suggestedResponse: fastResult.suggestedResponse,
+            question: {
+              type: 'skill_confirm',
+              content: fastResult.question?.content || '',
+            },
           };
         }
         if (userInput.length < 25) {
@@ -374,7 +383,10 @@ export class IntentRouter {
               intent: 'small_talk',
               confidence: 0.85,
               tasks: [],
-              suggestedResponse: this.generateSmallTalkResponse(llmResult.type, userProfile),
+              question: {
+                type: 'skill_confirm',
+                content: this.generateSmallTalkResponse(llmResult.type, userProfile),
+              },
             };
           }
         }
@@ -410,7 +422,7 @@ export class IntentRouter {
           intent: 'confirm_system',
           confidence: llmResult.confidence || 0.9,
           tasks: [],
-          suggestedResponse: llmResult.suggestedResponse,
+          question: llmResult.question,
         };
       }
 
@@ -418,7 +430,6 @@ export class IntentRouter {
         console.log(`[IntentRouter] ✅ LLM 返回任务: ${llmResult.tasks.length}个`);
         return {
           ...llmResult,
-          suggestedResponse: undefined,
         };
       }
 
@@ -427,18 +438,24 @@ export class IntentRouter {
         intent: 'unclear',
         confidence: 0.8,
         tasks: [],
-        suggestedResponse: guessResponse.fullResponse,
+        question: {
+          type: 'skill_confirm',
+          content: guessResponse.fullResponse,
+        },
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
       console.log(`[IntentRouter] ⚠️ LLM 匹配失败: ${errorType} - ${errorMsg}`);
       return {
-        intent: 'unclear',
-        confidence: 0.7,
-        tasks: [],
-        suggestedResponse: guessResponse.fullResponse,
-      };
+          intent: 'unclear',
+          confidence: 0.7,
+          tasks: [],
+          question: {
+            type: 'skill_confirm',
+            content: guessResponse.fullResponse,
+          },
+        };
     }
   }
 
@@ -463,7 +480,10 @@ export class IntentRouter {
             intent: 'small_talk',
             confidence: 0.98,
             tasks: [],
-            suggestedResponse: this.generateSmallTalkResponse(config.responseType, userProfile),
+            question: {
+              type: 'skill_confirm',
+              content: this.generateSmallTalkResponse(config.responseType, userProfile),
+            },
           };
         }
       }
@@ -479,7 +499,10 @@ export class IntentRouter {
             confidence: 0.85,
             guessedSystem,
             tasks: [],
-            suggestedResponse: `请问您说的是"${guessedSystem}"吗？`,
+            question: {
+              type: 'system_confirm',
+              content: `请问您说的是"${guessedSystem}"吗？`,
+            },
           };
         }
       }
@@ -518,10 +541,15 @@ export class IntentRouter {
         requirement: z.string().describe('任务描述'),
         skillName: z.string().optional().describe('匹配的技能名，无技能时省略'),
         intent: z.enum(['skill_task', 'unclear']).describe('任务意图'),
+        params: z.record(z.unknown()).optional()
+          .describe('从对话上下文中提取的参数，如 userId、department 等'),
       })).optional().default([])
-        .describe('任务列表，每个任务包含requirement、skillName、intent'),
-      suggestedResponse: z.string().nullable().optional()
-        .describe('确认系统时的反问内容'),
+        .describe('任务列表，每个任务包含requirement、skillName、intent、params'),
+      question: z.object({
+        type: z.enum(['system_confirm', 'skill_confirm']),
+        content: z.string(),
+      }).nullable().optional()
+        .describe('询问内容'),
       reasoning: z.string().optional()
         .describe('决策理由（简短）'),
     });
@@ -577,7 +605,10 @@ ${userInput}
         intent: 'small_talk',
         confidence: result.confidence || 0.9,
         tasks: [],
-        suggestedResponse: this.generateSmallTalkResponse('', userProfile),
+        question: {
+          type: 'skill_confirm',
+          content: this.generateSmallTalkResponse('', userProfile),
+        },
       };
     }
 
@@ -587,7 +618,10 @@ ${userInput}
         intent: 'confirm_system',
         confidence: result.confidence || 0.9,
         tasks: [],
-        suggestedResponse: result.suggestedResponse || `请问您说的是"${confirmOptions}"中的哪一个？`,
+        question: result.question || {
+          type: 'system_confirm',
+          content: `请问您说的是"${confirmOptions}"中的哪一个？`,
+        },
       };
     }
 

@@ -17,6 +17,12 @@ export interface GrepMatch {
 export class GrepTool implements Tool {
   name = 'grep';
   description = 'Search for text patterns in files. Returns matching lines with context.';
+  parameters = {
+    pattern: { type: 'string', description: '搜索的正则表达式' },
+    path: { type: 'string', description: '搜索路径，默认当前目录' },
+    include: { type: 'string', description: '文件过滤模式，如 *.ts' },
+  };
+  required = ['pattern'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { pattern, path: searchPath, include } = input as GrepInput;

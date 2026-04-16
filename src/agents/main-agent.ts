@@ -16,6 +16,7 @@ import {
   TaskPlan,
   CONFIG,
   TaskPlanSchema,
+  SkillExecutionResult,
 } from "../types";
 
 export class MainAgent {
@@ -25,6 +26,7 @@ export class MainAgent {
   private memoryService: MemoryService;
   private dynamicContextBuilder: DynamicContextBuilder;
   private autoCompactService: AutoCompactService;
+  private waitingQuestions: Map<string, any> = new Map();
 
   constructor(
     private llm: LLMClient,
@@ -82,6 +84,25 @@ export class MainAgent {
           console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
         }
       }
+
+    // ========== 步骤 1.5: 检查是否有等待的问题 ==========
+    const waitingQuestion = this.waitingQuestions.get(effectiveSessionId);
+    
+    if (waitingQuestion) {
+      console.log(`[MainAgent] 🔄 检测到等待的问题: ${waitingQuestion.type}`);
+      
+      // 根据询问类型处理
+      if (waitingQuestion.type === 'system_confirm' || waitingQuestion.type === 'skill_confirm') {
+        // 主智能体层面的确认 → 清除等待状态，重新处理
+        this.waitingQuestions.delete(effectiveSessionId);
+        console.log(`[MainAgent] ✅ 用户已回复系统确认，重新处理`);
+        // 继续正常处理流程
+      } else if (waitingQuestion.type === 'skill_question') {
+        // 子智能体层面的询问 → 继续执行任务
+        console.log(`[MainAgent] 🔄 继续执行任务，传递用户回复`);
+        return this.continueTask(effectiveSessionId, waitingQuestion, requirement, userId);
+      }
+    }
 
     // ========== 步骤 2: 上下文加载 ==========
     const skillsMetadata = this.skillRegistry.getAllMetadata();
@@ -174,7 +195,7 @@ export class MainAgent {
         console.log(`[MainAgent] ⏭️ 非技能任务，直接返回`);
 
         if (intentResult.intent === "small_talk") {
-          assistantResponse = intentResult.suggestedResponse || "您好！有什么可以帮助您的吗？";
+          assistantResponse = intentResult.question?.content || "您好！有什么可以帮助您的吗？";
           sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
           return {
             success: true,
@@ -186,7 +207,7 @@ export class MainAgent {
         }
 
         if (intentResult.intent === "confirm_system") {
-          assistantResponse = intentResult.suggestedResponse || "请问您说的是哪个系统？";
+          assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
           sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
           return {
             success: true,
@@ -197,7 +218,7 @@ export class MainAgent {
           };
         }
 
-        assistantResponse = intentResult.suggestedResponse || "";
+        assistantResponse = intentResult.question?.content || "";
         sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
         return {
           success: true,
@@ -242,13 +263,24 @@ export class MainAgent {
 
       // 更新 SessionContext（如果有技能任务）
       if (tasksWithSkill.length > 0) {
+        const firstTask = tasksWithSkill[0];
+        const tempVariables: Record<string, unknown> = {};
+        
+        // 将提取的参数保存到 SessionContext
+        if (firstTask.params) {
+          for (const [key, value] of Object.entries(firstTask.params)) {
+            tempVariables[key] = value;
+          }
+        }
+        
         sessionContextService.updateContext(effectiveSessionId, {
-          currentSkill: tasksWithSkill[0].skillName!,
-          currentSystem: tasksWithSkill[0].skillName!,
+          currentSkill: firstTask.skillName!,
+          currentSystem: firstTask.skillName!,
           currentTopic: 'skill_task',
+          tempVariables,
         });
         console.log(
-          `[MainAgent] 📝 SessionContext 已更新: currentSkill=${tasksWithSkill[0].skillName}, turn=${sessionContextService.getContext(effectiveSessionId).turnCount}`,
+          `[MainAgent] 📝 SessionContext 已更新: currentSkill=${firstTask.skillName}, params=${JSON.stringify(tempVariables)}, turn=${sessionContextService.getContext(effectiveSessionId).turnCount}`,
         );
       }
 
@@ -280,6 +312,7 @@ export class MainAgent {
             id: `task-${idx + 1}`,
             requirement: t.requirement,
             skillName: t.skillName!,
+            params: t.params,
             dependencies: [],
           })),
         };
@@ -316,7 +349,7 @@ export class MainAgent {
       });
 
       console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
-      const result = await this.monitorAndReplan(plan);
+      const result = await this.monitorAndReplan(plan, effectiveSessionId, userId);
 
       await this.updateProfileAfterRequest(
         userProfile,
@@ -339,6 +372,36 @@ export class MainAgent {
         | undefined;
 
       const taskResults = resultData?.results || [];
+
+      // ========== 检查是否有任务需要等待用户输入 ==========
+      for (const tr of taskResults) {
+        // tr.result 结构: { success: true, data: SkillExecutionResult }
+        const taskResult = tr.result as { success?: boolean; data?: SkillExecutionResult } | undefined;
+        const skillResult = taskResult?.data;
+
+        if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
+          console.log(`[MainAgent] 🔄 检测到子任务 ${tr.taskId} 需要用户输入，保存等待状态`);
+
+          // 保存等待的问题
+          this.waitingQuestions.set(effectiveSessionId, skillResult.question);
+
+          // 保存 taskId 到 SessionContext，供 continueTask 使用
+          sessionContextService.updateContext(effectiveSessionId, {
+            tempVariables: { taskId: tr.taskId },
+          } as any);
+
+          sessionContextService.addAssistantMessage(effectiveSessionId, skillResult.question.content);
+
+          return {
+            success: true,
+            data: {
+              message: skillResult.question.content,
+              type: 'question',
+              question: skillResult.question,
+            },
+          };
+        }
+      }
 
       const taskList = taskResults.map((tr, idx) => ({
         taskId: tr.taskId || `task-${idx + 1}`,
@@ -399,15 +462,14 @@ export class MainAgent {
     }
   }
 
-  async monitorAndReplan(plan: TaskPlan): Promise<TaskResult> {
+  async monitorAndReplan(plan: TaskPlan, sessionId?: string, userId?: string): Promise<TaskResult> {
     let replanAttempts = 0;
     let currentPlan = plan;
     let submittedPlans = new Set<string>();
 
     while (replanAttempts <= this.maxReplanAttempts) {
-      // Only submit tasks if this plan hasn't been submitted before
       if (!submittedPlans.has(currentPlan.id)) {
-        this.submitPlanTasks(currentPlan);
+        this.submitPlanTasks(currentPlan, sessionId, userId);
         submittedPlans.add(currentPlan.id);
       }
       const result = await this.waitForCompletion(currentPlan.id);
@@ -458,13 +520,11 @@ export class MainAgent {
     };
   }
 
-  private submitPlanTasks(plan: TaskPlan): void {
+  private submitPlanTasks(plan: TaskPlan, sessionId?: string, userId?: string): void {
     console.log(`[MainAgent] 📤 向任务队列提交 ${plan.tasks.length} 个任务`);
     for (const taskDef of plan.tasks) {
-      // Generate unique task ID by combining plan ID and task ID
       const uniqueTaskId = `${plan.id}-${taskDef.id}`;
 
-      // Update dependencies to use unique task IDs
       const updatedDependencies = taskDef.dependencies.map(
         (depId) => `${plan.id}-${depId}`,
       );
@@ -479,6 +539,8 @@ export class MainAgent {
         dependents: [],
         createdAt: new Date(),
         retryCount: 0,
+        sessionId,
+        userId,
       };
 
       this.taskQueue.addTask(task);
@@ -636,6 +698,147 @@ ${errorSummary}
         conversationCount: userProfile.conversationCount + 1,
       });
     }
+  }
+
+  /**
+   * 继续执行任务（处理用户对询问的回复）
+   */
+  private async continueTask(
+    sessionId: string,
+    question: any,
+    userAnswer: string,
+    _userId: string
+  ): Promise<TaskResult> {
+    console.log(`[MainAgent] 🔄 继续执行任务，用户回复: "${userAnswer}"`);
+    
+    // 获取之前的任务（从 SessionContext 中获取）
+    const ctx = sessionContextService.getContext(sessionId);
+    if (!ctx.tempVariables) {
+      console.log(`[MainAgent] ⚠️ 未找到之前的任务`);
+      return {
+        success: false,
+        error: {
+          type: "FATAL",
+          message: "未找到之前的任务",
+          code: "TASK_NOT_FOUND",
+        },
+      };
+    }
+    
+    const previousTaskId = ctx.tempVariables.get('taskId') as string;
+    if (!previousTaskId) {
+      console.log(`[MainAgent] ⚠️ 未找到之前的任务ID`);
+      return {
+        success: false,
+        error: {
+          type: "FATAL",
+          message: "未找到之前的任务ID",
+          code: "TASK_NOT_FOUND",
+        },
+      };
+    }
+    
+    const previousTask = this.taskQueue.getTask(previousTaskId);
+    
+    if (!previousTask) {
+      console.log(`[MainAgent] ⚠️ 任务不存在: ${previousTaskId}`);
+      return {
+        success: false,
+        error: {
+          type: "FATAL",
+          message: "任务不存在",
+          code: "TASK_NOT_FOUND",
+        },
+      };
+    }
+    
+    // 添加询问历史
+    previousTask.questionHistory = previousTask.questionHistory || [];
+    previousTask.questionHistory.push({
+      question,
+      answer: userAnswer,
+      timestamp: new Date(),
+    });
+    
+    // 清除等待状态
+    this.waitingQuestions.delete(sessionId);
+    
+    // 重置任务状态为 pending，让它重新执行
+    previousTask.status = "pending";
+    previousTask.result = undefined;
+    previousTask.error = undefined;
+    
+    console.log(`[MainAgent] 📝 已添加询问历史，重新执行任务: ${previousTaskId}`);
+    
+    // 重新添加任务到队列（TaskQueue 会自动执行）
+    this.taskQueue.addTask(previousTask);
+    
+    // 轮询等待任务完成
+    const maxWaitTime = 60000; // 最多等待 60 秒
+    const pollInterval = 500; // 每 500ms 检查一次
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < maxWaitTime) {
+      const task = this.taskQueue.getTask(previousTaskId);
+      
+      if (!task) {
+        return {
+          success: false,
+          error: {
+            type: "FATAL",
+            message: "任务丢失",
+            code: "TASK_LOST",
+          },
+        };
+      }
+      
+      if (task.status === "completed") {
+        const taskResult = task.result || { success: true, data: {} };
+
+        // 检查是否又产生了新的询问
+        // task.result 结构: { success: true, data: SkillExecutionResult }
+        const skillData = (taskResult as { data?: SkillExecutionResult }).data;
+
+        if (skillData?.status === 'waiting_user_input' && skillData.question) {
+          // 保存新的询问
+          this.waitingQuestions.set(sessionId, skillData.question);
+
+          return {
+            success: true,
+            data: {
+              message: skillData.question.content,
+              type: 'question',
+              question: skillData.question,
+            },
+          };
+        }
+
+        return taskResult;
+      }
+      
+      if (task.status === "failed") {
+        return {
+          success: false,
+          error: task.error || {
+            type: "FATAL",
+            message: "任务执行失败",
+            code: "TASK_FAILED",
+          },
+        };
+      }
+      
+      // 等待一段时间再检查
+      await this.sleep(pollInterval);
+    }
+    
+    return {
+      success: false,
+      error: {
+        type: "FATAL",
+        message: "任务执行超时",
+        code: "TASK_TIMEOUT",
+      },
+    };
   }
 }
 

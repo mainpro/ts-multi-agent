@@ -10,6 +10,11 @@ export interface GlobInput {
 export class GlobTool implements Tool {
   name = 'glob';
   description = 'Find files matching a pattern. Supports wildcards like **/*.ts or *.js.';
+  parameters = {
+    pattern: { type: 'string', description: '文件匹配模式，如 **/*.md' },
+    cwd: { type: 'string', description: '搜索目录，默认当前目录' },
+  };
+  required = ['pattern'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { pattern, cwd } = input as GlobInput;

@@ -1,11 +1,8 @@
 {
-  
   "default": {
     "userId": "default",
     "department": "市场部",
-    "commonSystems": [
- 
-    ],
+    "commonSystems": [],
     "tags": [],
     "conversationCount": 5,
     "lastActiveAt": "2026-04-13T00:59:37.608Z",

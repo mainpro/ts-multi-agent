@@ -18,7 +18,7 @@ import type { ToolContext, ToolResult } from './interfaces';
 export interface FileReadInput {
   /** Name of the file to read */
   fileName: string;
-  /** Optional: Maximum characters to read (default: 3000) */
+  /** Optional: Maximum characters to read (default: 10000) */
   maxChars?: number;
   /** Optional: Search paths to look for the file (default: [workDir]) */
   searchPaths?: string[];
@@ -36,12 +36,17 @@ export interface FileReadInput {
 export class FileReadTool extends BaseTool {
   name = 'read';
   description = 'Read the contents of a file. Returns file content with line numbers.';
+  parameters = {
+    fileName: { type: 'string', description: '要读取的文件名' },
+    maxChars: { type: 'number', description: '最大读取字符数，默认 10000' },
+  };
+  required = ['fileName'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     try {
       const params = this.validateInput(input);
       const searchPaths = this.buildSearchPaths(params, context);
-      const maxChars = params.maxChars ?? 3000;
+      const maxChars = params.maxChars ?? 10000;
 
       for (const searchPath of searchPaths) {
         const fullPath = path.join(searchPath, params.fileName);

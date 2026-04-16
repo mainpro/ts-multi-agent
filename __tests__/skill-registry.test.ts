@@ -291,9 +291,7 @@ describe('SkillRegistry', () => {
       await registry.scanSkills('./skills-valid');
       const skill = await registry.loadFullSkill('calculator');
       
-      expect(skill?.scriptsDir).toBeDefined();
-      expect(skill?.referencesDir).toBeDefined();
-      expect(skill?.assetsDir).toBeDefined();
+      expect(skill?.body).toBeDefined();
     });
   });
 
