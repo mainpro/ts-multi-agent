@@ -11,6 +11,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { BaseTool } from './base-tool';
 import type { ToolContext, ToolResult } from './interfaces';
+import { PathGuard } from '../security/path-guard';
 
 /**
  * Input parameters for FileReadTool
@@ -48,8 +49,47 @@ export class FileReadTool extends BaseTool {
       const searchPaths = this.buildSearchPaths(params, context);
       const maxChars = params.maxChars ?? 10000;
 
+      // 检查fileName是否为绝对路径
+      if (path.isAbsolute(params.fileName)) {
+        const fullPath = params.fileName;
+        
+        // P0-2: 路径安全检查
+        const pathCheck = PathGuard.checkPath(fullPath);
+        if (!pathCheck.safe) {
+          return { success: false, error: pathCheck.reason };
+        }
+
+        try {
+          const content = await this.readFile(fullPath, maxChars);
+          return {
+            success: true,
+            data: {
+              fileName: params.fileName,
+              content,
+              path: fullPath,
+              truncated: content.length >= maxChars,
+            },
+          };
+        } catch (error) {
+          if (this.isNotFoundError(error)) {
+            return {
+              success: false,
+              error: `File not found: ${params.fileName}`,
+            };
+          }
+          throw error;
+        }
+      }
+
+      // 处理相对路径
       for (const searchPath of searchPaths) {
         const fullPath = path.join(searchPath, params.fileName);
+
+        // P0-2: 路径安全检查
+        const pathCheck = PathGuard.checkPath(fullPath);
+        if (!pathCheck.safe) {
+          return { success: false, error: pathCheck.reason };
+        }
 
         try {
           const content = await this.readFile(fullPath, maxChars);

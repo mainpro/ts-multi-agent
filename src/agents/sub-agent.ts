@@ -4,6 +4,14 @@ import { Task, TaskResult, TaskError, Skill, SkillExecutionResult } from '../typ
 import { ToolRegistry, ToolContext, Tool } from '../tools';
 import { buildSubAgentPrompt } from '../prompts';
 
+// P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
+const DEFAULT_SAFE_TOOLS = new Set([
+  'conversation-get',
+  'read',
+  'glob',
+  'grep',
+]);
+
 /**
  * 检测 LLM 返回的文本是否包含向用户提问的意图
  * 如果是，返回 question 内容；否则返回 null
@@ -56,6 +64,7 @@ export class SubAgent {
 
     try {
       console.log('[SubAgent] 任务ID: ' + task.id + ' 技能: ' + task.skillName);
+      console.log('[SubAgent] 用户ID: ' + task.userId);
       if (task.params) {
         console.log('[SubAgent] 已获取参数: ' + JSON.stringify(task.params));
       }
@@ -111,9 +120,19 @@ export class SubAgent {
   ): Promise<SkillExecutionResult> {
     const skillRootDir = './skills/' + skill.name;
     const absoluteSkillRootDir = require('path').resolve(skillRootDir);
-    const systemPrompt = buildSubAgentPrompt(skill.body, absoluteSkillRootDir, params, questionHistory);
+    const systemPrompt = buildSubAgentPrompt(skill.body, absoluteSkillRootDir, params, questionHistory, userId);
 
-    const tools = this.toolRegistry.list().map((tool: Tool) => ({
+    const allTools = this.toolRegistry.list();
+
+    // P0-1: 根据 allowedTools 过滤工具
+    const skillDef = await this.skillRegistry.loadFullSkill(skill.name);
+    const allowedToolNames = (skillDef?.allowedTools && skillDef.allowedTools.length > 0)
+      ? new Set(skillDef.allowedTools)
+      : DEFAULT_SAFE_TOOLS;
+
+    const filteredTools = allTools.filter((tool: any) => allowedToolNames.has(tool.name));
+
+    const tools = filteredTools.map((tool: Tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: {

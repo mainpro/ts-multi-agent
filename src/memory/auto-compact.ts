@@ -8,6 +8,8 @@
  * - REACTIVE: Reactive compaction based on context pressure
  */
 
+import { countTokens } from './token-counter';
+
 /**
 * Time threshold for micro compaction (5 minutes)
 * Tool results older than this will be cleared
@@ -74,7 +76,15 @@ export class AutoCompactService {
     });
   }
 
-  async autoCompact(messages: Message[]): Promise<Message[]> {
+  async autoCompact(
+    messages: Message[],
+    context?: {
+      currentSkill?: string;
+      recentFiles?: string[];
+      sessionVariables?: Map<string, unknown>;
+      userProfile?: { department: string; commonSystems: string[] };
+    }
+  ): Promise<Message[]> {
     if (this.consecutiveFailures >= MAX_FAILURES) {
       console.log('[AutoCompact] Circuit breaker open, skipping compaction');
       return messages;
@@ -94,10 +104,28 @@ export class AutoCompactService {
 
       this.consecutiveFailures = 0;
 
-      return [
+      const resultMessages: Message[] = [
         { role: 'system', content: 'Previous conversation summary: ' + summary },
         messages[messages.length - 1]
       ];
+
+      // P1-4: 压缩后关键上下文重注入
+      if (context) {
+        const contextInjection: string[] = ['[压缩后关键上下文]'];
+        if (context.currentSkill) contextInjection.push(`当前技能: ${context.currentSkill}`);
+        if (context.recentFiles?.length) contextInjection.push(`最近访问的文件: ${context.recentFiles.slice(-5).join(', ')}`);
+        if (context.sessionVariables?.size) {
+          const vars = Array.from(context.sessionVariables.entries()).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('; ');
+          contextInjection.push(`会话变量: ${vars}`);
+        }
+        if (context.userProfile) {
+          contextInjection.push(`用户: ${context.userProfile.department}, 常用系统: ${context.userProfile.commonSystems.join(', ')}`);
+        }
+        // Add context injection as a system message after the summary
+        resultMessages.push({ role: 'system', content: contextInjection.join('\n') });
+      }
+
+      return resultMessages;
     } catch (error) {
       this.consecutiveFailures++;
       console.error(`[AutoCompact] Compaction failed (${this.consecutiveFailures}/${MAX_FAILURES}):`, error);
@@ -106,7 +134,7 @@ export class AutoCompactService {
   }
 
   async checkAndCompact(messages: Message[]): Promise<Message[]> {
-    const tokens = this.estimateTokens(messages);
+    const tokens = await this.estimateTokens(messages);
 
     if (tokens > AUTO_COMPACT_THRESHOLD) {
       console.log(`[AutoCompact] Token count ${tokens} exceeds threshold ${AUTO_COMPACT_THRESHOLD}, triggering compaction`);
@@ -116,10 +144,12 @@ export class AutoCompactService {
     return messages;
   }
 
-  estimateTokens(messages: Message[]): number {
-    return messages.reduce((total, msg) => {
-      const contentLength = typeof msg.content === 'string' ? msg.content.length : 0;
-      return total + Math.ceil(contentLength / 4);
-    }, 0);
+  async estimateTokens(messages: any[]): Promise<number> {
+    let total = 0;
+    for (const msg of messages) {
+      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      total += await countTokens(content);
+    }
+    return total;
   }
 }

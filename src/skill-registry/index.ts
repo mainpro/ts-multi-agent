@@ -1,7 +1,9 @@
 import { promises as fs } from 'fs';
+import { watch } from 'fs';
 import * as path from 'path';
 import * as yaml from 'yaml';
 import type { Skill, SkillMetadata } from '../types';
+import { CONFIG } from '../types';
 
 /**
  * Internal cache entry for skill metadata and file path
@@ -27,6 +29,11 @@ export class SkillRegistry {
 
   /** Logger function for warnings and errors */
   private logger: { warn: (msg: string) => void; error: (msg: string) => void };
+
+  // P2-3: 热重载
+  private watcher: ReturnType<typeof watch> | null = null;
+  private fallbackScanTimer: ReturnType<typeof setInterval> | null = null;
+  private rescanDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     logger: { warn: (msg: string) => void; error: (msg: string) => void } = console
@@ -282,6 +289,53 @@ export class SkillRegistry {
    */
   getSkillCount(): number {
     return this.metadataCache.size;
+  }
+
+  // P2-3: 技能热重载
+  startWatch(): void {
+    const skillsDir = CONFIG.SKILL_DIRECTORY;
+    try {
+      this.watcher = watch(skillsDir, { recursive: true }, (_eventType, filename) => {
+        if (!filename) return;
+        if (filename.endsWith('SKILL.md') || filename.endsWith('skill.md')) {
+          console.log(`[SkillRegistry] 检测到技能文件变更: ${filename}`);
+          if (this.rescanDebounceTimer) clearTimeout(this.rescanDebounceTimer);
+          this.rescanDebounceTimer = setTimeout(() => {
+            this.rescanSkill(filename);
+          }, 500);
+        }
+      });
+      console.log(`[SkillRegistry] 已启动技能目录监听: ${skillsDir}`);
+
+      // 兜底全量扫描
+      this.fallbackScanTimer = setInterval(() => {
+        this.scanSkills(skillsDir);
+      }, 60_000);
+    } catch (error) {
+      console.warn(`[SkillRegistry] 无法启动目录监听:`, error);
+    }
+  }
+
+  stopWatch(): void {
+    if (this.watcher) { this.watcher.close(); this.watcher = null; }
+    if (this.fallbackScanTimer) { clearInterval(this.fallbackScanTimer); this.fallbackScanTimer = null; }
+    if (this.rescanDebounceTimer) { clearTimeout(this.rescanDebounceTimer); this.rescanDebounceTimer = null; }
+  }
+
+  rescanSkill(filename: string): void {
+    const parts = filename.replace(/\\/g, '/').split('/');
+    const skillDirIndex = parts.indexOf('skills');
+    if (skillDirIndex === -1 || skillDirIndex + 1 >= parts.length) return;
+    const skillName = parts[skillDirIndex + 1];
+    // Clear caches - use (this as any) since these may be private
+    const self = this as any;
+    if (self.metadataCache) self.metadataCache.delete(skillName);
+    if (self.skillCache) self.skillCache.delete(skillName);
+    const skillDir = path.join(CONFIG.SKILL_DIRECTORY, skillName);
+    if (self.scanSingleSkill) {
+      self.scanSingleSkill(skillDir, skillName);
+    }
+    console.log(`[SkillRegistry] 技能 ${skillName} 已重新加载`);
   }
 }
 

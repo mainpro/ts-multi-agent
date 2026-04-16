@@ -89,6 +89,7 @@ metadata:
 - 如果都已获取 → 直接记录字段值，跳到第2层
 
 **步骤2：调用接口获取列表**
+使用 bash 工具执行以下命令：
 ```bash
 # 查询申请人列表（返回 data[].id, userCode, nickName, orgId, orgCode, orgName）
 node scripts/api-call.js '{"method":"POST","path":"/edo-base/user/searchApplyUserListNew","params":{"userId":"<userId>","orderTypeCode":"sqcl"}}'
@@ -128,6 +129,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/userOrgCost/searchC
 - 如果都已获取 → 直接记录字段值，跳到第3层
 
 **步骤2：调用接口获取列表**
+使用 bash 工具执行以下命令：
 ```bash
 # 查询法人公司列表（返回 data[].id, enterpriseCode, enterpriseName）
 node scripts/api-call.js '{"method":"POST","path":"/edo-base/enterpriseOrg/searchEnterpriseByOrgId","params":{"orgId":"<costOrgId>"}}'
@@ -159,6 +161,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/resourceCostDetail/
 
 **币种**：
 
+使用 bash 工具执行以下命令：
 ```bash
 # 查询币种列表（返回 data[].id, currencyCode, currencyName）
 node scripts/api-call.js '{"method":"POST","path":"/edo-base/currency/searchCurrencyList","params":{}}'
@@ -171,6 +174,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/currency/searchCurr
 
 **出差地点**（用户输入城市名）：
 
+使用 bash 工具执行以下命令：
 ```bash
 # ⚠️ 此接口参数必须放在 body 中
 node scripts/api-call.js '{"method":"POST","path":"/edo-base/areas/seachAreasList","body":{"levelType":2,"name":"<城市名>"}}'
@@ -182,6 +186,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/areas/seachAreasLis
 
 **同行人员**（可选，用户输入姓名）：
 
+使用 bash 工具执行以下命令：
 ```bash
 # ⚠️ 此接口参数必须放在 body 中
 node scripts/api-call.js '{"method":"POST","path":"/edo-base/user/searchUserList","body":{"nickName":"<姓名>"}}'
@@ -208,6 +213,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/user/searchUserList
 **提交前校验**：确认以下所有字段都已收集完毕，如有缺失则返回对应层级获取。
 
 **调用保存接口**：
+使用 bash 工具执行以下命令：
 ```bash
 node scripts/submit-travel-apply.js '{
   "applyBy": <Long>,

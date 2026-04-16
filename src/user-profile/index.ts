@@ -38,8 +38,10 @@ export class UserProfileService {
       const fileStat = await fs.stat(this.profilePath).catch(() => null);
 
       if (!fileStat || !fileStat.isFile()) {
-        this.logger.warn(`Profile file not found: ${this.profilePath}. Returning default profile.`);
-        return this.createDefaultProfile(userId);
+        this.logger.warn(`Profile file not found: ${this.profilePath}. Creating default profile.`);
+        const profile = this.createDefaultProfile(userId);
+        await this.saveProfile(profile);
+        return profile;
       }
 
       const content = await fs.readFile(this.profilePath, 'utf-8');
@@ -49,13 +51,59 @@ export class UserProfileService {
         return profiles[userId];
       }
 
-      this.logger.warn(`Profile not found for userId: ${userId}. Returning default profile.`);
-      return this.createDefaultProfile(userId);
+      this.logger.warn(`Profile not found for userId: ${userId}. Creating new profile.`);
+      const profile = this.createDefaultProfile(userId);
+      await this.saveProfile(profile);
+      return profile;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Error loading profile for ${userId}: ${errorMsg}`);
-      return this.createDefaultProfile(userId);
+      const profile = this.createDefaultProfile(userId);
+      await this.saveProfile(profile).catch(err => {
+        this.logger.error(`Error saving profile for ${userId}: ${err}`);
+      });
+      return profile;
     }
+  }
+
+  async createUserProfile(userId: string, initialData?: Partial<UserProfile>): Promise<UserProfile> {
+    const now = new Date().toISOString();
+    const profile: UserProfile = {
+      userId,
+      department: initialData?.department || '市场部',
+      commonSystems: initialData?.commonSystems || [],
+      tags: initialData?.tags || [],
+      conversationCount: 0,
+      lastActiveAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    
+    await this.saveProfile(profile);
+    return profile;
+  }
+
+  async updateUserBehavior(userId: string, behavior: {
+    mentionedSystems?: string[];
+    interactionType?: string;
+  }): Promise<void> {
+    const profile = await this.loadProfile(userId);
+    
+    // 更新常用系统
+    if (behavior.mentionedSystems) {
+      for (const system of behavior.mentionedSystems) {
+        if (!profile.commonSystems.includes(system)) {
+          profile.commonSystems.push(system);
+        }
+      }
+    }
+    
+    // 更新交互次数
+    profile.conversationCount++;
+    profile.lastActiveAt = new Date().toISOString();
+    profile.updatedAt = new Date().toISOString();
+    
+    await this.saveProfile(profile);
   }
 
   async saveProfile(profile: UserProfile): Promise<void> {
@@ -154,6 +202,27 @@ export async function updateProfile(
 ): Promise<UserProfile> {
   const service = new UserProfileService(dataDir);
   return service.updateProfile(userId, updates);
+}
+
+export async function createUserProfile(
+  userId: string,
+  initialData?: Partial<UserProfile>,
+  dataDir: string = 'data'
+): Promise<UserProfile> {
+  const service = new UserProfileService(dataDir);
+  return service.createUserProfile(userId, initialData);
+}
+
+export async function updateUserBehavior(
+  userId: string,
+  behavior: {
+    mentionedSystems?: string[];
+    interactionType?: string;
+  },
+  dataDir: string = 'data'
+): Promise<void> {
+  const service = new UserProfileService(dataDir);
+  return service.updateUserBehavior(userId, behavior);
 }
 
 export default UserProfileService;

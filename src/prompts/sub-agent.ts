@@ -76,16 +76,22 @@ export function buildSubAgentPrompt(
     };
     answer: string;
     timestamp: Date;
-  }>
+  }>,
+  userId?: string
 ): string {
-  const { getFallbackContent } = require('../config/fallback');
-  const fallbackContent = getFallbackContent();
+
   
   const dirHint = skillRootDir ? `\n\n## 技能根目录\n${skillRootDir}\n` : '';
   
+  // 合并参数和用户 ID
+  let mergedParams = { ...params };
+  if (userId) {
+    mergedParams.userId = userId;
+  }
+  
   let paramsSection = '';
-  if (params && Object.keys(params).length > 0) {
-    const paramsList = Object.entries(params)
+  if (mergedParams && Object.keys(mergedParams).length > 0) {
+    const paramsList = Object.entries(mergedParams)
       .map(([key, value]) => `- **${key}**: ${value}`)
       .join('\n');
     paramsSection = `\n\n## 已获取参数\n以下参数已从用户对话中获取，请直接使用，不要重复询问：\n${paramsList}\n`;
@@ -107,11 +113,8 @@ export function buildSubAgentPrompt(
       .join('\n\n');
     questionHistorySection = `\n\n## 询问历史\n以下是之前的询问和用户回复，请参考这些信息继续执行任务：\n${historyList}\n`;
   }
-  
-  const prompt = SUB_AGENT_BASE_PROMPT
-    .replace('{fallback_block}', fallbackContent || '## 转人工处理\n参照系统配置');
-    
-  return `${prompt}
+   
+  return `
 
 ## 技能说明
 ${skillBody}${dirHint}${paramsSection}${questionHistorySection}

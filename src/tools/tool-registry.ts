@@ -60,9 +60,16 @@ export class ToolRegistry {
     return tool.execute(input, context);
   }
 
-  isConcurrencySafe(toolName: string, input: unknown): boolean {
+  /**
+   * P1-2: 检查工具是否并发安全
+   */
+  isConcurrencySafe(toolName: string, toolArgs?: Record<string, unknown>): boolean {
     const tool = this.tools.get(toolName);
-    return tool ? tool.isConcurrencySafe(input) : false;
+    if (!tool) return false;
+    if (typeof tool.isConcurrencySafe === 'function') {
+      return tool.isConcurrencySafe(toolArgs);
+    }
+    return false;
   }
 
   isReadOnly(toolName: string): boolean {

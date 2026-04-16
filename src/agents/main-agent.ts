@@ -47,8 +47,9 @@ export class MainAgent {
   async processRequirement(
     requirement: string,
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
-    userId: string = "default",
+    userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
+    options?: { planMode?: boolean },
   ): Promise<TaskResult> {
     let assistantResponse = '';
     const effectiveSessionId = sessionId || userId;
@@ -131,9 +132,9 @@ export class MainAgent {
         microCompactedMessages,
       );
 
-      const originalTokens = this.autoCompactService.estimateTokens(messages);
+      const originalTokens = await this.autoCompactService.estimateTokens(messages);
       const compactedTokens =
-        this.autoCompactService.estimateTokens(compactedMessages);
+        await this.autoCompactService.estimateTokens(compactedMessages);
       if (originalTokens !== compactedTokens) {
         console.log(
           `[MainAgent] 🗜️ 上下文压缩: ${originalTokens} → ${compactedTokens} tokens (${Math.round((1 - compactedTokens / originalTokens) * 100)}% reduction)`,
@@ -348,6 +349,26 @@ export class MainAgent {
         );
       });
 
+      // P2-4: Plan Mode - 返回计划详情，不执行
+      if (options?.planMode && plan) {
+        return {
+          success: true,
+          data: {
+            type: 'plan_preview',
+            plan: {
+              id: plan.id,
+              tasks: plan.tasks.map((t: any) => ({
+                id: t.id,
+                skillName: t.skillName,
+                requirement: t.requirement,
+                dependencies: t.dependencies,
+              })),
+            },
+            message: '请确认以上计划，确认后将开始执行。',
+          },
+        };
+      }
+
       console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
       const result = await this.monitorAndReplan(plan, effectiveSessionId, userId);
 
@@ -548,80 +569,139 @@ export class MainAgent {
   }
 
   private async waitForCompletion(planId: string): Promise<TaskResult> {
-    const startTime = Date.now();
-    const maxWaitTime = CONFIG.TOTAL_TIMEOUT_MS;
-    let pollInterval = 100;
-    let pollCount = 0;
+    return new Promise<TaskResult>((resolve) => {
+      const checkCompletion = () => {
+        const allTasks = this.taskQueue.getAllTasks();
 
-    while (Date.now() - startTime < maxWaitTime) {
-      pollCount++;
-      const allTasks = this.taskQueue.getAllTasks();
+        // Only check tasks belonging to this specific plan
+        const planTasks = allTasks.filter(
+          (t) => t.id.startsWith(planId) && t.skillName,
+        );
 
-      // Only check tasks belonging to this specific plan
-      const planTasks = allTasks.filter(
-        (t) => t.id.startsWith(planId) && t.skillName,
-      );
-
-      // If no tasks for this plan, return success
-      if (planTasks.length === 0) {
-        return {
-          success: true,
-          data: {
-            planId,
-            results: [],
-          },
-        };
-      }
-
-      // Check if all plan tasks are completed
-      const allCompleted = planTasks.every(
-        (t) => t.status === "completed" || t.status === "failed",
-      );
-
-      if (allCompleted) {
-        const failedTasks = planTasks.filter((t) => t.status === "failed");
-
-        if (failedTasks.length === 0) {
-          const results = planTasks
-            .filter((t) => t.status === "completed")
-            .map((t) => ({
-              taskId: t.id,
-              skillName: t.skillName,
-              result: t.result,
-            }));
-
-          console.log(
-            `[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`,
-          );
-          return {
+        // If no tasks for this plan, return success
+        if (planTasks.length === 0) {
+          resolve({
             success: true,
             data: {
               planId,
-              results,
+              results: [],
             },
-          };
+          });
+          return;
         }
 
-        return {
-          success: false,
-          error: failedTasks[0].error,
-        };
-      }
+        // Check if all plan tasks are completed
+        const allCompleted = planTasks.every(
+          (t) => t.status === "completed" || t.status === "failed",
+        );
 
-      // 指数退避等待
-      await this.sleep(pollInterval);
-      pollInterval = Math.min(pollInterval * 2, 1000);
-    }
+        if (allCompleted) {
+          const failedTasks = planTasks.filter((t) => t.status === "failed");
 
-    // If we've timed out, return an error
-    return {
-      success: false,
-      error: {
-        type: "RETRYABLE",
-        message: `Workflow timeout after ${maxWaitTime}ms`,
-        code: "TIMEOUT",
-      },
-    };
+          if (failedTasks.length === 0) {
+            const results = planTasks
+              .filter((t) => t.status === "completed")
+              .map((t) => ({
+                taskId: t.id,
+                skillName: t.skillName,
+                result: t.result,
+              }));
+
+            console.log(
+              `[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`,
+            );
+            resolve({
+              success: true,
+              data: {
+                planId,
+                results,
+              },
+            });
+          } else {
+            resolve({
+              success: false,
+              error: failedTasks[0].error,
+            });
+          }
+        }
+      };
+
+      const onDone = () => checkCompletion();
+      this.taskQueue.on('task-completed', onDone);
+      this.taskQueue.on('task-failed', onDone);
+
+      // timeout
+      const timeoutHandle = setTimeout(() => {
+        this.taskQueue.off('task-completed', onDone);
+        this.taskQueue.off('task-failed', onDone);
+        resolve({ success: false, error: { type: 'RETRYABLE', message: 'timeout', code: 'TIMEOUT' } });
+      }, CONFIG.TOTAL_TIMEOUT_MS);
+
+      // Store timeout handle so we can clear it when resolved
+      const originalResolve = resolve;
+      const wrappedResolve = (value: TaskResult) => {
+        clearTimeout(timeoutHandle);
+        this.taskQueue.off('task-completed', onDone);
+        this.taskQueue.off('task-failed', onDone);
+        originalResolve(value);
+      };
+
+      // Re-wrap checkCompletion to use wrappedResolve
+      const wrappedCheck = () => {
+        const allTasks = this.taskQueue.getAllTasks();
+        const planTasks = allTasks.filter(
+          (t) => t.id.startsWith(planId) && t.skillName,
+        );
+
+        if (planTasks.length === 0) {
+          wrappedResolve({
+            success: true,
+            data: { planId, results: [] },
+          });
+          return;
+        }
+
+        const allCompleted = planTasks.every(
+          (t) => t.status === "completed" || t.status === "failed",
+        );
+
+        if (allCompleted) {
+          const failedTasks = planTasks.filter((t) => t.status === "failed");
+
+          if (failedTasks.length === 0) {
+            const results = planTasks
+              .filter((t) => t.status === "completed")
+              .map((t) => ({
+                taskId: t.id,
+                skillName: t.skillName,
+                result: t.result,
+              }));
+
+            console.log(
+              `[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`,
+            );
+            wrappedResolve({
+              success: true,
+              data: { planId, results },
+            });
+          } else {
+            wrappedResolve({
+              success: false,
+              error: failedTasks[0].error,
+            });
+          }
+        }
+      };
+
+      // Replace the listener with the wrapped version
+      this.taskQueue.off('task-completed', onDone);
+      this.taskQueue.off('task-failed', onDone);
+      const wrappedOnDone = () => wrappedCheck();
+      this.taskQueue.on('task-completed', wrappedOnDone);
+      this.taskQueue.on('task-failed', wrappedOnDone);
+
+      wrappedCheck(); // initial check
+    });
   }
 
   private getFailedTasks(plan: TaskPlan): Task[] {
@@ -680,7 +760,7 @@ ${errorSummary}
   private async updateProfileAfterRequest(
     userProfile: { commonSystems: string[]; conversationCount: number },
     enrichedRequirement: string,
-    userId: string = "default",
+    userId: string,
   ): Promise<void> {
     const mentionedSystem =
       this.userProfileService.inferSystemFromText(enrichedRequirement);

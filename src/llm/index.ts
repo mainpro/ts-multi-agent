@@ -667,7 +667,8 @@ export class LLMClient {
     tools: ToolDefinition[],
     toolExecutor: (toolCall: { name: string; arguments: Record<string, unknown> }) => Promise<string>,
     systemPrompt?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean
   ): Promise<{ content: string; toolCalls: ToolCallResult[] }> {
     const messages: Message[] = [];
 
@@ -719,7 +720,67 @@ export class LLMClient {
         })),
       } as Message);
 
+      // P1-2: Split tool_calls into safe (parallel) and unsafe (serial) groups
+      const safeCalls = [];
+      const unsafeCalls = [];
       for (const toolCall of message.tool_calls) {
+        let toolArgs: Record<string, unknown>;
+        try { toolArgs = JSON.parse(toolCall.function.arguments); } catch { toolArgs = {}; }
+        if (concurrencyChecker && concurrencyChecker(toolCall.function.name, toolArgs)) {
+          safeCalls.push(toolCall);
+        } else {
+          unsafeCalls.push(toolCall);
+        }
+      }
+
+      // Execute safe calls in parallel
+      if (safeCalls.length > 0) {
+        console.log(`[LLM] P1-2: 并行执行 ${safeCalls.length} 个并发安全工具调用`);
+        const safeResults = await Promise.allSettled(
+          safeCalls.map(async (toolCall) => {
+            const toolName = toolCall.function.name;
+            let toolArgs: Record<string, unknown>;
+            try {
+              toolArgs = JSON.parse(toolCall.function.arguments);
+            } catch {
+              toolArgs = {};
+            }
+
+            console.log(`[LLM] 执行工具 (并行): ${toolName}`, toolArgs);
+
+            let toolResult: string;
+            try {
+              toolResult = await toolExecutor({ name: toolName, arguments: toolArgs });
+            } catch (execError) {
+              console.error('[LLM] 工具执行失败:', execError);
+              toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
+            }
+
+            return { toolCall, toolName, toolArgs, toolResult };
+          })
+        );
+
+        for (const result of safeResults) {
+          if (result.status === 'fulfilled') {
+            const { toolCall, toolName, toolArgs, toolResult } = result.value;
+            toolCallsResults.push({
+              name: toolName,
+              arguments: toolArgs,
+              result: toolResult,
+            });
+            messages.push({
+              role: 'tool',
+              content: toolResult,
+              tool_call_id: toolCall.id,
+            });
+          } else {
+            console.error('[LLM] 并行工具调用失败:', result.reason);
+          }
+        }
+      }
+
+      // Execute unsafe calls serially
+      for (const toolCall of unsafeCalls) {
         const toolName = toolCall.function.name;
 
         let toolArgs: Record<string, unknown>;
@@ -730,7 +791,7 @@ export class LLMClient {
           toolArgs = {};
         }
 
-        console.log(`[LLM] 执行工具: ${toolName}`, toolArgs);
+        console.log(`[LLM] 执行工具 (串行): ${toolName}`, toolArgs);
 
         let toolResult: string;
         try {

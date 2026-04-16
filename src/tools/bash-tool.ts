@@ -1,6 +1,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Tool, ToolContext, ToolResult } from './interfaces';
+import { PathGuard } from '../security/path-guard';
 
 const execAsync = promisify(exec);
 
@@ -23,6 +24,12 @@ export class BashTool implements Tool {
     
     if (!command) {
       return { success: false, error: 'command is required' };
+    }
+
+    // P0-2: 命令安全检查
+    const cmdCheck = PathGuard.checkBashCommand(command);
+    if (!cmdCheck.safe) {
+      return { success: false, error: cmdCheck.reason };
     }
 
     try {

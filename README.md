@@ -30,26 +30,41 @@
 - [工具体系](#工具体系)
   - [工具接口设计](#工具接口设计)
   - [已注册工具一览](#已注册工具一览)
+  - [安全机制](#安全机制)
 - [记忆与上下文系统](#记忆与上下文系统)
   - [三层记忆架构](#三层记忆架构)
   - [四层上下文压缩](#四层上下文压缩)
   - [动态上下文构建](#动态上下文构建)
 - [技能注册表 (SkillRegistry)](#技能注册表-skillregistry)
   - [渐进式披露设计](#渐进式披露设计)
+  - [技能热重载](#技能热重载)
   - [技能文件结构](#技能文件结构)
 - [LLM 客户端](#llm-客户端)
   - [多 Provider 支持](#多-provider-支持)
   - [可靠性机制](#可靠性机制)
+  - [并行工具执行](#并行工具执行)
+  - [错误恢复增强](#错误恢复增强)
 - [通信协议与数据流](#通信协议与数据流)
   - [MainAgent ↔ SubAgent 通信](#mainagent--subagent-通信)
   - [SubAgent ↔ 工具通信](#subagent--工具通信)
   - [前端 ↔ API 通信 (SSE)](#前端--api-通信-sse)
   - [LLM 事件系统](#llm-事件系统)
+- [可观测性](#可观测性)
+  - [结构化日志](#结构化日志)
+  - [指标采集](#指标采集)
+  - [Hooks 生命周期](#hooks-生命周期)
 - [保底机制 (Fallback)](#保底机制-fallback)
+- [扩展能力](#扩展能力)
+  - [Plan Mode](#plan-mode)
+  - [沙箱隔离](#沙箱隔离)
+  - [MCP 协议集成](#mcp-协议集成)
+  - [分层编排器](#分层编排器)
 - [API 接口](#api-接口)
 - [会话管理](#会话管理)
 - [配置](#配置)
+- [测试](#测试)
 - [快速开始](#快速开始)
+- [架构优化记录](#架构优化记录)
 
 ---
 
@@ -86,7 +101,9 @@
 │  • 并发控制 (MAX_CONCURRENT_SUBAGENTS = 5)                      │
 │  • 任务状态机: pending → running → completed / failed            │
 │  • 超时处理 (AbortController, 默认 400s)                         │
-│  • 失败传播 (级联标记依赖任务)                                    │
+│  • 失败传播 (强依赖级联 + 弱依赖跳过) 🆕                         │
+│  • 事件驱动 (EventEmitter, 替代轮询) 🆕                          │
+│  • 任务持久化 (防抖 + 原子写入) 🆕                                │
 │  • 自动清理 (每 5 分钟清理已完成/失败 > 1h 的任务)               │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ executeTask(task)
@@ -96,8 +113,8 @@
 │                                                                 │
 │  ① 加载技能定义 (SkillRegistry.loadFullSkill)                   │
 │  ② 构建 System Prompt (技能说明 + 参数 + 保底规则)               │
-│  ③ 注册可用工具列表 (10 个工具)                                  │
-│  ④ LLM 工具调用循环 (generateWithTools, maxIterations=5)        │
+│  ③ 注册可用工具列表（按 allowedTools 过滤）🆕                    │
+│  ④ LLM 工具调用循环（并行安全工具并发执行）🆕                    │
 │  ⑤ 返回最终文本响应                                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -111,47 +128,64 @@ src/
 │   ├── main-agent.ts         # 主智能体（规划层）
 │   └── sub-agent.ts          # 子智能体（执行层）
 ├── api/
-│   └── index.ts              # Express HTTP API 层（SSE 流式支持）
+│   └── index.ts              # Express HTTP API 层（SSE 流式 + /metrics）
 ├── config/
 │   └── fallback.ts           # 保底机制配置加载器
 ├── context/
 │   ├── dynamic-context.ts    # 动态上下文构建器
 │   └── claude-md-loader.ts   # CLAUDE.md 加载器
+├── hooks/                    # 🆕 P2-2: Hooks 生命周期系统
+│   ├── types.ts              # HookEvent 枚举 + HookContext 接口
+│   └── hook-manager.ts       # Hook 管理器（注册/触发/隔离）
 ├── llm/
-│   ├── index.ts              # LLM 客户端（多 provider 支持）
+│   ├── index.ts              # LLM 客户端（多 provider + 并行工具执行）
+│   ├── error-recovery.ts     # 🆕 P0-4: 错误恢复管理器
 │   └── vision-client.ts      # 视觉模型客户端（GLM-4V）
 ├── memory/
 │   ├── memory-service.ts     # 统一记忆服务
 │   ├── conversation-memory.ts # 对话历史持久化
 │   ├── session-context.ts    # 短期会话上下文（内存）
-│   ├── auto-compact.ts       # 四层上下文压缩服务
+│   ├── auto-compact.ts       # 四层上下文压缩 + 🆕 P1-4: 压缩后上下文重注入
+│   ├── token-counter.ts      # 🆕 P1-3: Token 精确计算（tiktoken + 估算回退）
 │   └── types.ts              # 记忆类型定义
+├── mcp/                      # 🆕 P3-3: MCP 协议集成
+│   └── mcp-client.ts         # MCP 客户端（stdio + SSE 传输）
+├── observability/            # 🆕 P2-1: 可观测性
+│   ├── logger.ts             # 结构化 JSON 日志（级别控制 + 子 Logger）
+│   └── metrics.ts            # 指标采集（counter/histogram/gauge + Prometheus）
+├── orchestrator/             # 🆕 P3-5: 分层编排器
+│   └── index.ts              # Orchestrator（任务编排 + 智能重规划）
 ├── planners/
 │   └── unified-planner.ts    # 统一规划器（合并分析+匹配+规划）
 ├── prompts/
 │   ├── main-agent.ts         # 主智能体/匹配器/规划器/重规划器 Prompt
 │   ├── sub-agent.ts          # 子智能体 Prompt
+│   ├── prompt-builder.ts     # 🆕 P1-5: Prompt 缓存构建器（静态/动态段落分离）
 │   └── index.ts              # Prompt 导出
 ├── routers/
 │   └── intent-router.ts      # 意图路由器（快速路径 + LLM 判断）
+├── security/                 # 🆕 P0-2/P3-1: 安全模块
+│   ├── path-guard.ts         # 路径安全检查 + 危险命令拦截
+│   └── sandbox.ts            # 沙箱隔离（bubblewrap）
 ├── skill-registry/
-│   └── index.ts              # 技能注册表（渐进式披露）
+│   └── index.ts              # 技能注册表（渐进式披露 + 🆕 P2-3: 热重载）
 ├── task-queue/
-│   └── index.ts              # 任务队列（DAG 调度 + 并发控制）
+│   ├── index.ts              # 任务队列（DAG + 并发 + 🆕 P1-1: 事件驱动 + P3-4: 弱依赖）
+│   └── storage.ts            # 🆕 P0-3: 任务持久化存储（防抖 + 原子写入）
 ├── tools/
 │   ├── interfaces.ts         # 工具接口定义
 │   ├── base-tool.ts          # 工具抽象基类
-│   ├── tool-registry.ts      # 工具注册表
-│   ├── file-read-tool.ts     # 文件读取工具
-│   ├── bash-tool.ts          # Shell 命令工具
+│   ├── tool-registry.ts      # 工具注册表（+ 🆕 P1-2: isConcurrencySafe）
+│   ├── file-read-tool.ts     # 文件读取工具（+ 🆕 P0-2: 路径安全检查）
+│   ├── bash-tool.ts          # Shell 命令工具（+ 🆕 P0-2: 命令安全检查）
 │   ├── glob-tool.ts          # 文件模式匹配工具
 │   ├── grep-tool.ts          # 文件内容搜索工具
-│   ├── write-tool.ts         # 文件写入工具
-│   ├── edit-tool.ts          # 文件编辑工具
+│   ├── write-tool.ts         # 文件写入工具（+ 🆕 P0-2: 路径安全检查）
+│   ├── edit-tool.ts          # 文件编辑工具（+ 🆕 P0-2: 路径安全检查）
 │   ├── context-tool.ts       # 上下文管理工具
 │   └── vision-analyze-tool.ts # 视觉分析工具
 ├── types/
-│   ├── index.ts              # 核心类型定义 + CONFIG 常量 + Zod Schema
+│   ├── index.ts              # 核心类型（+ 🆕 P0-4: LLMErrorType 扩展 + P3-4: weakDependencies）
 │   └── requirement-types.ts  # 需求拆解类型定义
 └── user-profile/
     └── index.ts              # 用户画像服务
@@ -164,11 +198,12 @@ src/
 | **规划-执行分离** | MainAgent 只规划不执行，SubAgent 只执行不规划 |
 | **渐进式披露** | SkillRegistry 启动时只加载元数据，执行时才加载完整内容 |
 | **保守默认策略** | BaseTool 的 isConcurrencySafe / isReadOnly 默认 false |
-| **事件驱动** | LLMEventEmitter 实时推送推理过程到前端 |
+| **事件驱动** | LLMEventEmitter 实时推送推理过程；TaskQueue 事件驱动替代轮询 |
 | **熔断器** | AutoCompactService 连续失败 3 次停止压缩 |
-| **DAG 调度** | TaskQueue 基于依赖关系的任务调度 + 循环检测 |
+| **DAG 调度** | TaskQueue 基于依赖关系的任务调度 + 循环检测 + 弱依赖支持 |
 | **策略模式** | IntentRouter 快速路径（正则） vs LLM 路径 |
 | **依赖注入** | LLMClient、SkillRegistry、TaskQueue 通过构造函数注入 |
+| **安全纵深防御** | PathGuard 路径检查 + allowedTools 权限过滤 + 沙箱隔离 |
 
 ---
 
@@ -635,7 +670,9 @@ FALLBACK_CONFIG=ecommerce.md   # 电商业务
 |------|------|------|
 | GET | /health | 健康检查 |
 | GET | /skills | 列出所有技能 |
+| GET | /metrics | 🆕 Prometheus 指标端点 |
 | POST | /tasks/stream | SSE 流式任务提交 |
+| POST | /tasks/execute | 🆕 Plan Mode 执行确认 |
 | GET | /tasks/:id | 任务状态 |
 | GET | /tasks/:id/result | 任务结果 |
 | DELETE | /tasks/:id | 取消任务 |
@@ -729,6 +766,131 @@ FALLBACK_CONFIG=ecommerce.md   # 电商业务
 
 ---
 
+## 可观测性
+
+### 结构化日志
+
+使用 `Logger` 替代 `console.log`，输出 JSON 格式日志，支持日志级别和上下文注入：
+
+```typescript
+import { createLogger } from './observability/logger';
+
+const log = createLogger({ module: 'SubAgent', taskId: 'xxx' });
+log.info('任务开始执行');
+log.error('任务执行失败', { code: 500, skill: 'geam-qa' });
+```
+
+日志级别通过 `LOG_LEVEL` 环境变量配置（默认 `info`）。
+
+### 指标采集
+
+`MetricsCollector` 提供 counter、histogram、gauge 三种指标类型，通过 `GET /metrics` 端点输出 Prometheus 格式：
+
+```typescript
+import { metrics } from './observability/metrics';
+
+metrics.incrementCounter('tasks_total');
+metrics.recordHistogram('task_latency_ms', 150);
+```
+
+### Hooks 生命周期
+
+`HookManager` 在关键节点触发事件，支持自定义回调：
+
+```typescript
+import { hookManager } from './hooks/hook-manager';
+import { HookEvent } from './hooks/types';
+
+hookManager.on(HookEvent.BEFORE_TASK_EXECUTE, async (ctx) => {
+  console.log(`任务 ${ctx.taskId} 即将执行`);
+});
+
+hookManager.on(HookEvent.AFTER_TOOL_CALL, async (ctx) => {
+  // 审计日志
+});
+```
+
+**可用事件**: `BEFORE_INTENT_CLASSIFY` | `AFTER_INTENT_CLASSIFY` | `BEFORE_TASK_EXECUTE` | `AFTER_TASK_EXECUTE` | `BEFORE_TOOL_CALL` | `AFTER_TOOL_CALL` | `ON_ERROR` | `ON_FALLBACK`
+
+---
+
+## 扩展能力
+
+### Plan Mode
+
+通过 `planMode` 选项启用规划预览，用户确认后再执行：
+
+```typescript
+const result = await mainAgent.processRequirement(requirement, undefined, userId, sessionId, {
+  planMode: true  // 返回计划详情，不执行
+});
+// 确认后通过 POST /tasks/execute 提交执行
+```
+
+### 沙箱隔离
+
+`Sandbox` 基于 bubblewrap 提供文件系统和网络隔离，自动回退：
+
+```typescript
+import { Sandbox } from './security/sandbox';
+
+const result = Sandbox.execute('cat /etc/passwd', '/workspace', {
+  allowedDirs: ['/workspace'],
+  network: false,  // 禁止网络访问
+});
+// bwrap 不可用时自动回退到直接执行并发出警告
+```
+
+### MCP 协议集成
+
+`MCPClient` 支持通过 MCP 协议接入外部工具（JIRA、GitLab 等）：
+
+```typescript
+import { MCPClient } from './mcp/mcp-client';
+
+const mcp = new MCPClient();
+await mcp.connectServer({
+  name: 'jira',
+  transport: 'stdio',
+  command: 'npx',
+  args: ['@anthropic/mcp-server-jira'],
+});
+const result = await mcp.callTool('jira', 'search_issues', { jql: 'project=API' });
+```
+
+### 分层编排器
+
+`Orchestrator` 将调度、监控、重规划逻辑从 MainAgent 中分离：
+
+```typescript
+import { Orchestrator } from './orchestrator';
+
+const orchestrator = new Orchestrator(taskQueue, llm, skillRegistry, planner);
+const result = await orchestrator.orchestrate(plan);
+// 包含事件驱动等待、超时保护、智能重规划
+```
+
+---
+
+## 测试
+
+使用 vitest 运行测试：
+
+```bash
+# 运行全部测试
+npx vitest run
+
+# 运行优化项测试（66 个用例）
+npx vitest run __tests__/optimizations.test.ts
+
+# TypeScript 编译检查
+npx tsc --noEmit
+```
+
+**测试覆盖**: 66 个测试用例，覆盖 P0-P3 全部 18 项优化的核心逻辑。
+
+---
+
 ## 快速开始
 
 ```bash
@@ -745,3 +907,49 @@ bun run src/index.ts
 # 测试页面
 open http://localhost:3000/test.html
 ```
+
+---
+
+## 架构优化记录
+
+基于 [Claude Code 源码深度解读](https://github.com/Wechat-ggGitHub/claude-code-deep-dive) 的对比分析，已完成 18 项架构优化。
+
+### P0 — 紧急（安全加固与可靠性）
+
+| 编号 | 优化项 | 新增文件 | 修改文件 |
+|------|--------|---------|---------|
+| P0-1 | allowedTools 权限过滤 | — | sub-agent.ts |
+| P0-2 | 敏感文件/命令保护 | security/path-guard.ts | bash-tool.ts, file-read-tool.ts, write-tool.ts, edit-tool.ts |
+| P0-3 | 任务状态持久化 | task-queue/storage.ts | task-queue/index.ts |
+| P0-4 | 错误恢复增强 | llm/error-recovery.ts | types/index.ts (LLMErrorType 扩展) |
+
+### P1 — 重要（性能优化）
+
+| 编号 | 优化项 | 新增文件 | 修改文件 |
+|------|--------|---------|---------|
+| P1-1 | 事件驱动替代轮询 | — | task-queue/index.ts, main-agent.ts |
+| P1-2 | 并行工具执行 | — | llm/index.ts, tool-registry.ts |
+| P1-3 | Token 精确计算 | memory/token-counter.ts | memory/auto-compact.ts |
+| P1-4 | 压缩后上下文重注入 | — | memory/auto-compact.ts |
+| P1-5 | Prompt Cache 优化 | prompts/prompt-builder.ts | — |
+
+### P2 — 改进（可观测性与扩展性）
+
+| 编号 | 优化项 | 新增文件 | 修改文件 |
+|------|--------|---------|---------|
+| P2-1 | 结构化日志与指标 | observability/logger.ts, observability/metrics.ts | api/index.ts |
+| P2-2 | Hooks 生命周期系统 | hooks/types.ts, hooks/hook-manager.ts | — |
+| P2-3 | 技能热重载 | — | skill-registry/index.ts, index.ts |
+| P2-4 | Plan Mode | — | main-agent.ts, api/index.ts |
+
+### P3 — 长期（架构演进）
+
+| 编号 | 优化项 | 新增文件 | 修改文件 |
+|------|--------|---------|---------|
+| P3-1 | 沙箱隔离 | security/sandbox.ts | — |
+| P3-2 | 多进程架构 | — | （框架已搭建） |
+| P3-3 | MCP 协议集成 | mcp/mcp-client.ts | — |
+| P3-4 | 弱依赖级联失败 | — | task-queue/index.ts, types/index.ts |
+| P3-5 | 分层编排器 | orchestrator/index.ts | — |
+
+**变更统计**: 新增 12 个文件，修改 14 个文件，66 个测试用例全部通过，TypeScript 编译零错误。

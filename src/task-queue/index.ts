@@ -1,4 +1,6 @@
+import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
+import { TaskQueueStorage } from './storage';
 
 type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
@@ -16,12 +18,14 @@ export class TaskQueue {
   private tasks: Map<string, Task> = new Map();
   private running: Set<string> = new Set();
   private executor: TaskExecutor;
+  private storage: TaskQueueStorage;
   private timeoutHandles: Map<string, ReturnType<typeof setTimeout>> =
     new Map();
   private isProcessing = false;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private cleanupIntervalMs: number;
   private retentionTimeMs: number;
+  private emitter = new EventEmitter();
 
   private metrics = {
     tasksCompleted: 0,
@@ -40,6 +44,13 @@ export class TaskQueue {
     this.cleanupIntervalMs =
       cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
     this.retentionTimeMs = retentionTimeMs ?? CONFIG.TASK_RETENTION_TIME_MS;
+
+    this.storage = new TaskQueueStorage();
+    // Restore tasks from storage
+    const restoredTasks = this.storage.load();
+    for (const [id, task] of restoredTasks) {
+      this.tasks.set(id, task);
+    }
 
     this.startCleanupInterval();
   }
@@ -138,6 +149,8 @@ export class TaskQueue {
 
     this.processQueue();
 
+    this.storage.save(this.tasks);
+
     return true;
   }
 
@@ -159,6 +172,17 @@ export class TaskQueue {
 
   getMetrics() {
     return { ...this.metrics };
+  }
+
+  // P1-1: 事件驱动接口
+  on(event: string, listener: (...args: any[]) => void): this {
+    this.emitter.on(event, listener);
+    return this;
+  }
+
+  off(event: string, listener: (...args: any[]) => void): this {
+    this.emitter.off(event, listener);
+    return this;
   }
 
   isRunning(taskId: string): boolean {
@@ -441,7 +465,10 @@ export class TaskQueue {
     this.metrics.averageExecutionTime =
       this.metrics.totalExecutionTime / this.metrics.tasksCompleted;
 
+    this.emitter.emit('task-completed', { taskId, result });
     this.notifyDependents(taskId);
+
+    this.storage.save(this.tasks);
   }
 
   private failTask(
@@ -464,7 +491,10 @@ export class TaskQueue {
       this.metrics.tasksFailed++;
     }
 
+    this.emitter.emit('task-failed', { taskId, error });
     this.failDependents(taskId, error);
+
+    this.storage.save(this.tasks);
   }
 
   private notifyDependents(taskId: string): void {
@@ -490,6 +520,13 @@ export class TaskQueue {
     for (const dependentId of failedTask.dependents || []) {
       const dependent = this.tasks.get(dependentId);
       if (!dependent || dependent.status !== "pending") {
+        continue;
+      }
+
+      // P3-4: 检查是否为弱依赖
+      const isWeakDep = dependent.weakDependencies?.includes(failedTaskId);
+      if (isWeakDep) {
+        console.log(`[TaskQueue] 任务 ${dependentId} 对 ${failedTaskId} 为弱依赖，跳过级联失败`);
         continue;
       }
 

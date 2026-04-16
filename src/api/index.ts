@@ -6,6 +6,7 @@ import { TaskQueue } from '../task-queue';
 import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
 import { llmEvents, ReasoningEvent } from '../llm';
+import { metrics } from '../observability/metrics';
 
 interface ImageAttachment {
   data: Buffer;
@@ -195,40 +196,42 @@ export function createAPIServer(
   app.post(
     '/tasks',
     async (
-      req: Request<{}, {}, SubmitTaskRequest>,
-      res: Response<SubmitTaskResponse | ApiError>
-    ) => {
-      try {
-        const { requirement } = req.body;
+    req: Request<{}, {}, SubmitTaskRequest>,
+    res: Response<SubmitTaskResponse | ApiError>
+  ) => {
+    try {
+      const { requirement, userId } = req.body;
 
-        // Validate request
-        if (!requirement || typeof requirement !== 'string') {
-          res.status(400).json({
-            error: 'Bad Request',
-            message: 'Missing or invalid "requirement" field',
-            code: 'INVALID_REQUEST',
-          });
-          return;
-        }
-
-        const taskId = randomUUID();
-
-        // Start processing asynchronously via MainAgent
-        processTaskAsync(taskId, requirement);
-
-        res.status(201).json({
-          taskId,
-          status: 'pending',
+      // Validate request
+      if (!requirement || typeof requirement !== 'string') {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: 'Missing or invalid "requirement" field',
+          code: 'INVALID_REQUEST',
         });
-      } catch (error) {
-        console.error('Error creating task:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to create task',
-          code: 'TASK_CREATION_FAILED',
-        });
+        return;
       }
+
+      const taskId = randomUUID();
+      const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+      // Start processing asynchronously via MainAgent
+      processTaskAsync(taskId, requirement, effectiveUserId);
+
+      res.status(201).json({
+        taskId,
+        status: 'pending',
+        userId: effectiveUserId,
+      });
+    } catch (error) {
+      console.error('Error creating task:', error);
+      res.status(500).json({
+        error: 'Internal Server Error',
+        message: 'Failed to create task',
+        code: 'TASK_CREATION_FAILED',
+      });
     }
+  }
   );
 
 /**
@@ -490,6 +493,28 @@ const response: TaskResultResponse = {
   );
 
   // ============================================================================
+  // P2-1: Prometheus 指标端点
+  // ============================================================================
+  app.get('/metrics', (_req, res) => {
+    res.type('text/plain');
+    res.send(metrics.toPrometheus());
+  });
+
+  // ============================================================================
+  // P2-4: Plan Mode 执行确认端点
+  // ============================================================================
+  app.post('/tasks/execute', async (req, res) => {
+    const { planId } = req.body;
+    try {
+      // This would call mainAgent.executePlan(planId, sessionId, userId)
+      // For now, return a placeholder response
+      res.json({ success: true, message: `Plan ${planId} execution started` });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ============================================================================
   // Error Handling Middleware
   // ============================================================================
 
@@ -521,7 +546,7 @@ const response: TaskResultResponse = {
     }
   );
 
-  async function processTaskAsync(taskId: string, requirement: string): Promise<void> {
+  async function processTaskAsync(taskId: string, requirement: string, userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`): Promise<void> {
     // Create task and add to queue for tracking
     const task: Task = {
       id: taskId,
@@ -531,14 +556,15 @@ const response: TaskResultResponse = {
       dependents: [],
       createdAt: new Date(),
       retryCount: 0,
+      userId,
     };
 
     // Add task to queue for tracking
     taskQueue.addTask(task);
 
     try {
-      console.log(`Processing task ${taskId} with requirement: ${requirement}`);
-      const result = await mainAgent.processRequirement(requirement);
+      console.log(`Processing task ${taskId} with requirement: ${requirement} for user: ${userId}`);
+      const result = await mainAgent.processRequirement(requirement, undefined, userId);
       console.log(`Processing task ${taskId} completed with result:`, result);
 
 const updatedTask = taskQueue.getTask(taskId);

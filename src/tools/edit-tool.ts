@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Tool, ToolContext, ToolResult } from './interfaces';
+import { PathGuard } from '../security/path-guard';
 
 export interface EditInput {
   filePath: string;
@@ -28,6 +29,12 @@ export class EditTool implements Tool {
     const fullPath = path.isAbsolute(filePath) 
       ? filePath 
       : path.join(context.workDir, filePath);
+
+    // P0-2: 路径安全检查
+    const pathCheck = PathGuard.checkPath(fullPath);
+    if (!pathCheck.safe) {
+      return { success: false, error: pathCheck.reason };
+    }
 
     try {
       const content = await fs.readFile(fullPath, 'utf-8');

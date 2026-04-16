@@ -62,6 +62,11 @@ export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type ErrorType = 'RETRYABLE' | 'FATAL' | 'USER_ERROR' | 'SKILL_ERROR';
 
 /**
+ * LLM error types for retry classification
+ */
+export type LLMErrorType = 'RATE_LIMIT' | 'TIMEOUT' | 'INVALID_KEY' | 'API_ERROR' | 'NETWORK_ERROR' | 'CONTEXT_TOO_LONG' | 'OUTPUT_TOO_LONG';
+
+/**
  * Task error information
  */
 export interface TaskError {
@@ -113,6 +118,8 @@ export interface Task {
   
   // 执行状态（技能自己决定格式）
   executionState?: Record<string, unknown>;
+
+  weakDependencies?: string[];  // P3-4: 弱依赖列表
 }
 
 /**

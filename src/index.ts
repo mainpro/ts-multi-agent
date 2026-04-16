@@ -12,6 +12,8 @@ import { Task, TaskResult } from './types';
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const SKILL_DIR = process.env.SKILL_DIR || './skills';
 
+let skillRegistry: SkillRegistry;
+
 async function bootstrap() {
   try {
     console.log('🚀 Starting Multi-Agent System...\n');
@@ -29,13 +31,16 @@ async function bootstrap() {
 
     // 2. Create Skill Registry
     console.log('📚 Initializing Skill Registry...');
-    const skillRegistry = new SkillRegistry();
+    skillRegistry = new SkillRegistry();
 
     // 3. Scan skills
     console.log(`🔍 Scanning skills from ${SKILL_DIR}...`);
     await skillRegistry.scanSkills(SKILL_DIR);
     const skillCount = skillRegistry.getSkillCount();
     console.log(`✅ Found ${skillCount} skill${skillCount !== 1 ? 's' : ''}\n`);
+
+    // P2-3: 启动技能热重载
+    skillRegistry.startWatch();
 
     if (skillCount > 0) {
       console.log('Registered skills:');
@@ -104,6 +109,11 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason) => {
   console.error('❌ Unhandled Rejection:', reason);
   process.exit(1);
+});
+
+process.on('SIGTERM', () => {
+  skillRegistry.stopWatch();
+  process.exit(0);
 });
 
 bootstrap();
