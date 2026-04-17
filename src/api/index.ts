@@ -32,6 +32,7 @@ interface SubmitTaskRequest {
 interface SubmitTaskResponse {
   taskId: string;
   status: TaskStatus;
+  userId: string;
 }
 
 /**
@@ -609,6 +610,12 @@ export function startAPIServer(
 ): void {
   const app = createAPIServer(mainAgent, skillRegistry, taskQueue);
 
+  // Metrics endpoint
+  app.get('/metrics', (_req: Request, res: Response) => {
+    res.set('Content-Type', 'text/plain');
+    res.send(metrics.toPrometheus());
+  });
+
   app.listen(port, () => {
     console.log(`🚀 API server running on http://localhost:${port}`);
     console.log(`📋 Available endpoints:`);
@@ -619,6 +626,7 @@ export function startAPIServer(
     console.log(`   GET    /tasks/:id`);
     console.log(`   GET    /tasks/:id/result`);
     console.log(`   DELETE /tasks/:id`);
+    console.log(`   GET    /metrics`);
   });
 }
 

@@ -30,7 +30,7 @@ export interface IntentResult {
     type: 'system_confirm' | 'skill_confirm';
     content: string;
     metadata?: Record<string, unknown>;
-  };
+  } | null;
 }
 
 /**
@@ -545,11 +545,14 @@ export class IntentRouter {
           .describe('从对话上下文中提取的参数，如 userId、department 等'),
       })).optional().default([])
         .describe('任务列表，每个任务包含requirement、skillName、intent、params'),
-      question: z.object({
-        type: z.enum(['system_confirm', 'skill_confirm']),
-        content: z.string(),
-      }).nullable().optional()
-        .describe('询问内容'),
+      question: z.union([
+        z.object({
+          type: z.enum(['system_confirm', 'skill_confirm']),
+          content: z.string(),
+        }),
+        z.object({}).transform(() => null)
+      ]).nullable().optional()
+        .describe('询问内容，不需要反问时为null'),
       reasoning: z.string().optional()
         .describe('决策理由（简短）'),
     });
@@ -625,7 +628,7 @@ ${userInput}
       };
     }
 
-    const tasks = result.tasks || [];
+    let tasks = result.tasks || [];
     if (result.intent === 'unclear' || tasks.length === 0) {
       return {
         intent: 'unclear',
@@ -634,10 +637,49 @@ ${userInput}
       };
     }
 
+    // 验证并映射技能名称
+    const allSkills = this.skillRegistry.getAllMetadata();
+    tasks = tasks.map(task => {
+      if (task.skillName) {
+        // 检查技能是否存在
+        if (this.skillRegistry.hasSkill(task.skillName)) {
+          return task;
+        }
+        
+        // 尝试根据系统名或关键词匹配技能
+        let matchedSkill = null;
+        for (const skill of allSkills) {
+          // 系统名匹配
+          if (skill.metadata?.systemName === task.skillName) {
+            matchedSkill = skill;
+            break;
+          }
+          // 关键词匹配
+          const keywords = skill.metadata?.keywords as string[] | undefined;
+          if (keywords?.some(keyword =>
+            task.skillName?.includes(keyword) || (task.skillName && keyword.includes(task.skillName))
+          )) {
+            matchedSkill = skill;
+            break;
+          }
+        }
+        
+        if (matchedSkill) {
+          console.log(`[IntentRouter] 技能名称映射: ${task.skillName} → ${matchedSkill.name}`);
+          return {
+            ...task,
+            skillName: matchedSkill.name
+          };
+        }
+      }
+      return task;
+    });
+
     return {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
       tasks,
+      question: result.question,
     };
   }
 

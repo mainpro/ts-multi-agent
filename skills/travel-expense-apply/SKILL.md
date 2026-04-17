@@ -10,6 +10,12 @@ metadata:
     - 填出差单
     - 出差申请
     - travel apply
+allowedTools:
+  - bash
+  - read
+  - glob
+  - grep
+  - conversation-get
 ---
 
 # 差旅费用申请单

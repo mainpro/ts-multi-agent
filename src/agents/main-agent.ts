@@ -8,6 +8,8 @@ import { MemoryService, sessionContextService } from "../memory";
 import { DynamicContextBuilder } from "../context/dynamic-context";
 import { AutoCompactService } from "../memory/auto-compact";
 import { buildReplanPrompt } from "../prompts";
+import { hookManager } from "../hooks/hook-manager";
+import { HookEvent } from "../hooks/types";
 import {
   Task,
   TaskResult,
@@ -182,12 +184,31 @@ export class MainAgent {
 
       // ========== 步骤 3: 意图路由 + 技能匹配（单一 LLM 调用） ==========
       console.log(`[MainAgent] 🔄 正在分类用户意图...`);
+      
+      // 触发意图分类前钩子
+      await hookManager.emit(HookEvent.BEFORE_INTENT_CLASSIFY, {
+        userId,
+        sessionId: effectiveSessionId,
+        data: { requirement }
+      });
+      
       const intentResult = await this.intentRouter.classify(
         requirement,
         userProfile,
         memory.conversationHistory,
         effectiveSessionId,
       );
+      
+      // 触发意图分类后钩子
+      await hookManager.emit(HookEvent.AFTER_INTENT_CLASSIFY, {
+        userId,
+        sessionId: effectiveSessionId,
+        data: { 
+          intent: intentResult.intent,
+          confidence: intentResult.confidence,
+          tasks: intentResult.tasks
+        }
+      });
       console.log(
         `[MainAgent] 📊 意图分类: ${intentResult.intent} (置信度: ${intentResult.confidence})`,
       );
@@ -370,7 +391,27 @@ export class MainAgent {
       }
 
       console.log(`[MainAgent] 🔄 派发给 TaskQueue 执行`);
+      
+      // 触发任务执行前钩子
+      await hookManager.emit(HookEvent.BEFORE_TASK_EXECUTE, {
+        userId,
+        sessionId: effectiveSessionId,
+        data: { planId: plan.id, tasks: plan.tasks }
+      });
+      
       const result = await this.monitorAndReplan(plan, effectiveSessionId, userId);
+      
+      // 触发任务执行后钩子
+      await hookManager.emit(HookEvent.AFTER_TASK_EXECUTE, {
+        userId,
+        sessionId: effectiveSessionId,
+        data: { 
+          planId: plan.id,
+          success: result.success,
+          result: result.data,
+          error: result.error
+        }
+      });
 
       await this.updateProfileAfterRequest(
         userProfile,
@@ -805,7 +846,9 @@ ${errorSummary}
       };
     }
     
+    // 修复：使用正确的方式获取 taskId
     const previousTaskId = ctx.tempVariables.get('taskId') as string;
+    
     if (!previousTaskId) {
       console.log(`[MainAgent] ⚠️ 未找到之前的任务ID`);
       return {

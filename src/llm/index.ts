@@ -1,5 +1,7 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
+import { ErrorRecoveryManager } from './error-recovery';
+import { AutoCompactService } from '../memory/auto-compact';
 
 export type LLMEventType = 'reasoning' | 'response';
 
@@ -67,7 +69,9 @@ export type LLMErrorType =
   | 'INVALID_KEY'
   | 'API_ERROR'
   | 'NETWORK_ERROR'
-  | 'UNKNOWN_ERROR';
+  | 'UNKNOWN_ERROR'
+  | 'CONTEXT_TOO_LONG'
+  | 'OUTPUT_TOO_LONG';
 
 /**
  * LLM error class with classification
@@ -157,6 +161,7 @@ export class LLMClient {
   private maxRetries: number;
   private provider: LLMProvider;
   private capabilities: ProviderCapabilities;
+  private errorRecoveryManager: ErrorRecoveryManager;
 
   /**
    * Create a new LLM client
@@ -191,6 +196,10 @@ export class LLMClient {
         `${this.provider} API key environment variable is not set`
       );
     }
+
+    // 初始化错误恢复管理器
+    const autoCompactService = new AutoCompactService(this);
+    this.errorRecoveryManager = new ErrorRecoveryManager(autoCompactService);
   }
 
   private buildRequestBody(
@@ -254,6 +263,7 @@ export class LLMClient {
     originalError?: unknown
   ): LLMError {
     const message = errorData?.message || 'Unknown API error';
+    const code = errorData?.code || '';
 
     // Rate limit errors (429)
     if (statusCode === 429) {
@@ -273,6 +283,30 @@ export class LLMClient {
         statusCode,
         originalError
       );
+    }
+
+    // Context too long errors (400 with specific message)
+    if (statusCode === 400) {
+      if (code.includes('output') ||
+          message.includes('output') && message.includes('length') ||
+          message.includes('max_output_tokens')) {
+        return new LLMError(
+          'OUTPUT_TOO_LONG',
+          `Output too long: ${message}`,
+          statusCode,
+          originalError
+        );
+      }
+      if (code.includes('context_length') || code.includes('max_tokens') ||
+          message.includes('context') && message.includes('length') ||
+          message.includes('token') && message.includes('limit')) {
+        return new LLMError(
+          'CONTEXT_TOO_LONG',
+          `Context too long: ${message}`,
+          statusCode,
+          originalError
+        );
+      }
     }
 
     // Server errors (5xx)
@@ -404,6 +438,20 @@ export class LLMClient {
           if (error.type === 'INVALID_KEY') {
             console.log('Invalid API key, throwing error');
             throw error;
+          }
+
+          // 尝试错误恢复
+          if (this.errorRecoveryManager && attempt < this.maxRetries - 1) {
+            const recoveryActions = this.errorRecoveryManager.getRecoveryActions(error, { messages });
+            for (const action of recoveryActions) {
+              console.log(`Attempting recovery: ${action.description}`);
+              const success = await action.execute();
+              if (success) {
+                console.log(`Recovery successful: ${action.strategy}`);
+                // 恢复成功，继续下一次尝试
+                break;
+              }
+            }
           }
 
           // Check if this is the last attempt

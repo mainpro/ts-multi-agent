@@ -58,11 +58,11 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
    - 禁止自行推断或扩展答案
    - 禁止编造解决方案
 
-{fallback_block}
-
 ## 输出规范
 直接输出给用户的回复，不需要 JSON 格式。
 `;
+
+import { PromptBuilder } from './prompt-builder';
 
 export function buildSubAgentPrompt(
   skillBody: string,
@@ -79,9 +79,18 @@ export function buildSubAgentPrompt(
   }>,
   userId?: string
 ): string {
-
+  // 静态部分
+  const staticParts = [
+    { key: 'sub-agent-base', content: SUB_AGENT_BASE_PROMPT },
+    { key: `skill-${skillBody.substring(0, 50)}`, content: `## 技能说明\n${skillBody}` }
+  ];
   
-  const dirHint = skillRootDir ? `\n\n## 技能根目录\n${skillRootDir}\n` : '';
+  // 动态部分
+  const dynamicParts = [];
+  
+  if (skillRootDir) {
+    dynamicParts.push(`## 技能根目录\n${skillRootDir}`);
+  }
   
   // 合并参数和用户 ID
   let mergedParams = { ...params };
@@ -89,15 +98,13 @@ export function buildSubAgentPrompt(
     mergedParams.userId = userId;
   }
   
-  let paramsSection = '';
   if (mergedParams && Object.keys(mergedParams).length > 0) {
     const paramsList = Object.entries(mergedParams)
       .map(([key, value]) => `- **${key}**: ${value}`)
       .join('\n');
-    paramsSection = `\n\n## 已获取参数\n以下参数已从用户对话中获取，请直接使用，不要重复询问：\n${paramsList}\n`;
+    dynamicParts.push(`## 已获取参数\n以下参数已从用户对话中获取，请直接使用，不要重复询问：\n${paramsList}`);
   }
   
-  let questionHistorySection = '';
   if (questionHistory && questionHistory.length > 0) {
     const historyList = questionHistory
       .map((item, index) => {
@@ -111,14 +118,10 @@ export function buildSubAgentPrompt(
 - **时间**: ${item.timestamp.toISOString()}`;
       })
       .join('\n\n');
-    questionHistorySection = `\n\n## 询问历史\n以下是之前的询问和用户回复，请参考这些信息继续执行任务：\n${historyList}\n`;
+    dynamicParts.push(`## 询问历史\n以下是之前的询问和用户回复，请参考这些信息继续执行任务：\n${historyList}`);
   }
    
-  return `
-
-## 技能说明
-${skillBody}${dirHint}${paramsSection}${questionHistorySection}
-`;
+  return PromptBuilder.build(staticParts, dynamicParts);
 }
 
 export default {

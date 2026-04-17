@@ -1,4 +1,5 @@
 import { SkillMetadata } from '../types';
+import { PromptBuilder } from './prompt-builder';
 
 /**
  * 主智能体 SystemPrompt
@@ -27,8 +28,6 @@ export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运
 
 
 ## 可用技能列表
-
-{skills_block}
 
 ## 输出规范
 
@@ -109,11 +108,7 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与
 
 
 
-{fallback_block}
-
 ## 可用技能
-
-{skills_block}
 
 ## 输出格式
 
@@ -165,8 +160,6 @@ export const TASK_PLANNER_SYSTEM_PROMPT = `你是一个专业的任务规划器�
 
 
 ## 可用技能
-
-{skills_block}
 
 ## 输出格式
 
@@ -220,8 +213,6 @@ export const REPLAN_SYSTEM_PROMPT = `你是一个专业的任务重规划器。�
 
 ## 可用技能
 
-{skills_block}
-
 ## 输出格式
 
 返回 JSON 格式：
@@ -265,16 +256,32 @@ function buildSkillsBlock(skills: SkillMetadata[]): string {
  * 注入技能列表到主智能体 SystemPrompt
  */
 export function buildMainAgentPrompt(skills: SkillMetadata[]): string {
-  return MAIN_AGENT_SYSTEM_PROMPT.replace(
-    '{skills_block}',
-    buildSkillsBlock(skills)
-  );
+  // 静态部分
+  const staticParts = [
+    { key: 'main-agent-base', content: MAIN_AGENT_SYSTEM_PROMPT }
+  ];
+  
+  // 动态部分
+  const skillsBlock = buildSkillsBlock(skills);
+  
+  const dynamicParts = [
+    `## 可用技能列表
+${skillsBlock}`
+  ];
+  
+  return PromptBuilder.build(staticParts, dynamicParts);
 }
 
 /**
  * 注入技能列表到技能匹配器 SystemPrompt
  */
 export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
+  // 静态部分
+  const staticParts = [
+    { key: 'skill-matcher-base', content: SKILL_MATCHER_SYSTEM_PROMPT }
+  ];
+  
+  // 动态部分
   const skillsBlock = skills
     .filter(s => !s.hidden)
     .map(s => {
@@ -285,36 +292,57 @@ export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
     .join('; ');
   
   const { getFallbackContent } = require('../config/fallback');
-  const fallbackContent = getFallbackContent();
+  const fallbackContent = getFallbackContent() || '## 决策规则\n请根据辅助信息判断用户意图并匹配技能';
   
-  return SKILL_MATCHER_SYSTEM_PROMPT
-    .replace('{skills_block}', skillsBlock || '暂无可用技能')
-    .replace('{fallback_block}', fallbackContent || '## 决策规则\n请根据辅助信息判断用户意图并匹配技能');
+  const dynamicParts = [
+    fallbackContent,
+    `## 可用技能
+${skillsBlock || '暂无可用技能'}`
+  ];
+  
+  return PromptBuilder.build(staticParts, dynamicParts);
 }
 
 /**
  * 注入技能列表到任务规划器 SystemPrompt
  */
 export function buildTaskPlannerPrompt(skills: SkillMetadata[]): string {
-  return TASK_PLANNER_SYSTEM_PROMPT.replace(
-    '{skills_block}',
-    buildSkillsBlock(skills)
-  );
+  // 静态部分
+  const staticParts = [
+    { key: 'task-planner-base', content: TASK_PLANNER_SYSTEM_PROMPT }
+  ];
+  
+  // 动态部分
+  const skillsBlock = buildSkillsBlock(skills);
+  
+  const dynamicParts = [
+    `## 可用技能
+${skillsBlock}`
+  ];
+  
+  return PromptBuilder.build(staticParts, dynamicParts);
 }
 
 /**
  * 注入技能列表到重规划器 SystemPrompt
  */
 export function buildReplanPrompt(skills: SkillMetadata[]): string {
+  // 静态部分
+  const staticParts = [
+    { key: 'replan-base', content: REPLAN_SYSTEM_PROMPT }
+  ];
+  
+  // 动态部分
   const skillsBlock = skills
     .filter(s => !s.hidden)
     .map(s => `- ${s.name}: ${s.description}`)
     .join('\n');
   
-  return REPLAN_SYSTEM_PROMPT.replace(
-    '{skills_block}',
-    skillsBlock || '暂无可用技能'
-  );
+  const dynamicParts = [
+    `## 可用技能\n${skillsBlock || '暂无可用技能'}`
+  ];
+  
+  return PromptBuilder.build(staticParts, dynamicParts);
 }
 
 export default {

@@ -3,6 +3,8 @@ import { LLMClient, llmEvents } from '../llm';
 import { Task, TaskResult, TaskError, Skill, SkillExecutionResult } from '../types';
 import { ToolRegistry, ToolContext, Tool } from '../tools';
 import { buildSubAgentPrompt } from '../prompts';
+import { hookManager } from '../hooks/hook-manager';
+import { HookEvent } from '../hooks/types';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -16,7 +18,7 @@ const DEFAULT_SAFE_TOOLS = new Set([
  * 检测 LLM 返回的文本是否包含向用户提问的意图
  * 如果是，返回 question 内容；否则返回 null
  */
-function detectQuestion(response: string): { content: string; metadata?: Record<string, unknown> } | null {
+export function detectQuestion(response: string): { content: string; metadata?: Record<string, unknown> } | null {
   if (!response || response.trim().length === 0) {
     return null;
   }
@@ -148,12 +150,28 @@ export class SubAgent {
       sessionId: sessionId || 'skill-execution',
     };
 
+    // 定义并发安全性检查函数
+    const concurrencyChecker = (toolName: string): boolean => {
+      // 只读工具通常是并发安全的
+      const safeTools = new Set(['read', 'glob', 'grep', 'conversation-get']);
+      return safeTools.has(toolName);
+    };
+
     const result = await this.llm.generateWithTools(
       requirement,
       tools,
       async (toolCall) => {
         console.log(`[SubAgent] 调用工具: ${toolCall.name}`);
         console.log(`[SubAgent] 工具参数: ${JSON.stringify(toolCall.arguments)}`);
+
+        // 触发工具调用前钩子
+        await hookManager.emit(HookEvent.BEFORE_TOOL_CALL, {
+          skillName: skill.name,
+          toolName: toolCall.name,
+          userId: userId || 'sub-agent',
+          sessionId: sessionId || 'skill-execution',
+          data: { arguments: toolCall.arguments }
+        });
 
         try {
           const toolResult = await this.toolRegistry.execute(
@@ -167,19 +185,62 @@ export class SubAgent {
               ? toolResult.data
               : JSON.stringify(toolResult.data, null, 2);
             console.log(`[SubAgent] 工具执行成功: ${data.substring(0, 500)}`);
+            
+            // 触发工具调用后钩子
+            await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
+              skillName: skill.name,
+              toolName: toolCall.name,
+              userId: userId || 'sub-agent',
+              sessionId: sessionId || 'skill-execution',
+              data: { 
+                arguments: toolCall.arguments,
+                result: data,
+                success: true
+              }
+            });
+            
             return data;
           } else {
             console.log(`[SubAgent] 工具执行失败: ${toolResult.error}`);
+            
+            // 触发工具调用后钩子
+            await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
+              skillName: skill.name,
+              toolName: toolCall.name,
+              userId: userId || 'sub-agent',
+              sessionId: sessionId || 'skill-execution',
+              data: { 
+                arguments: toolCall.arguments,
+                error: toolResult.error,
+                success: false
+              }
+            });
+            
             return `工具执行失败: ${toolResult.error}`;
           }
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.log(`[SubAgent] 工具执行异常: ${errorMsg}`);
+          
+          // 触发工具调用后钩子
+          await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
+            skillName: skill.name,
+            toolName: toolCall.name,
+            userId: userId || 'sub-agent',
+            sessionId: sessionId || 'skill-execution',
+            data: { 
+              arguments: toolCall.arguments,
+              error: errorMsg,
+              success: false
+            }
+          });
+          
           return `工具执行异常: ${errorMsg}`;
         }
       },
       systemPrompt,
-      signal
+      signal,
+      concurrencyChecker
     );
 
     const response = result.content;
