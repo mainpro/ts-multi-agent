@@ -721,10 +721,8 @@ export class LLMClient {
     const messages: Message[] = [];
 
     if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt + '\n\n重要：所有思考过程和回复都必须使用中文。' });
-    } else {
-      messages.push({ role: 'system', content: '所有思考过程和回复都必须使用中文。' });
-    }
+      messages.push({ role: 'system', content: systemPrompt });
+    } 
 
     messages.push({ role: 'user', content: prompt });
 

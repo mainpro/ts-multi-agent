@@ -101,7 +101,7 @@ export class MainAgent {
         console.log(`[MainAgent] ✅ 用户已回复系统确认，重新处理`);
         // 继续正常处理流程
       } else if (waitingQuestion.type === 'skill_question') {
-        // 子智能体层面的询问 → 继续执行任务
+        // 子智能体层面的询问 → 继续执行任务，不管输入是什么
         console.log(`[MainAgent] 🔄 继续执行任务，传递用户回复`);
         return this.continueTask(effectiveSessionId, waitingQuestion, requirement, userId);
       }
@@ -890,6 +890,9 @@ ${errorSummary}
       timestamp: new Date(),
     });
     
+    // 更新任务的 requirement 为用户的回复
+    previousTask.requirement = userAnswer;
+    
     // 清除等待状态
     this.waitingQuestions.delete(sessionId);
     
@@ -900,8 +903,12 @@ ${errorSummary}
     
     console.log(`[MainAgent] 📝 已添加询问历史，重新执行任务: ${previousTaskId}`);
     
-    // 重新添加任务到队列（TaskQueue 会自动执行）
-    this.taskQueue.addTask(previousTask);
+    // 任务已经在队列中，只需要重置状态，然后触发 TaskQueue 处理
+    // 由于任务 ID 已存在，不需要重新添加
+    console.log(`[MainAgent] 📝 任务状态已重置为 pending，等待执行: ${previousTaskId}`);
+    
+    // 触发 TaskQueue 处理队列
+    this.taskQueue.triggerProcess();
     
     // 轮询等待任务完成
     const maxWaitTime = 60000; // 最多等待 60 秒

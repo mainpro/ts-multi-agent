@@ -258,7 +258,7 @@ export class ProfessionalSkillRegistry {
         ...entry.metadata,
         type: 'professional',
         body,
-        targetAgent: (entry.metadata.metadata?.targetAgent as 'critic' | 'reflector' | 'optimizer') || 'critic',
+        targetAgent: (entry.metadata.metadata?.targetAgent as 'reflector' | 'optimizer') || 'reflector',
       };
 
       return skill;

@@ -6,12 +6,8 @@ import { TaskQueue } from './task-queue';
 import { LLMClient } from './llm';
 import { MainAgent } from './agents/main-agent';
 import { SubAgent } from './agents/sub-agent';
-import { CriticAgent } from './agents/critic-agent';
 import { createAPIServer } from './api';
 import { Task, TaskResult } from './types';
-import { logManager } from './observability/log-manager';
-import { reportGenerator } from './reports/report-generator';
-import { optimizationRepository } from './knowledge/optimization-repository';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const SKILL_DIR = process.env.SKILL_DIR || './skills';
@@ -76,80 +72,7 @@ async function bootstrap() {
     const mainAgent = new MainAgent(llmClient, skillRegistry, taskQueue);
     console.log('✅ MainAgent initialized\n');
 
-    // 7. Initialize Critic Agent
-    console.log('🔍 Initializing Critic Agent...');
-    const criticAgent = new CriticAgent(llmClient);
-    await criticAgent.initialize();
-    console.log('✅ Critic Agent initialized\n');
 
-    // 8. Setup task completion listener for Critic review
-    taskQueue.on('task-completed', async (data) => {
-      try {
-        const task = taskQueue.getTask(data.taskId);
-        if (task) {
-          // 异步审查任务
-          setTimeout(async () => {
-            try {
-              const analysis = await criticAgent.reviewTask(task);
-              
-              // 保存分析结果到任务
-              task.criticAnalysis = analysis;
-              
-              // 生成优化建议
-              for (const solution of analysis.solutions) {
-                optimizationRepository.createSuggestion({
-                  description: solution.description,
-                  type: task.skillName ? 'skill' : 'agent',
-                  priority: solution.priority as any,
-                  implementationSteps: solution.implementationSteps,
-                  relatedSkills: task.skillName ? [task.skillName] : undefined,
-                  relatedAgents: task.skillName ? ['sub'] : ['main'],
-                  severity: analysis.issues.find(issue => issue.severity === 'high') ? 'high' : 'medium',
-                  impact: `Task ${task.id} ${task.status} with ${analysis.issues.length} issues`
-                });
-              }
-              
-              // 记录审查日志
-              await logManager.writeAuditLog({
-                type: 'critic_review',
-                taskId: task.id,
-                skillName: task.skillName,
-                issues: analysis.issues.length,
-                solutions: analysis.solutions.length,
-                confidence: analysis.confidence
-              });
-            } catch (error) {
-              console.error('❌ Critic review failed:', error);
-            }
-          }, 0);
-        }
-      } catch (error) {
-        console.error('❌ Task completion listener error:', error);
-      }
-    });
-
-    // 9. Setup daily report generation
-    console.log('📅 Setting up daily report generation...');
-    setInterval(async () => {
-      try {
-        const now = new Date();
-        if (now.getHours() === 23 && now.getMinutes() === 0) { // 每天23:00生成报告
-          const tasks = taskQueue.getAllTasks();
-          const completedTasks = tasks.filter(task => 
-            task.status === 'completed' || task.status === 'failed'
-          );
-          
-          if (completedTasks.length > 0) {
-            const analyses = await criticAgent.reviewTasks(completedTasks);
-            await reportGenerator.generateDailyCriticReport(now, analyses);
-            console.log('📊 Daily critic report generated');
-          }
-        }
-      } catch (error) {
-        console.error('❌ Daily report generation failed:', error);
-      }
-    }, 60000); // 每分钟检查一次
-    console.log('✅ Daily report generation setup\n');
 
     // 10. Create and start API Server
     console.log('🌐 Starting API Server...');
@@ -171,10 +94,6 @@ async function bootstrap() {
       console.log(`\n⚙️  Configuration:`);
       console.log(`   Skills directory: ${SKILL_DIR}`);
       console.log(`   Port: ${PORT}`);
-      console.log(`\n🔍 Critic Agent:`);
-      console.log(`   Enabled: ✅`);
-      console.log(`   Daily reports: ✅`);
-      console.log(`   Optimization suggestions: ✅`);
       console.log(`\n🛑 Press Ctrl+C to stop\n`);
     });
 

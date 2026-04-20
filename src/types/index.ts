@@ -124,9 +124,6 @@ export interface Task {
 
   weakDependencies?: string[];  // P3-4: 弱依赖列表
   
-  // Critic 分析结果
-  criticAnalysis?: CriticAnalysis;
-  
   // 错误记忆
   errorHistory?: Array<{
     error: TaskError;
@@ -148,25 +145,7 @@ export interface Task {
 
 export interface ProfessionalSkill extends Skill {
   type: 'professional';
-  targetAgent: 'critic' | 'reflector' | 'optimizer';
-}
-
-export interface CriticAnalysis {
-  taskId: string;
-  agentType: 'main' | 'sub';
-  analysisTime: Date;
-  issues: Array<{
-    type: 'hallucination' | 'error' | 'inefficiency';
-    severity: 'low' | 'medium' | 'high';
-    description: string;
-    evidence: string;
-  }>;
-  solutions: Array<{
-    description: string;
-    priority: 'low' | 'medium' | 'high';
-    implementationSteps: string[];
-  }>;
-  confidence: number;
+  targetAgent: 'reflector' | 'optimizer';
 }
 
 /**

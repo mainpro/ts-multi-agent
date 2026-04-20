@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
-import { TaskQueueStorage } from './storage';
 
 type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
@@ -18,7 +17,7 @@ export class TaskQueue {
   private tasks: Map<string, Task> = new Map();
   private running: Set<string> = new Set();
   private executor: TaskExecutor;
-  private storage: TaskQueueStorage;
+
   private timeoutHandles: Map<string, ReturnType<typeof setTimeout>> =
     new Map();
   private isProcessing = false;
@@ -44,13 +43,6 @@ export class TaskQueue {
     this.cleanupIntervalMs =
       cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
     this.retentionTimeMs = retentionTimeMs ?? CONFIG.TASK_RETENTION_TIME_MS;
-
-    this.storage = new TaskQueueStorage();
-    // Restore tasks from storage
-    const restoredTasks = this.storage.load();
-    for (const [id, task] of restoredTasks) {
-      this.tasks.set(id, task);
-    }
 
     this.startCleanupInterval();
   }
@@ -149,8 +141,6 @@ export class TaskQueue {
 
     this.processQueue();
 
-    this.storage.save(this.tasks);
-
     return true;
   }
 
@@ -172,6 +162,13 @@ export class TaskQueue {
 
   getMetrics() {
     return { ...this.metrics };
+  }
+
+  /**
+   * 手动触发队列处理
+   */
+  triggerProcess(): void {
+    this.processQueue();
   }
 
   // P1-1: 事件驱动接口
@@ -467,8 +464,6 @@ export class TaskQueue {
 
     this.emitter.emit('task-completed', { taskId, result });
     this.notifyDependents(taskId);
-
-    this.storage.save(this.tasks);
   }
 
   private failTask(
@@ -493,8 +488,6 @@ export class TaskQueue {
 
     this.emitter.emit('task-failed', { taskId, error });
     this.failDependents(taskId, error);
-
-    this.storage.save(this.tasks);
   }
 
   private notifyDependents(taskId: string): void {

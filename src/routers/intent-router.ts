@@ -326,6 +326,18 @@ export class IntentRouter {
   private decide(signals: AuxiliarySignals, userInput: string): DecisionResult {
     const trimmedInput = userInput.trim();
 
+    // 如果有活跃会话上下文，优先处理为任务继续，而不是闲聊
+    if (signals.sessionContext) {
+      console.log(`[IntentRouter] ⚡ 有活跃会话上下文 ${signals.sessionContext.skill}，优先处理为任务继续`);
+      return {
+        intent: 'skill_task',
+        confidence: signals.sessionContext.confidence,
+        method: 'fast_session',
+        needLLM: true,
+        auxiliarySignals: signals,
+      };
+    }
+
     const fastResult = this.fastClassify(trimmedInput, undefined);
     if (fastResult && fastResult.intent === 'small_talk') {
       return {
@@ -527,6 +539,22 @@ export class IntentRouter {
     sessionId?: string,
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>
   ): Promise<IntentResult> {
+    // 如果有活跃会话上下文，直接返回该技能的任务
+    if (signals.sessionContext && this.skillRegistry.hasSkill(signals.sessionContext.skill)) {
+      console.log(`[IntentRouter] ⚡ 活跃会话上下文 ${signals.sessionContext.skill}，直接继续该任务`);
+      return {
+        intent: 'skill_task',
+        confidence: signals.sessionContext.confidence,
+        tasks: [
+          {
+            requirement: userInput,
+            skillName: signals.sessionContext.skill,
+            intent: 'skill_task',
+          },
+        ],
+      };
+    }
+
     const skills = this.skillRegistry.getAllMetadata();
     const systemNames = skills
       .map(s => s.metadata?.systemName as string)

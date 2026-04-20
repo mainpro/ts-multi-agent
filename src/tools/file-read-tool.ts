@@ -18,7 +18,7 @@ import { PathGuard } from '../security/path-guard';
  */
 export interface FileReadInput {
   /** Name of the file to read */
-  fileName: string;
+  filePath: string;
   /** Optional: Maximum characters to read (default: 10000) */
   maxChars?: number;
   /** Optional: Search paths to look for the file (default: [workDir]) */
@@ -38,10 +38,10 @@ export class FileReadTool extends BaseTool {
   name = 'read';
   description = 'Read the contents of a file. Returns file content with line numbers.';
   parameters = {
-    fileName: { type: 'string', description: '要读取的文件名' },
+    filePath: { type: 'string', description: '要读取的文件名' },
     maxChars: { type: 'number', description: '最大读取字符数，默认 10000' },
   };
-  required = ['fileName'];
+  required = ['filePath'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     try {
@@ -49,9 +49,9 @@ export class FileReadTool extends BaseTool {
       const searchPaths = this.buildSearchPaths(params, context);
       const maxChars = params.maxChars ?? 10000;
 
-      // 检查fileName是否为绝对路径
-      if (path.isAbsolute(params.fileName)) {
-        const fullPath = params.fileName;
+      // 检查filePath是否为绝对路径
+      if (path.isAbsolute(params.filePath)) {
+        const fullPath = params.filePath;
         
         // P0-2: 路径安全检查
         const pathCheck = PathGuard.checkPath(fullPath);
@@ -64,7 +64,7 @@ export class FileReadTool extends BaseTool {
           return {
             success: true,
             data: {
-              fileName: params.fileName,
+              filePath: params.filePath,
               content,
               path: fullPath,
               truncated: content.length >= maxChars,
@@ -74,7 +74,7 @@ export class FileReadTool extends BaseTool {
           if (this.isNotFoundError(error)) {
             return {
               success: false,
-              error: `File not found: ${params.fileName}`,
+              error: `File not found: ${params.filePath}`,
             };
           }
           throw error;
@@ -83,7 +83,7 @@ export class FileReadTool extends BaseTool {
 
       // 处理相对路径
       for (const searchPath of searchPaths) {
-        const fullPath = path.join(searchPath, params.fileName);
+        const fullPath = path.join(searchPath, params.filePath);
 
         // P0-2: 路径安全检查
         const pathCheck = PathGuard.checkPath(fullPath);
@@ -96,7 +96,7 @@ export class FileReadTool extends BaseTool {
           return {
             success: true,
             data: {
-              fileName: params.fileName,
+              filePath: params.filePath,
               content,
               path: fullPath,
               truncated: content.length >= maxChars,
@@ -112,7 +112,7 @@ export class FileReadTool extends BaseTool {
 
       return {
         success: false,
-        error: `File not found: ${params.fileName}. Searched paths: ${searchPaths.join(', ')}`,
+        error: `File not found: ${params.filePath}. Searched paths: ${searchPaths.join(', ')}`,
       };
     } catch (error) {
       return {
@@ -137,12 +137,15 @@ export class FileReadTool extends BaseTool {
 
     const params = input as Record<string, unknown>;
 
-    if (!params.fileName || typeof params.fileName !== 'string') {
-      throw new Error('fileName is required and must be a string');
+    // 向后兼容：支持 fileName 和 file_path 参数名
+    const filePath = params.filePath || params.fileName || params.file_path;
+    
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('filePath is required and must be a string');
     }
 
     return {
-      fileName: params.fileName,
+      filePath: filePath,
       maxChars: typeof params.maxChars === 'number' ? params.maxChars : undefined,
       searchPaths: Array.isArray(params.searchPaths)
         ? params.searchPaths.filter((p): p is string => typeof p === 'string')

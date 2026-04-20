@@ -18,7 +18,10 @@ export class WriteTool implements Tool {
   required = ['filePath', 'content'];
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
-    const { filePath, content } = input as WriteInput;
+    const params = input as Record<string, unknown>;
+    // 向后兼容：支持 filePath、fileName 和 file_path 参数名
+    const filePath = params.filePath || params.fileName || params.file_path;
+    const content = params.content;
     
     if (!filePath || content === undefined) {
       return { success: false, error: 'filePath and content are required' };
