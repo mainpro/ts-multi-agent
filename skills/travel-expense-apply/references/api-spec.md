@@ -30,6 +30,9 @@
 | enterpriseId | Long | 是 | 法人公司id | 来自查询法人公司列表 |
 | enterpriseCode | String | 是 | 法人公司编码 | 来自查询法人公司列表 |
 | enterpriseName | String | 是 | 法人公司名称 | 来自查询法人公司列表 |
+| costCenterId | Long | 是 | 成本中心id | 来自查询成本中心列表 |
+| costCenterCode | String | 是 | 成本中心编码 | 来自查询成本中心列表 |
+| costCenterName | String | 是 | 成本中心名称 | 来自查询成本中心列表 |
 | costId | Long | 是 | 费用项目id | 来自查询费用项目列表 |
 | costCode | String | 是 | 费用项目编码 | 来自查询费用项目列表 |
 | costName | String | 是 | 费用项目名称 | 来自查询费用项目列表 |
@@ -154,7 +157,28 @@
 
 ---
 
-## 6. 查询费用项目列表
+## 6. 查询成本中心列表
+
+**接口地址**: `POST /edo-base/costCenter/searchCostCenterListByEnterpriseIdAndOrgId`
+
+### 输入参数（Query Params）
+
+| 参数名 | 类型 | 必填 | 描述 |
+|--------|------|------|------|
+| enterpriseId | Long | 是 | 公司id |
+| orgId | Long | 是 | 管理部门id |
+
+### 输出 data 结构
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| id | Long | 成本中心id |
+| costCenterCode | String | 成本中心编号 |
+| costCenterName | String | 成本中心名称 |
+
+---
+
+## 7. 查询费用项目列表
 
 **接口地址**: `POST /edo-base/resourceCostDetail/searchCostItemByOrgAndResourcePage`
 
@@ -175,7 +199,7 @@
 
 ---
 
-## 7. 查询地点信息列表
+## 8. 查询地点信息列表
 
 **接口地址**: `POST /edo-base/areas/seachAreasList`
 
@@ -195,7 +219,7 @@
 
 ---
 
-## 8. 查询同行人员信息列表
+## 9. 查询同行人员信息列表
 
 **接口地址**: `POST /edo-base/user/searchUserList`
 
@@ -233,6 +257,9 @@
 | enterpriseId | 查询法人公司列表 | id |
 | enterpriseCode | 查询法人公司列表 | enterpriseCode |
 | enterpriseName | 查询法人公司列表 | enterpriseName |
+| costCenterId | 查询成本中心列表 | id |
+| costCenterCode | 查询成本中心列表 | costCenterCode |
+| costCenterName | 查询成本中心列表 | costCenterName |
 | costId | 查询费用项目列表 | id |
 | costCode | 查询费用项目列表 | costCode |
 | costName | 查询费用项目列表 | costName |

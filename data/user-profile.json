@@ -33,9 +33,24 @@
       "差旅系统"
     ],
     "tags": [],
-    "conversationCount": 8,
-    "lastActiveAt": "2026-04-16T06:18:52.312Z",
-    "createdAt": "2026-04-16T05:05:39.370Z",
-    "updatedAt": "2026-04-16T06:18:52.312Z"
+    "conversationCount": 2,
+    "lastActiveAt": "2026-04-17T08:10:08.839Z",
+    "createdAt": "2026-04-17T05:18:54.701Z",
+    "updatedAt": "2026-04-17T08:10:08.839Z"
+  },
+  "test-user-123": {
+    "userId": "test-user-123",
+    "department": "市场部",
+    "commonSystems": [
+      "报销系统",
+      "差旅系统",
+      "报销系统（EES）",
+      "时间管理平台"
+    ],
+    "tags": [],
+    "conversationCount": 4,
+    "lastActiveAt": "2026-04-17T08:12:14.531Z",
+    "createdAt": "2026-04-17T07:45:10.256Z",
+    "updatedAt": "2026-04-17T08:12:14.531Z"
   }
 }

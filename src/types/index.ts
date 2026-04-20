@@ -14,6 +14,7 @@ export type { Tool, ToolContext, ToolResult } from '../tools/interfaces';
 export interface SkillMetadata {
   name: string;
   description: string;
+  type?: SkillType;
   license?: string;
   compatibility?: string;
   metadata?: Record<string, unknown>;
@@ -83,6 +84,8 @@ export interface TaskError {
 /**
  * Task definition
  */
+export type SkillType = 'business' | 'professional';
+
 export interface Task {
   id: string;
   requirement: string;
@@ -120,6 +123,50 @@ export interface Task {
   executionState?: Record<string, unknown>;
 
   weakDependencies?: string[];  // P3-4: 弱依赖列表
+  
+  // Critic 分析结果
+  criticAnalysis?: CriticAnalysis;
+  
+  // 错误记忆
+  errorHistory?: Array<{
+    error: TaskError;
+    attemptedSolutions: Array<{
+      solution: string;
+      timestamp: Date;
+      success: boolean;
+    }>;
+    timestamp: Date;
+  }>;
+  
+  // 执行路径
+  executionPath?: Array<{
+    step: string;
+    timestamp: Date;
+    result: 'success' | 'failure' | 'skipped';
+  }>;
+}
+
+export interface ProfessionalSkill extends Skill {
+  type: 'professional';
+  targetAgent: 'critic' | 'reflector' | 'optimizer';
+}
+
+export interface CriticAnalysis {
+  taskId: string;
+  agentType: 'main' | 'sub';
+  analysisTime: Date;
+  issues: Array<{
+    type: 'hallucination' | 'error' | 'inefficiency';
+    severity: 'low' | 'medium' | 'high';
+    description: string;
+    evidence: string;
+  }>;
+  solutions: Array<{
+    description: string;
+    priority: 'low' | 'medium' | 'high';
+    implementationSteps: string[];
+  }>;
+  confidence: number;
 }
 
 /**
@@ -312,6 +359,7 @@ export const CONFIG = {
 export const SkillMetadataSchema = z.object({
   name: z.string(),
   description: z.string(),
+  type: z.enum(['business', 'professional']).optional(),
   license: z.string().optional(),
   compatibility: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),

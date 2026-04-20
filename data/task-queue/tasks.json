@@ -1,250 +1,363 @@
 [
   {
-    "id": "plan-1776388039165-task-1",
-    "requirement": "用户发送了一张浙江增值税普通发票图片，需要分析发票内容并提供相关帮助",
+    "id": "955da96e-cd0d-4944-99fe-6e65d11383db",
+    "requirement": "帮我申请差旅费用",
     "status": "completed",
-    "skillName": "ees-qa",
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:07:19.166Z",
+    "createdAt": "2026-04-17T07:45:10.244Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:07:19.167Z",
+    "userId": "test-user-123",
     "result": {
-      "response": "\n\n您好！我看到您发送了一张浙江增值税普通发票图片。\n\n请问您是需要我帮您做什么呢？\n\n1. **如果是上传到 EES 系统报销** - 需要注意系统只支持 PDF、XML、OFD 格式，不支持 JPG/PNG 图片格式，需要先转换格式\n2. **如果是查询发票信息** - 可以帮您识别发票上的内容（如发票代码、金额、开票日期等）\n3. **其他需求** - 请告诉我具体需要什么帮助\n\n请问您遇到什么问题了？",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n您好！我看到您发送了一张浙江增值税普通发票图片。\n\n请问您是需要我帮您做什么呢？\n\n1. **如果是上传到 EES 系统报销** - 需要注意系统只支持 PDF、XML、OFD 格式，不支持 JPG/PNG 图片格式，需要先转换格式\n2. **如果是查询发票信息** - 可以帮您识别发票上的内容（如发票代码、金额、开票日期等）\n3. **其他需求** - 请告诉我具体需要什么帮助\n\n请问您遇到什么问题了？"
+      "success": true,
+      "data": {
+        "results": [
+          {
+            "taskId": "plan-1776411916046-task-1",
+            "skillName": "travel-expense-apply",
+            "requirement": "",
+            "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
+            "status": "completed"
+          }
+        ],
+        "type": "skill_task"
       }
     },
-    "completedAt": "2026-04-17T01:07:22.332Z"
+    "completedAt": "2026-04-17T07:45:19.030Z"
   },
   {
-    "id": "plan-1776388099641-task-1",
-    "requirement": "创建差旅申请单",
-    "status": "completed",
-    "skillName": "travel-expense-apply",
-    "dependencies": [],
-    "dependents": [],
-    "createdAt": "2026-04-17T01:08:19.641Z",
-    "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:08:19.641Z",
-    "result": {
-      "response": "\n\n接口获取成功！现在需要您选择申请人和预算部门。\n\n**请选择申请人：**\n1. admin (id:1, code:666666)\n2. 金宏气体ERP测试 (id:1727596757640462338, code:JH00135)\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, code:JH0134)\n2. 资产管理部 (id:1727517048579710977, code:JH010701)\n3. 信息部 (id:1727507556643364866, code:JH0107)\n4. 集团财务部 (id:1727507554244222978, code:JH0105)\n5. 行政部 (id:1727507538964373505, code:JH0102)\n6. 采购部 (id:1727507525563572225, code:JH0128)\n7. 总经理室 (id:1727507196059049985, code:JH0301)\n\n请回复您的选择，例如：`申请人选1，预算部门选3`",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n接口获取成功！现在需要您选择申请人和预算部门。\n\n**请选择申请人：**\n1. admin (id:1, code:666666)\n2. 金宏气体ERP测试 (id:1727596757640462338, code:JH00135)\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, code:JH0134)\n2. 资产管理部 (id:1727517048579710977, code:JH010701)\n3. 信息部 (id:1727507556643364866, code:JH0107)\n4. 集团财务部 (id:1727507554244222978, code:JH0105)\n5. 行政部 (id:1727507538964373505, code:JH0102)\n6. 采购部 (id:1727507525563572225, code:JH0128)\n7. 总经理室 (id:1727507196059049985, code:JH0301)\n\n请回复您的选择，例如：`申请人选1，预算部门选3`"
-      }
-    },
-    "completedAt": "2026-04-17T01:08:37.492Z"
-  },
-  {
-    "id": "plan-1776388480495-task-1",
-    "requirement": "用户正在填写差旅申请单，需要选择申请人和预算部门，但输入了无效内容'234234'，需要引导用户正确输入",
+    "id": "plan-1776411916046-task-1",
+    "requirement": "申请差旅费用",
     "status": "completed",
     "skillName": "travel-expense-apply",
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:14:40.496Z",
+    "createdAt": "2026-04-17T07:45:16.047Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:14:40.496Z",
+    "sessionId": "test-user-123",
+    "userId": "test-user-123",
+    "startedAt": "2026-04-17T07:45:16.047Z",
     "result": {
-      "response": "\n\n您输入的内容 '234234' 不是有效的选项。请从以下列表中选择：\n\n**请选择申请人：**\n1. admin (id:1, userCode:666666, orgName:总部财务部)\n2. 金宏气体ERP测试 (id:1727596757640462338, userCode:JH00135, orgName:信息部)\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)",
+      "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
       "status": "waiting_user_input",
       "question": {
         "type": "skill_question",
-        "content": "\n\n您输入的内容 '234234' 不是有效的选项。请从以下列表中选择：\n\n**请选择申请人：**\n1. admin (id:1, userCode:666666, orgName:总部财务部)\n2. 金宏气体ERP测试 (id:1727596757640462338, userCode:JH00135, orgName:信息部)\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)"
+        "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？"
       }
     },
-    "completedAt": "2026-04-17T01:14:53.192Z"
+    "completedAt": "2026-04-17T07:45:19.023Z",
+    "criticAnalysis": {
+      "taskId": "plan-1776411916046-task-1",
+      "agentType": "sub",
+      "analysisTime": "2026-04-17T07:45:19.025Z",
+      "issues": [],
+      "solutions": [
+        {
+          "description": "优化 travel-expense-apply 技能执行",
+          "priority": "medium",
+          "implementationSteps": [
+            "审查技能文档和提示词",
+            "优化工具调用参数",
+            "增加输入验证",
+            "添加更多错误处理"
+          ]
+        }
+      ],
+      "confidence": 0.7
+    }
   },
   {
-    "id": "plan-1776390246429-task-1",
-    "requirement": "用户选择申请人选项1（admin），继续差旅申请流程",
+    "id": "be887a1e-34c2-4d47-b6c1-32b541d04e39",
+    "requirement": "1，userId=1727596139882397698，下周三去上海出差，3000元，财务科，去洽谈业务",
+    "status": "completed",
+    "dependencies": [],
+    "dependents": [],
+    "createdAt": "2026-04-17T07:45:32.442Z",
+    "retryCount": 0,
+    "userId": "test-user-123",
+    "result": {
+      "success": true,
+      "data": {
+        "results": [
+          {
+            "taskId": "plan-1776411940926-task-1",
+            "skillName": "travel-expense-apply",
+            "requirement": "",
+            "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？\n\n---\n\n根据您提供的信息，我已经识别到您进入了快速模式，包含以下信息：\n- **userId**: 1727596139882397698\n- **出差地**: 上海\n- **金额**: 3000元\n- **部门**: 财务科\n- **出差事由**: 去洽谈业务\n- **出差时间**: 下周三\n\n不过，当前调用后端接口时遇到了授权问题（返回401未授权错误），无法获取申请人、预算部门、币种等下拉选项的数据。\n\n请问：\n1. 您希望我稍后重试接口？\n2. 或者您可以提供更完整的下拉选项数据，我来帮您直接填写？",
+            "status": "completed"
+          }
+        ],
+        "type": "skill_task"
+      }
+    },
+    "completedAt": "2026-04-17T07:46:30.480Z"
+  },
+  {
+    "id": "plan-1776411940926-task-1",
+    "requirement": "帮用户创建差旅费用申请单，用户信息：userId=1727596139882397698，出差地：上海，金额：3000元，部门：财务科，出差事由：去洽谈业务，出差时间：下周三",
     "status": "completed",
     "skillName": "travel-expense-apply",
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:44:06.429Z",
+    "createdAt": "2026-04-17T07:45:40.926Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:44:06.429Z",
+    "sessionId": "test-user-123",
+    "userId": "test-user-123",
+    "startedAt": "2026-04-17T07:45:40.927Z",
     "result": {
-      "response": "\n\n好的，已记录申请人信息：\n\n**申请人信息（已选择）**：\n- 申请人：admin (id:1)\n- 部门：总部财务部 (orgId:1727507529690767362)\n\n现在请选择**预算部门**：\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)",
+      "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？\n\n---\n\n根据您提供的信息，我已经识别到您进入了快速模式，包含以下信息：\n- **userId**: 1727596139882397698\n- **出差地**: 上海\n- **金额**: 3000元\n- **部门**: 财务科\n- **出差事由**: 去洽谈业务\n- **出差时间**: 下周三\n\n不过，当前调用后端接口时遇到了授权问题（返回401未授权错误），无法获取申请人、预算部门、币种等下拉选项的数据。\n\n请问：\n1. 您希望我稍后重试接口？\n2. 或者您可以提供更完整的下拉选项数据，我来帮您直接填写？",
       "status": "waiting_user_input",
       "question": {
         "type": "skill_question",
-        "content": "\n\n好的，已记录申请人信息：\n\n**申请人信息（已选择）**：\n- 申请人：admin (id:1)\n- 部门：总部财务部 (orgId:1727507529690767362)\n\n现在请选择**预算部门**：\n\n**请选择预算部门：**\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)"
+        "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？\n\n---\n\n根据您提供的信息，我已经识别到您进入了快速模式，包含以下信息：\n- **userId**: 1727596139882397698\n- **出差地**: 上海\n- **金额**: 3000元\n- **部门**: 财务科\n- **出差事由**: 去洽谈业务\n- **出差时间**: 下周三\n\n不过，当前调用后端接口时遇到了授权问题（返回401未授权错误），无法获取申请人、预算部门、币种等下拉选项的数据。\n\n请问：\n1. 您希望我稍后重试接口？\n2. 或者您可以提供更完整的下拉选项数据，我来帮您直接填写？"
       }
     },
-    "completedAt": "2026-04-17T01:44:28.448Z"
+    "completedAt": "2026-04-17T07:46:30.476Z",
+    "criticAnalysis": {
+      "taskId": "plan-1776411940926-task-1",
+      "agentType": "sub",
+      "analysisTime": "2026-04-17T07:46:30.477Z",
+      "issues": [],
+      "solutions": [
+        {
+          "description": "优化 travel-expense-apply 技能执行",
+          "priority": "medium",
+          "implementationSteps": [
+            "审查技能文档和提示词",
+            "优化工具调用参数",
+            "增加输入验证",
+            "添加更多错误处理"
+          ]
+        }
+      ],
+      "confidence": 0.7
+    }
   },
   {
-    "id": "plan-1776390546120-task-1",
-    "requirement": "帮我填写一份对公报账单",
+    "id": "b699e882-89c2-4593-b59e-37f80fcd4944",
+    "requirement": "帮我申请差旅，我选择引导模式",
     "status": "completed",
-    "skillName": "ees-qa",
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:49:06.120Z",
+    "createdAt": "2026-04-17T07:47:08.321Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:49:06.121Z",
+    "userId": "test-user-123",
     "result": {
-      "response": "\n\n您好！我可以指导您如何填写对公报账单，但无法直接帮您填写表单。\n\n根据报销流程，填写对公报账单的基本步骤如下：\n\n## 对公报账单填写步骤\n\n1. **登录系统**：通过 Ihaier 或财务云进入\"我要报销\"模块\n\n2. **选择报销类型**：选择\"其他费用\"或对应的对公报销类型\n\n3. **填写报销信息**：\n   - 收款单位名称\n   - 开户银行及账号\n   - 费用明细（金额、日期、事项说明）\n\n4. **上传附件**：\n   - 发票（支持 PDF/XML/OFD 格式）\n   - 合同或相关证明材料（如需要）\n\n5. **提交申请**：确认信息无误后提交，等待审批\n\n---\n\n请问您具体遇到什么困难了呢？比如：\n- 不知道如何进入系统？\n- 不清楚需要准备什么材料？\n- 填写时遇到报错提示？\n\n请告诉我您的具体问题，我帮您进一步解答。",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n您好！我可以指导您如何填写对公报账单，但无法直接帮您填写表单。\n\n根据报销流程，填写对公报账单的基本步骤如下：\n\n## 对公报账单填写步骤\n\n1. **登录系统**：通过 Ihaier 或财务云进入\"我要报销\"模块\n\n2. **选择报销类型**：选择\"其他费用\"或对应的对公报销类型\n\n3. **填写报销信息**：\n   - 收款单位名称\n   - 开户银行及账号\n   - 费用明细（金额、日期、事项说明）\n\n4. **上传附件**：\n   - 发票（支持 PDF/XML/OFD 格式）\n   - 合同或相关证明材料（如需要）\n\n5. **提交申请**：确认信息无误后提交，等待审批\n\n---\n\n请问您具体遇到什么困难了呢？比如：\n- 不知道如何进入系统？\n- 不清楚需要准备什么材料？\n- 填写时遇到报错提示？\n\n请告诉我您的具体问题，我帮您进一步解答。"
+      "success": true,
+      "data": {
+        "results": [
+          {
+            "taskId": "plan-1776412034652-retry-1-1776412094843-task-1",
+            "skillName": "travel-expense-apply",
+            "requirement": "",
+            "response": "\n\n---\n\n## 引导模式 - 差旅费用申请单\n\n您好！我正在使用**引导模式**帮您创建差旅费用申请单。\n\n根据已获取的信息：\n- **用户ID**: test-user-123\n- **模式**: 引导模式\n\n但在调用接口获取数据时遇到了一些问题：\n\n1. **申请人接口**：返回空数据\n2. **预算部门接口**：提示 userId 格式不正确\n\n---\n\n**请您提供以下信息，以便我继续帮您创建申请单：**\n\n1. 您的**申请人**是谁？（或者您可以直接告诉我您的姓名）\n2. 您想从哪个**预算部门**申请差旅费用？\n\n请告诉我这些信息，我将为您继续创建申请单。",
+            "status": "completed"
+          }
+        ],
+        "type": "skill_task"
       }
     },
-    "completedAt": "2026-04-17T01:54:29.354Z"
+    "completedAt": "2026-04-17T07:49:30.825Z"
   },
   {
-    "id": "plan-1776390645556-task-1",
-    "requirement": "继续填写差旅申请单，选择预算部门",
-    "status": "completed",
-    "skillName": "travel-expense-apply",
-    "dependencies": [],
-    "dependents": [],
-    "createdAt": "2026-04-17T01:50:45.556Z",
-    "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:50:45.556Z",
-    "result": {
-      "response": "\n\n根据之前的对话记录，**申请人已选择为：admin**，现在需要您选择**预算部门**。\n\n**请选择预算部门：**\n\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)\n\n请输入选项编号（如：3）选择预算部门。",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n根据之前的对话记录，**申请人已选择为：admin**，现在需要您选择**预算部门**。\n\n**请选择预算部门：**\n\n1. 法务部 (id:1727507557750661122, orgCode:JH0134)\n2. 资产管理部 (id:1727517048579710977, orgCode:JH010701)\n3. 信息部 (id:1727507556643364866, orgCode:JH0107)\n4. 集团财务部 (id:1727507554244222978, orgCode:JH0105)\n5. 行政部 (id:1727507538964373505, orgCode:JH0102)\n6. 采购部 (id:1727507525563572225, orgCode:JH0128)\n7. 总经理室 (id:1727507196059049985, orgCode:JH0301)\n\n请输入选项编号（如：3）选择预算部门。"
-      }
-    },
-    "completedAt": "2026-04-17T01:52:58.250Z"
-  },
-  {
-    "id": "plan-1776390769853-task-1",
-    "requirement": "继续完成差旅申请单，选择预算部门",
+    "id": "plan-1776412034652-task-1",
+    "requirement": "用户选择引导模式申请差旅费用，需要开始渐进式收集必填字段（申请人、预算部门、法人公司、费用项目、出差信息等）",
     "status": "failed",
     "skillName": "travel-expense-apply",
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:52:49.854Z",
+    "createdAt": "2026-04-17T07:47:14.653Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:52:49.854Z",
+    "sessionId": "test-user-123",
+    "userId": "test-user-123",
+    "startedAt": "2026-04-17T07:47:14.653Z",
     "error": {
       "type": "RETRYABLE",
       "message": "Max tool call iterations reached",
-      "stack": "Error: Max tool call iterations reached\n    at <anonymous> (/Users/dipu/exercise/ts-multi-agent/src/index.ts:64:19)\n    at async executeTask (unknown)\n    at processTicksAndRejections (native:7:39)"
+      "stack": "Error: Max tool call iterations reached\n    at <anonymous> (/Users/dipu/exercise/ts-multi-agent/src/index.ts:68:19)\n    at async executeTask (unknown)\n    at processTicksAndRejections (native:7:39)"
     },
-    "completedAt": "2026-04-17T01:54:47.924Z"
+    "completedAt": "2026-04-17T07:48:00.785Z"
   },
   {
-    "id": "plan-1776390884036-task-1",
-    "requirement": "帮助用户填写对公报账单",
-    "status": "completed",
-    "skillName": "ees-qa",
-    "dependencies": [],
-    "dependents": [],
-    "createdAt": "2026-04-17T01:54:44.036Z",
-    "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:54:44.036Z",
-    "result": {
-      "response": "\n\n您好！我可以帮您处理 EES 报销系统相关的问题。\n\n关于\"对公报账单\"，请问您具体遇到了什么问题呢？比如：\n\n- 不知道如何填写对公报账单？\n- 填写过程中遇到报错？\n- 需要了解对公报账的流程和所需材料？\n\n请您描述一下具体需求，我来帮您处理。",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n您好！我可以帮您处理 EES 报销系统相关的问题。\n\n关于\"对公报账单\"，请问您具体遇到了什么问题呢？比如：\n\n- 不知道如何填写对公报账单？\n- 填写过程中遇到报错？\n- 需要了解对公报账的流程和所需材料？\n\n请您描述一下具体需求，我来帮您处理。"
-      }
-    },
-    "completedAt": "2026-04-17T01:54:47.437Z"
-  },
-  {
-    "id": "plan-1776390769853-retry-1-1776390900545-task-1",
-    "requirement": "继续差旅申请流程，用户已选择申请人 admin (id:1)，需要选择预算部门。根据用户画像部门是市场部，建议选择市场部对应的预算部门",
-    "status": "failed",
-    "skillName": "travel-expense-apply",
-    "params": {
-      "userId": "1",
-      "selectedApplicantId": "1",
-      "selectedApplicantName": "admin"
-    },
-    "dependencies": [],
-    "dependents": [],
-    "createdAt": "2026-04-17T01:55:00.546Z",
-    "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:55:00.546Z",
-    "error": {
-      "type": "RETRYABLE",
-      "message": "Max tool call iterations reached",
-      "stack": "Error: Max tool call iterations reached\n    at <anonymous> (/Users/dipu/exercise/ts-multi-agent/src/index.ts:64:19)\n    at async executeTask (unknown)\n    at processTicksAndRejections (native:7:39)"
-    },
-    "completedAt": "2026-04-17T01:55:50.845Z"
-  },
-  {
-    "id": "plan-1776390952178-task-1",
-    "requirement": "填写对公报账单",
-    "status": "completed",
-    "skillName": "ees-qa",
-    "dependencies": [],
-    "dependents": [],
-    "createdAt": "2026-04-17T01:55:52.178Z",
-    "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:55:52.179Z",
-    "result": {
-      "response": "\n\n您好！关于填写对公报账单的流程，请参考以下步骤：\n\n## 对公报账单填写流程\n\n1. **登录系统**：通过 Ihaier 或财务云进入\"我要报销\"模块\n\n2. **选择报销类型**：选择\"其他费用\"中的对公转账报销\n\n3. **填写报销信息**：\n   - 填写费用明细、金额、日期等\n   - 收款方名称、账号、开户行等对公信息\n\n4. **上传附件**：\n   - 发票（支持 **PDF/XML/OFD** 格式）\n   - 合同或订单等其他证明材料\n\n5. **提交申请**：确认信息无误后提交\n\n6. **等待审批**：系统自动审批或转人工审批\n\n## 所需材料\n\n- 正规发票（PDF/XML/OFD格式）\n- 费用明细单据\n- 合同/订单（如需要）\n- 对公收款账户信息\n\n请问您是需要了解具体的填写步骤，还是在填写过程中遇到了什么问题呢？",
-      "status": "waiting_user_input",
-      "question": {
-        "type": "skill_question",
-        "content": "\n\n您好！关于填写对公报账单的流程，请参考以下步骤：\n\n## 对公报账单填写流程\n\n1. **登录系统**：通过 Ihaier 或财务云进入\"我要报销\"模块\n\n2. **选择报销类型**：选择\"其他费用\"中的对公转账报销\n\n3. **填写报销信息**：\n   - 填写费用明细、金额、日期等\n   - 收款方名称、账号、开户行等对公信息\n\n4. **上传附件**：\n   - 发票（支持 **PDF/XML/OFD** 格式）\n   - 合同或订单等其他证明材料\n\n5. **提交申请**：确认信息无误后提交\n\n6. **等待审批**：系统自动审批或转人工审批\n\n## 所需材料\n\n- 正规发票（PDF/XML/OFD格式）\n- 费用明细单据\n- 合同/订单（如需要）\n- 对公收款账户信息\n\n请问您是需要了解具体的填写步骤，还是在填写过程中遇到了什么问题呢？"
-      }
-    },
-    "completedAt": "2026-04-17T01:57:23.127Z"
-  },
-  {
-    "id": "plan-1776390769853-retry-1-1776390900545-retry-2-1776390956782-task-1",
-    "requirement": "继续差旅申请流程，用户已选择申请人admin(id:1)，需要引导选择预算部门并完成申请",
+    "id": "plan-1776412034652-retry-1-1776412094843-task-1",
+    "requirement": "使用引导模式帮用户创建差旅费用申请单，从已知的用户信息出发，逐步引导用户填写必填字段",
     "status": "completed",
     "skillName": "travel-expense-apply",
     "params": {
-      "userId": "1",
-      "selectedApplicantId": "1",
-      "selectedApplicantName": "admin",
-      "selectedOrgId": "1727507529690767362",
-      "selectedOrgName": "总部财务部"
+      "userId": "1727596139882397698",
+      "mode": "guide",
+      "已知信息": {
+        "出差地": "上海",
+        "金额": "3000元",
+        "部门": "财务科",
+        "出差事由": "去洽谈业务",
+        "出差时间": "下周三"
+      }
     },
     "dependencies": [],
     "dependents": [],
-    "createdAt": "2026-04-17T01:55:56.782Z",
+    "createdAt": "2026-04-17T07:48:14.843Z",
     "retryCount": 0,
-    "sessionId": "1",
-    "userId": "1",
-    "startedAt": "2026-04-17T01:55:56.782Z",
+    "sessionId": "test-user-123",
+    "userId": "test-user-123",
+    "startedAt": "2026-04-17T07:48:14.843Z",
     "result": {
-      "response": "\n\n已获取到预算部门列表，共有7个部门。请选择预算部门：\n\n```\n请选择预算部门：\n1. 法务部 (id:1727507557750661122, code:JH0134)\n2. 资产管理部 (id:1727517048579710977, code:JH010701)\n3. 信息部 (id:1727507556643364866, code:JH0107)\n4. 集团财务部 (id:1727507554244222978, code:JH0105)\n5. 行政部 (id:1727507538964373505, code:JH0102)\n6. 采购部 (id:1727507525563572225, code:JH0128)\n7. 总经理室 (id:1727507196059049985, code:JH0301)\n```\n\n请输入编号进行选择（如：1）",
+      "response": "\n\n---\n\n## 引导模式 - 差旅费用申请单\n\n您好！我正在使用**引导模式**帮您创建差旅费用申请单。\n\n根据已获取的信息：\n- **用户ID**: test-user-123\n- **模式**: 引导模式\n\n但在调用接口获取数据时遇到了一些问题：\n\n1. **申请人接口**：返回空数据\n2. **预算部门接口**：提示 userId 格式不正确\n\n---\n\n**请您提供以下信息，以便我继续帮您创建申请单：**\n\n1. 您的**申请人**是谁？（或者您可以直接告诉我您的姓名）\n2. 您想从哪个**预算部门**申请差旅费用？\n\n请告诉我这些信息，我将为您继续创建申请单。",
       "status": "waiting_user_input",
       "question": {
         "type": "skill_question",
-        "content": "\n\n已获取到预算部门列表，共有7个部门。请选择预算部门：\n\n```\n请选择预算部门：\n1. 法务部 (id:1727507557750661122, code:JH0134)\n2. 资产管理部 (id:1727517048579710977, code:JH010701)\n3. 信息部 (id:1727507556643364866, code:JH0107)\n4. 集团财务部 (id:1727507554244222978, code:JH0105)\n5. 行政部 (id:1727507538964373505, code:JH0102)\n6. 采购部 (id:1727507525563572225, code:JH0128)\n7. 总经理室 (id:1727507196059049985, code:JH0301)\n```\n\n请输入编号进行选择（如：1）"
+        "content": "\n\n---\n\n## 引导模式 - 差旅费用申请单\n\n您好！我正在使用**引导模式**帮您创建差旅费用申请单。\n\n根据已获取的信息：\n- **用户ID**: test-user-123\n- **模式**: 引导模式\n\n但在调用接口获取数据时遇到了一些问题：\n\n1. **申请人接口**：返回空数据\n2. **预算部门接口**：提示 userId 格式不正确\n\n---\n\n**请您提供以下信息，以便我继续帮您创建申请单：**\n\n1. 您的**申请人**是谁？（或者您可以直接告诉我您的姓名）\n2. 您想从哪个**预算部门**申请差旅费用？\n\n请告诉我这些信息，我将为您继续创建申请单。"
       }
     },
-    "completedAt": "2026-04-17T01:57:42.665Z"
+    "completedAt": "2026-04-17T07:49:30.821Z",
+    "criticAnalysis": {
+      "taskId": "plan-1776412034652-retry-1-1776412094843-task-1",
+      "agentType": "sub",
+      "analysisTime": "2026-04-17T07:49:30.822Z",
+      "issues": [],
+      "solutions": [
+        {
+          "description": "优化 travel-expense-apply 技能执行",
+          "priority": "medium",
+          "implementationSteps": [
+            "审查技能文档和提示词",
+            "优化工具调用参数",
+            "增加输入验证",
+            "添加更多错误处理"
+          ]
+        }
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "plan-1776413166838-task-1",
+    "requirement": "差旅费用申请",
+    "status": "completed",
+    "skillName": "travel-expense-apply",
+    "dependencies": [],
+    "dependents": [],
+    "createdAt": "2026-04-17T08:06:06.838Z",
+    "retryCount": 0,
+    "sessionId": "1727596139882397698",
+    "userId": "1727596139882397698",
+    "startedAt": "2026-04-17T08:06:06.838Z",
+    "result": {
+      "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
+      "status": "waiting_user_input",
+      "question": {
+        "type": "skill_question",
+        "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？"
+      }
+    },
+    "completedAt": "2026-04-17T08:06:09.429Z",
+    "criticAnalysis": {
+      "taskId": "plan-1776413166838-task-1",
+      "agentType": "sub",
+      "analysisTime": "2026-04-17T08:06:09.430Z",
+      "issues": [],
+      "solutions": [
+        {
+          "description": "优化 travel-expense-apply 技能执行",
+          "priority": "medium",
+          "implementationSteps": [
+            "审查技能文档和提示词",
+            "优化工具调用参数",
+            "增加输入验证",
+            "添加更多错误处理"
+          ]
+        }
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "plan-1776413403904-task-1",
+    "requirement": "用户提供了差旅申请信息：下周三去上海出差，3000元，财务科。需要提取字段并创建差旅费用申请单",
+    "status": "completed",
+    "skillName": "travel-expense-apply",
+    "dependencies": [],
+    "dependents": [],
+    "createdAt": "2026-04-17T08:10:03.904Z",
+    "retryCount": 0,
+    "sessionId": "1727596139882397698",
+    "userId": "1727596139882397698",
+    "startedAt": "2026-04-17T08:10:03.904Z",
+    "result": {
+      "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？\n\n---\n\n我已经从您的信息中提取到：\n- **出差地点**：上海\n- **申请金额**：3000元\n- **预算部门**：财务科\n- **出差时间**：下周三\n\n如果您选择快速模式，我将直接使用这些信息为您生成确认清单。",
+      "status": "waiting_user_input",
+      "question": {
+        "type": "skill_question",
+        "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？\n\n---\n\n我已经从您的信息中提取到：\n- **出差地点**：上海\n- **申请金额**：3000元\n- **预算部门**：财务科\n- **出差时间**：下周三\n\n如果您选择快速模式，我将直接使用这些信息为您生成确认清单。"
+      }
+    },
+    "completedAt": "2026-04-17T08:10:08.838Z",
+    "criticAnalysis": {
+      "taskId": "plan-1776413403904-task-1",
+      "agentType": "sub",
+      "analysisTime": "2026-04-17T08:10:08.839Z",
+      "issues": [],
+      "solutions": [
+        {
+          "description": "优化 travel-expense-apply 技能执行",
+          "priority": "medium",
+          "implementationSteps": [
+            "审查技能文档和提示词",
+            "优化工具调用参数",
+            "增加输入验证",
+            "添加更多错误处理"
+          ]
+        }
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "6b002b63-6ce4-4029-bf44-d78c00f7b8c3",
+    "requirement": "1，下周三去上海出差，3000元，财务科",
+    "status": "completed",
+    "dependencies": [],
+    "dependents": [],
+    "createdAt": "2026-04-17T08:11:56.102Z",
+    "retryCount": 0,
+    "userId": "test-user-123",
+    "result": {
+      "success": true,
+      "data": {
+        "results": [
+          {
+            "taskId": "plan-1776413524745-task-1",
+            "skillName": "travel-expense-apply",
+            "requirement": "",
+            "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
+            "status": "completed"
+          }
+        ],
+        "type": "skill_task"
+      }
+    },
+    "completedAt": "2026-04-17T08:12:14.533Z"
+  },
+  {
+    "id": "plan-1776413524745-task-1",
+    "requirement": "创建差旅费用申请单，出差时间：下周三，出差地：上海，金额：3000元，部门：财务科",
+    "status": "completed",
+    "skillName": "travel-expense-apply",
+    "dependencies": [],
+    "dependents": [],
+    "createdAt": "2026-04-17T08:12:04.746Z",
+    "retryCount": 0,
+    "sessionId": "test-user-123",
+    "userId": "test-user-123",
+    "startedAt": "2026-04-17T08:12:04.746Z",
+    "result": {
+      "response": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
+      "status": "waiting_user_input",
+      "question": {
+        "type": "skill_question",
+        "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？"
+      }
+    },
+    "completedAt": "2026-04-17T08:12:14.530Z"
   }
 ]

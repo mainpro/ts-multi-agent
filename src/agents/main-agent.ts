@@ -231,11 +231,18 @@ export class MainAgent {
         if (intentResult.intent === "confirm_system") {
           assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
           sessionContextService.addAssistantMessage(effectiveSessionId, assistantResponse);
+          
+          // 保存系统确认询问到 waitingQuestions
+          if (intentResult.question) {
+            this.waitingQuestions.set(effectiveSessionId, intentResult.question);
+          }
+          
           return {
             success: true,
             data: {
               message: assistantResponse,
               type: "confirm_system",
+              question: intentResult.question,
             },
           };
         }
