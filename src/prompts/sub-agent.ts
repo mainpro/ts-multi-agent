@@ -60,23 +60,30 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 ## 输出规范
 直接输出给用户的回复，不需要 JSON 格式。
+
+## 回复判断逻辑
+当用户回复时，你需要判断回复是否与当前任务相关：
+
+1. **如果回复相关**：继续执行当前任务，根据用户的回复提供相应的信息。
+
+2. **如果回复不相关**：
+   - 直接告诉用户"您的问题与当前任务无关，我将为您重新识别意图。"
+   - 系统会自动重新识别意图并处理新的问题。
+
+## 示例
+- **相关回复示例**："我是财务岗"（回答是否是财务岗的问题）
+- **不相关回复示例**："我还有个问题，关于BCC系统的"（提出了新的系统问题）
 `;
 
 import { PromptBuilder } from './prompt-builder';
+import { QuestionHistoryEntry, CompletedToolCall } from '../types';
 
 export function buildSubAgentPrompt(
   skillBody: string,
   skillRootDir: string = '',
   params?: Record<string, unknown>,
-  questionHistory?: Array<{
-    question: {
-      type: string;
-      content: string;
-      metadata?: Record<string, unknown>;
-    };
-    answer: string;
-    timestamp: Date;
-  }>,
+  questionHistory?: QuestionHistoryEntry[],
+  completedToolCalls?: CompletedToolCall[],
   userId?: string
 ): string {
   // 静态部分
@@ -84,31 +91,52 @@ export function buildSubAgentPrompt(
     { key: 'sub-agent-base', content: SUB_AGENT_BASE_PROMPT },
     { key: `skill-${skillBody.substring(0, 50)}`, content: `## 技能说明\n${skillBody}` }
   ];
-  
+
   // 动态部分
   const dynamicParts = [];
-  
+
   if (skillRootDir) {
     dynamicParts.push(`## 技能根目录\n${skillRootDir}`);
   }
-  
-  // 合并参数和用户 ID
+
+  // 合并参数和用户 ID（排除 latestUserAnswer，它用于断点续执行而非 prompt 展示）
   let mergedParams = { ...params };
   if (userId) {
     mergedParams.userId = userId;
   }
-  
+  // 排除内部使用的参数
+  delete mergedParams.latestUserAnswer;
+
   if (mergedParams && Object.keys(mergedParams).length > 0) {
     const paramsList = Object.entries(mergedParams)
       .map(([key, value]) => `- **${key}**: ${value}`)
       .join('\n');
     dynamicParts.push(`## 已获取参数\n以下参数已从用户对话中获取，请直接使用，不要重复询问：\n${paramsList}`);
   }
-  
+
+  // ===== v2: 已完成的执行步骤（断点续执行时展示） =====
+  if (completedToolCalls && completedToolCalls.length > 0) {
+    const stepsSummary = completedToolCalls
+      .map((tc, i) => {
+        const argsStr = Object.entries(tc.arguments)
+          .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+          .join(', ');
+        const resultPreview = tc.result.length > 200
+          ? tc.result.substring(0, 200) + '...'
+          : tc.result;
+        return `### 步骤 ${i + 1}: ${tc.name}\n- 参数: ${argsStr}\n- 结果: ${resultPreview}`;
+      })
+      .join('\n\n');
+
+    dynamicParts.push(
+      `## 已完成的执行步骤\n以下是之前已经执行过的步骤，**请勿重复执行**：\n${stepsSummary}`
+    );
+  }
+
   if (questionHistory && questionHistory.length > 0) {
     const historyList = questionHistory
       .map((item, index) => {
-        const metadata = item.question.metadata 
+        const metadata = item.question.metadata
           ? `\n  元数据: ${JSON.stringify(item.question.metadata)}`
           : '';
         return `### 第 ${index + 1} 次询问
@@ -119,8 +147,11 @@ export function buildSubAgentPrompt(
       })
       .join('\n\n');
     dynamicParts.push(`## 询问历史\n以下是之前的询问和用户回复，请参考这些信息继续执行任务：\n${historyList}`);
+
+    // 添加明确的指导，告诉LLM不要重复询问
+    dynamicParts.push(`\n## 重要提示\n如果您之前已经问过用户某个问题，并且用户已经回答了，请不要重复询问相同的问题。请根据用户的回答继续执行任务，跳过已经完成的步骤。`);
   }
-   
+
   return PromptBuilder.build(staticParts, dynamicParts);
 }
 

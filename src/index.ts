@@ -63,7 +63,9 @@ async function bootstrap() {
       if (!result.success) {
         throw new Error(result.error?.message || 'Task execution failed');
       }
-      return result.data;
+      // 返回完整的 TaskResult，确保 task.result 包含 .data 结构
+      // 这样 MainAgent 可以通过 task.result.data.status 检查 waiting_user_input 等状态
+      return result;
     });
     console.log('✅ Task Queue initialized\n');
 

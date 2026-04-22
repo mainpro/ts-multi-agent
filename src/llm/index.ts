@@ -13,6 +13,7 @@ export interface ReasoningEvent {
 export class LLMEventEmitter {
   private listeners: Map<LLMEventType, ((data: string | ReasoningEvent) => void)[]> = new Map();
   private currentAgent: 'MainAgent' | 'SubAgent' = 'MainAgent';
+  private muted = false;
 
   setAgent(agent: 'MainAgent' | 'SubAgent'): void {
     this.currentAgent = agent;
@@ -20,6 +21,15 @@ export class LLMEventEmitter {
 
   getAgent(): 'MainAgent' | 'SubAgent' {
     return this.currentAgent;
+  }
+
+  /**
+   * 临时静默 reasoning 事件（用于内部判断逻辑，如延续判断、召回判断等）
+   * 返回一个恢复函数，调用后恢复事件发送
+   */
+  muteReasoning(): () => void {
+    this.muted = true;
+    return () => { this.muted = false; };
   }
 
   on(event: LLMEventType, callback: (data: string | ReasoningEvent) => void): void {
@@ -40,6 +50,9 @@ export class LLMEventEmitter {
   }
 
   emit(event: LLMEventType, data: string): void {
+    // 静默状态下跳过 reasoning 事件
+    if (this.muted && event === 'reasoning') return;
+
     const callbacks = this.listeners.get(event);
     if (callbacks) {
       const enrichedData: ReasoningEvent = {
@@ -857,6 +870,171 @@ export class LLMClient {
         });
 
         messages.push({
+          role: 'tool',
+          content: toolResult,
+          tool_call_id: toolCall.id,
+        });
+      }
+    }
+
+    throw new LLMError('API_ERROR', 'Max tool call iterations reached');
+  }
+
+  /**
+   * Generate text with tool calling support (streaming) - with message tracking
+   *
+   * 与 generateWithTools 功能相同，但额外返回完整的 messages 数组，
+   * 用于子智能体断点续执行时恢复对话上下文。
+   *
+   * @param messages - 初始消息数组（支持传入已有上下文用于断点续执行）
+   * @param tools - 可用工具定义
+   * @param toolExecutor - 工具执行回调
+   * @param signal - 可选的中止信号
+   * @param concurrencyChecker - 并发安全性检查函数
+   * @returns 包含 content、toolCalls 和完整 messages 的结果
+   */
+  async generateWithToolsTracked(
+    messages: Message[],
+    tools: ToolDefinition[],
+    toolExecutor: (toolCall: { name: string; arguments: Record<string, unknown> }) => Promise<string>,
+    signal?: AbortSignal,
+    concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean
+  ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }> {
+    // 使用传入的 messages（可能包含断点恢复的上下文）
+    const trackedMessages = [...messages];
+
+    const toolCallsResults: ToolCallResult[] = [];
+    let maxIterations = 10;
+
+    while (maxIterations-- > 0) {
+      const result = await this.makeToolRequestStream(trackedMessages, tools, signal);
+
+      if (!result.message) {
+        throw new LLMError('API_ERROR', 'No message in response');
+      }
+
+      const message = result.message;
+
+      console.log('[LLM] [Tracked] Response message.content:', message.content?.substring(0, 200));
+      console.log('[LLM] [Tracked] Response message.tool_calls:', message.tool_calls?.length);
+
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        console.log('[LLM] [Tracked] No tool_calls in response, returning content directly');
+
+        return {
+          content: message.content || '',
+          toolCalls: toolCallsResults,
+          messages: trackedMessages,
+        };
+      }
+
+      console.log('[LLM] [Tracked] Has tool_calls, will execute them');
+
+      // 添加 assistant 消息（含 tool_calls）到跟踪数组
+      trackedMessages.push({
+        role: 'assistant',
+        content: message.content || '',
+        tool_calls: message.tool_calls?.map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          },
+        })),
+      } as Message);
+
+      // P1-2: Split tool_calls into safe (parallel) and unsafe (serial) groups
+      const safeCalls = [];
+      const unsafeCalls = [];
+      for (const toolCall of message.tool_calls) {
+        let toolArgs: Record<string, unknown>;
+        try { toolArgs = JSON.parse(toolCall.function.arguments); } catch { toolArgs = {}; }
+        if (concurrencyChecker && concurrencyChecker(toolCall.function.name, toolArgs)) {
+          safeCalls.push(toolCall);
+        } else {
+          unsafeCalls.push(toolCall);
+        }
+      }
+
+      // Execute safe calls in parallel
+      if (safeCalls.length > 0) {
+        console.log(`[LLM] [Tracked] P1-2: 并行执行 ${safeCalls.length} 个并发安全工具调用`);
+        const safeResults = await Promise.allSettled(
+          safeCalls.map(async (toolCall) => {
+            const toolName = toolCall.function.name;
+            let toolArgs: Record<string, unknown>;
+            try {
+              toolArgs = JSON.parse(toolCall.function.arguments);
+            } catch {
+              toolArgs = {};
+            }
+
+            console.log(`[LLM] [Tracked] 执行工具 (并行): ${toolName}`, toolArgs);
+
+            let toolResult: string;
+            try {
+              toolResult = await toolExecutor({ name: toolName, arguments: toolArgs });
+            } catch (execError) {
+              console.error('[LLM] [Tracked] 工具执行失败:', execError);
+              toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
+            }
+
+            return { toolCall, toolName, toolArgs, toolResult };
+          })
+        );
+
+        for (const result of safeResults) {
+          if (result.status === 'fulfilled') {
+            const { toolCall, toolName, toolArgs, toolResult } = result.value;
+            toolCallsResults.push({
+              name: toolName,
+              arguments: toolArgs,
+              result: toolResult,
+            });
+            trackedMessages.push({
+              role: 'tool',
+              content: toolResult,
+              tool_call_id: toolCall.id,
+            });
+          } else {
+            console.error('[LLM] [Tracked] 并行工具调用失败:', result.reason);
+          }
+        }
+      }
+
+      // Execute unsafe calls serially
+      for (const toolCall of unsafeCalls) {
+        const toolName = toolCall.function.name;
+
+        let toolArgs: Record<string, unknown>;
+        try {
+          toolArgs = JSON.parse(toolCall.function.arguments);
+        } catch {
+          console.error('[LLM] [Tracked] 工具参数 JSON 解析失败:', toolCall.function.arguments);
+          toolArgs = {};
+        }
+
+        console.log(`[LLM] [Tracked] 执行工具 (串行): ${toolName}`, toolArgs);
+
+        let toolResult: string;
+        try {
+          toolResult = await toolExecutor({
+            name: toolName,
+            arguments: toolArgs,
+          });
+        } catch (execError) {
+          console.error('[LLM] [Tracked] 工具执行失败:', execError);
+          toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
+        }
+
+        toolCallsResults.push({
+          name: toolName,
+          arguments: toolArgs,
+          result: toolResult,
+        });
+
+        trackedMessages.push({
           role: 'tool',
           content: toolResult,
           tool_call_id: toolCall.id,

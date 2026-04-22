@@ -286,9 +286,18 @@ let selectedImage = null;
 
 // 生成唯一的 userId 和 sessionId，每个浏览器窗口独立
 const userId = '1727596139882397698';
-const sessionId = 'session-' + Date.now();
+// sessionId 持久化到 localStorage，同一浏览器窗口复用
+let sessionId = localStorage.getItem('agent_session_id');
+if (!sessionId) {
+  sessionId = 'session-' + Date.now();
+  localStorage.setItem('agent_session_id', sessionId);
+}
 
 const STEPS = [
+{ id: 'receive', icon: '📥', title: '接收请求' },
+{ id: 'image', icon: '🖼️', title: '图片分析' },
+{ id: 'waiting', icon: '⏳', title: '检查等待问题' },
+{ id: 'context', icon: '📚', title: '上下文加载' },
 { id: 'intent', icon: '🧠', title: '意图分类' },
 { id: 'plan', icon: '📋', title: '任务规划' },
 { id: 'exec', icon: '⚡', title: '任务执行' },
@@ -514,6 +523,7 @@ function handleEvent(ev) {
   // 按事件类型分类显示
   if (ev.type === 'start') {
     console.log('[System] 开始处理请求');
+    setStep('receive', 'active', '开始处理', '[System] 开始处理请求');
     return;
   }
   
@@ -559,24 +569,44 @@ function handleEvent(ev) {
     console.log(`[Step ${stepNum}] ${logMsg}`);
     
     // 根据消息内容分配到对应的步骤，并显示日志
-    // 意图分类阶段
+    // 接收请求阶段
     if (msg.includes('📥 收到用户请求')) { 
-      setStep('intent', 'active', '开始分析', logMsg); 
+      setStep('receive', 'active', '接收请求', logMsg); 
     }
-    else if (msg.includes('🖼️ 检测到图片') || msg.includes('🖼️ 图片分析')) { 
-      setStep('intent', 'active', '图片分析', logMsg); 
+    
+    // 图片分析阶段
+    else if (msg.includes('📎 附件:') || msg.includes('🔍 调用视觉模型分析图片')) { 
+      setStep('receive', 'done', '完成', logMsg);
+      setStep('image', 'active', '开始分析', logMsg); 
     }
-    else if (msg.includes('🔄 正在分类') || msg.includes('🤖 使用 LLM')) { 
-      setStep('intent', 'active', '识别意图', logMsg); 
+    else if (msg.includes('✅ 视觉分析完成') || msg.includes('❌ 视觉分析失败')) { 
+      setStep('image', 'done', '完成', logMsg); 
+      setStep('waiting', 'active', '检查等待问题', logMsg);
     }
-    else if (msg.includes('⚡ 快速匹配')) { 
-      setStep('intent', 'active', '快速匹配', logMsg); 
+    
+    // 检查等待问题阶段
+    else if (msg.includes('🔄 检测到等待的问题') || msg.includes('🔄 检测到挂起的任务')) { 
+      setStep('waiting', 'active', '处理等待问题', logMsg); 
     }
-    else if (msg.includes('📊 意图分类') || msg.includes('📊 任务分析')) { 
-      setStep('intent', 'done', '完成', logMsg); 
-      setStep('plan', 'active', '开始规划', logMsg);
+    else if (msg.includes('✅ 用户已回复系统确认') || msg.includes('🔄 检测到系统切换请求')) { 
+      setStep('waiting', 'done', '完成', logMsg); 
+      setStep('context', 'active', '加载上下文', logMsg);
     }
-    else if (msg.includes('✅ LLM 返回任务')) { 
+    
+    // 上下文加载阶段
+    else if (msg.includes('👤 用户画像:') || msg.includes('📚 对话历史:') || msg.includes('📑 动态上下文已注入')) { 
+      setStep('context', 'active', '加载中', logMsg); 
+    }
+    else if (msg.includes('🔄 正在分类用户意图')) { 
+      setStep('context', 'done', '完成', logMsg); 
+      setStep('intent', 'active', '开始分类', logMsg);
+    }
+    
+    // 意图分类阶段
+    else if (msg.includes('📊 意图分类:') || msg.includes('⏭️ 非技能任务')) { 
+      setStep('intent', 'active', '分类完成', logMsg); 
+    }
+    else if (msg.includes('📊 任务分析:') || msg.includes('⚠️ 未匹配到技能')) { 
       setStep('intent', 'done', '完成', logMsg); 
       setStep('plan', 'active', '开始规划', logMsg);
     }
@@ -585,13 +615,13 @@ function handleEvent(ev) {
     else if (msg.includes('⚠️ 检测到转人工')) { 
       setStep('plan', 'active', '检测转人工', logMsg); 
     }
-    else if (msg.includes('📝 SessionContext')) { 
+    else if (msg.includes('📝 SessionContext 已更新:')) { 
       setStep('plan', 'active', '更新上下文', logMsg); 
     }
-    else if (msg.includes('📋')) { 
+    else if (msg.includes('📋 单技能任务') || msg.includes('📋 多任务') || msg.includes('✅ 规划完成')) { 
       setStep('plan', 'active', '规划中', logMsg); 
     }
-    else if (msg.includes('✅ 规划完成')) { 
+    else if (msg.includes('✅ 规划完成 - 共') || msg.includes('🔄 派发给 TaskQueue 执行')) { 
       setStep('plan', 'done', '完成', logMsg); 
       setStep('exec', 'active', '开始执行', logMsg);
     }
@@ -610,21 +640,40 @@ function handleEvent(ev) {
       setStep('exec', 'active', '读取资料', logMsg); 
     }
     else if (msg.includes('✅ executor 返回成功') || msg.includes('✅ 任务执行')) { 
-      setStep('exec', 'done', '执行完成', logMsg); 
+      setStep('exec', 'active', '执行完成', logMsg); 
+    }
+    else if (msg.includes('✅ 所有任务执行完成')) { 
+      setStep('exec', 'done', '完成', logMsg); 
       setStep('result', 'active', '生成结果', logMsg);
     }
     
     // 结果阶段
-    else if (msg.includes('✅ 所有任务执行完成')) { 
-      setStep('exec', 'done', '完成', logMsg); 
+    else if (msg.includes('📝 更新用户画像:') || msg.includes('任务执行完成')) { 
+      setStep('result', 'active', '处理中', logMsg); 
+    }
+    else if (msg.includes('完成') && (msg.includes('处理') || msg.includes('任务'))) { 
       setStep('result', 'done', '成功', logMsg); 
     }
     
     // 错误处理
-    else if (msg.includes('⚠️')) { 
-      if (stepNum <= 7) setStep('intent', 'fail', '失败', logMsg);
-      else if (stepNum <= 10) setStep('plan', 'fail', '失败', logMsg);
-      else setStep('exec', 'fail', '失败', logMsg);
+    else if (msg.includes('❌') || msg.includes('⚠️')) { 
+      // 根据消息内容判断错误发生的阶段
+      if (msg.includes('视觉分析失败')) {
+        setStep('image', 'fail', '失败', logMsg);
+      } else if (msg.includes('未匹配到技能')) {
+        setStep('intent', 'fail', '失败', logMsg);
+      } else if (msg.includes('规划失败')) {
+        setStep('plan', 'fail', '失败', logMsg);
+      } else if (msg.includes('任务执行失败') || msg.includes('timeout')) {
+        setStep('exec', 'fail', '失败', logMsg);
+      } else {
+        // 其他错误，显示到当前活跃的步骤
+        const activeStep = document.querySelector('.step.active');
+        if (activeStep) {
+          const id = activeStep.id.replace('step-', '');
+          setStep(id, 'fail', '失败', logMsg);
+        }
+      }
     }
     
     // 其他情况，显示到当前活跃的步骤
@@ -633,6 +682,9 @@ function handleEvent(ev) {
       if (activeStep) {
         const id = activeStep.id.replace('step-', '');
         setStep(id, 'active', '处理中', logMsg);
+      } else {
+        // 如果没有活跃步骤，默认显示到接收请求步骤
+        setStep('receive', 'active', '处理中', logMsg);
       }
     }
   }
@@ -730,7 +782,35 @@ const res = await fetch(API + '/tasks/stream', {
   }
 }
 
-document.addEventListener('DOMContentLoaded', initSteps);
+document.addEventListener('DOMContentLoaded', async () => {
+  initSteps();
+  await loadHistory();
+});
+
+async function loadHistory() {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/history?userId=${encodeURIComponent(userId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (!data.exists || !data.messages || data.messages.length === 0) return;
+
+    // 隐藏欢迎页
+    document.getElementById('welcomeScreen')?.remove();
+
+    // 恢复历史消息
+    for (const msg of data.messages) {
+      addMsg(msg.role, msg.content);
+    }
+
+    // 如果有活跃的等待请求，显示提示
+    if (data.requestStatus === 'waiting') {
+      addMsg('ai', '⏳ 您有一个待回复的问题，请继续对话。');
+    }
+  } catch (err) {
+    console.warn('加载历史记录失败:', err);
+  }
+}
 </script>
 </body>
 </html>

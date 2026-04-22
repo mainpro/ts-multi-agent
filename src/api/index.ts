@@ -24,6 +24,8 @@ interface SubmitTaskRequest {
   requirement: string;
   image?: string;
   userId?: string; // 可选，默认 'default'
+  sessionId?: string; // 可选，默认使用 userId
+  recallRequestId?: string; // 可选，召回指定的挂起请求
 }
 
 /**
@@ -140,6 +142,25 @@ export function createAPIServer(
     });
   });
 
+  // 获取会话历史记录（前端恢复对话使用）
+  app.get('/sessions/:sessionId/history', async (req: Request, res: Response) => {
+    const { sessionId } = req.params;
+    const userId = (req.query.userId as string) || 'default';
+
+    if (!sessionId) {
+      res.status(400).json({ error: 'INVALID_REQUEST', message: 'sessionId is required' });
+      return;
+    }
+
+    try {
+      const history = await mainAgent.getSessionHistory(userId, sessionId);
+      res.json(history);
+    } catch (error) {
+      console.error('Error getting session history:', error);
+      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to get session history' });
+    }
+  });
+
   // ============================================================================
   // Tasks API
   // ============================================================================
@@ -153,7 +174,7 @@ export function createAPIServer(
     (req: Request<{}, {}, {}, { status?: string }>, res: Response<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> } | ApiError>) => {
       try {
         const { status } = req.query;
-        const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed'];
+        const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed', 'suspended'];
 
         // Validate status filter if provided
         if (status && !validStatuses.includes(status as TaskStatus)) {
@@ -324,7 +345,16 @@ app.post(
   llmEvents.on('reasoning', handleReasoning);
 
 try {
-      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId);
+      // 支持 recallRequestId 参数用于召回挂起请求
+      const recallRequestId = req.body.recallRequestId as string | undefined;
+      const sessionId = req.body.sessionId as string | undefined;
+
+      let result;
+      if (recallRequestId) {
+        result = await mainAgent.recallRequest(userId, sessionId || userId, recallRequestId);
+      } else {
+        result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId);
+      }
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {

@@ -55,7 +55,102 @@ export interface UserProfile {
 /**
  * Task status values
  */
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'suspended' | 'waiting'; // 挂起状态 + 等待用户输入
+
+// ============================================================================
+// 询问机制类型（v3 统一重构）
+// ============================================================================
+
+/** 请求状态 */
+export type RequestStatus = 'pending' | 'processing' | 'waiting' | 'suspended' | 'completed' | 'failed';
+
+/** 询问来源 */
+export type QuestionSource = 'main_agent' | 'sub_agent';
+
+/** 统一的询问条目（主智能体和子智能体通用） */
+export interface QAEntry {
+  questionId: string;
+  content: string;
+  source: QuestionSource;
+  taskId: string | null;
+  skillName: string | null;
+  answer: string | null;
+  answeredAt: string | null;
+  createdAt: string;
+}
+
+/** 请求中的任务 */
+export interface RequestTask {
+  taskId: string;
+  content: string;
+  status: TaskStatus;
+  skillName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  result: string | null;
+  questions: QAEntry[];
+  currentQuestion: QAEntry | null;
+  // 断点续执行上下文（仅内存，不持久化）
+  conversationContext?: Task['conversationContext'];
+  completedToolCalls?: CompletedToolCall[];
+}
+
+/** 请求 */
+export interface Request {
+  requestId: string;
+  content: string;
+  status: RequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  suspendedAt: string | null;
+  suspendedReason: string | null;
+  questions: QAEntry[];
+  currentQuestion: QAEntry | null;
+  tasks: RequestTask[];
+  result: string | null;
+  /** 执行进度（用于断点续传，仅内存） */
+  executionProgress?: ExecutionProgress;
+}
+
+/** 会话 */
+export interface Session {
+  sessionId: string;
+  userId: string;
+  createdAt: string;
+  updatedAt: string;
+  requests: Request[];
+  activeRequestId: string | null;
+}
+
+/** RequestManager.handleUserInput 返回结果 */
+export type HandleResult =
+  | { type: 'continue'; request: Request; question: QAEntry }
+  | { type: 'new_request'; request: Request }
+  | { type: 'recall_prompt'; request: Request; suspendedRequest: Request }
+  | { type: 'no_action'; message: string };
+
+/** 延续判断结果 */
+export type ContinuationResult =
+  | { isContinuation: true; confidence: number }
+  | { isContinuation: false; confidence: number; reason: string };
+
+/** 已完成的工具调用记录（用于断点续执行） */
+export interface CompletedToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  timestamp: Date;
+}
+
+/**
+ * @internal 询问历史条目（Task.questionHistory 使用，兼容 sub-agent 断点续执行）
+ * 新代码应优先使用 QAEntry
+ */
+export interface QuestionHistoryEntry {
+  question: { type: string; content: string; taskId?: string; metadata?: Record<string, unknown> };
+  answer: string;
+  timestamp: Date;
+}
 
 /**
  * Error types for task failures
@@ -108,19 +203,31 @@ export interface Task {
     originalName?: string;
   };
   
-  // 询问历史（统一询问机制）
-  questionHistory?: Array<{
-    question: {
-      type: string;
-      content: string;
-      metadata?: Record<string, unknown>;
-    };
-    answer: string;
-    timestamp: Date;
-  }>;
+  // 询问历史（统一询问机制 v2）
+  questionHistory?: QuestionHistoryEntry[];
   
   // 执行状态（技能自己决定格式）
   executionState?: Record<string, unknown>;
+
+  // ===== 断点续执行字段（v2 重构新增） =====
+
+  /** 子智能体的 LLM 对话上下文（用于断点续执行） */
+  conversationContext?: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+      id: string;
+      type: 'function';
+      function: { name: string; arguments: string };
+    }>;
+  }>;
+
+  /** 子智能体已完成的工具调用记录 */
+  completedToolCalls?: CompletedToolCall[];
+
+  /** 子智能体的执行进度描述（自然语言，由子智能体自己维护） */
+  executionProgress?: string;
 
   weakDependencies?: string[];  // P3-4: 弱依赖列表
   
@@ -211,7 +318,7 @@ export interface ToolCallResult {
 export interface SkillExecutionResult {
   response: string;
   needRefs?: string[];
-  status?: 'completed' | 'waiting_user_input';
+  status?: 'completed' | 'waiting_user_input' | 'needs_intent_reclassification';
   question?: {
     type: 'skill_question';
     content: string;
@@ -283,6 +390,58 @@ export interface TaskPlan {
     params?: Record<string, unknown>;
     dependencies: string[];
   }>;
+}
+
+/**
+ * 任务图节点（Plan-Execute-Summarize 架构）
+ */
+export interface TaskGraphNode {
+  /** 任务 ID（在 plan 内唯一） */
+  taskId: string;
+  /** 任务描述 */
+  content: string;
+  /** 使用的技能 */
+  skillName: string;
+  /** 依赖的 taskId 列表（空数组=可立即执行） */
+  dependencies: string[];
+  /** 任务参数（可能引用上游任务输出，如 "$task-1.result"） */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * 任务执行图
+ */
+export interface TaskGraph {
+  /** 图 ID */
+  id: string;
+  /** 原始需求 */
+  requirement: string;
+  /** 所有节点 */
+  nodes: TaskGraphNode[];
+  /** 拓扑排序后的执行层级（layers[0]=可立即执行, layers[1]=依赖layers[0]的任务...） */
+  layers: string[][];
+}
+
+/**
+ * 汇总判断结果
+ */
+export interface SummaryJudgment {
+  /** 是否满足用户需求 */
+  completed: boolean;
+  /** 汇总文本 */
+  summary: string;
+}
+
+/**
+ * 执行进度（用于断点续传）
+ */
+export interface ExecutionProgress {
+  /** 当前执行到的层级索引 */
+  currentLayerIndex: number;
+  /** 已完成的任务结果 { taskId: result } */
+  completedResults: Record<string, any>;
+  /** 任务图快照 */
+  taskGraph: TaskGraph;
 }
 
 /**
@@ -384,7 +543,7 @@ export const TaskErrorSchema = z.object({
 /**
  * Zod schema for TaskStatus
  */
-export const TaskStatusSchema = z.enum(['pending', 'running', 'completed', 'failed']);
+export const TaskStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'suspended', 'waiting']);
 
 /**
  * Zod schema for Task
@@ -404,6 +563,52 @@ export const TaskSchema = z.object({
   startedAt: z.date().optional(),
   completedAt: z.date().optional(),
   retryCount: z.number(),
+  sessionId: z.string().optional(),
+  userId: z.string().optional(),
+  questionHistory: z.array(z.object({
+    question: z.object({
+      type: z.string(),
+      content: z.string(),
+      metadata: z.record(z.unknown()).optional(),
+      taskId: z.string().optional(),
+      skillName: z.string().optional(),
+    }),
+    answer: z.string(),
+    timestamp: z.date(),
+  })).optional(),
+  executionState: z.record(z.unknown()).optional(),
+  conversationContext: z.array(z.object({
+    role: z.enum(['system', 'user', 'assistant', 'tool']),
+    content: z.string(),
+    tool_call_id: z.string().optional(),
+    tool_calls: z.array(z.object({
+      id: z.string(),
+      type: z.enum(['function']),
+      function: z.object({ name: z.string(), arguments: z.string() }),
+    })).optional(),
+  })).optional(),
+  completedToolCalls: z.array(z.object({
+    name: z.string(),
+    arguments: z.record(z.unknown()),
+    result: z.string(),
+    timestamp: z.date(),
+  })).optional(),
+  executionProgress: z.string().optional(),
+  weakDependencies: z.array(z.string()).optional(),
+  errorHistory: z.array(z.object({
+    error: TaskErrorSchema,
+    attemptedSolutions: z.array(z.object({
+      solution: z.string(),
+      timestamp: z.date(),
+      success: z.boolean(),
+    })),
+    timestamp: z.date(),
+  })).optional(),
+  executionPath: z.array(z.object({
+    step: z.string(),
+    timestamp: z.date(),
+    result: z.enum(['success', 'failure', 'skipped']),
+  })).optional(),
 });
 
 /**

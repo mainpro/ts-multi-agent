@@ -539,21 +539,21 @@ export class IntentRouter {
     sessionId?: string,
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>
   ): Promise<IntentResult> {
-    // 如果有活跃会话上下文，直接返回该技能的任务
-    if (signals.sessionContext && this.skillRegistry.hasSkill(signals.sessionContext.skill)) {
-      console.log(`[IntentRouter] ⚡ 活跃会话上下文 ${signals.sessionContext.skill}，直接继续该任务`);
-      return {
-        intent: 'skill_task',
-        confidence: signals.sessionContext.confidence,
-        tasks: [
-          {
-            requirement: userInput,
-            skillName: signals.sessionContext.skill,
-            intent: 'skill_task',
-          },
-        ],
-      };
-    }
+    // 注释掉直接返回的逻辑，让 LLM 参与分析
+    // if (signals.sessionContext && this.skillRegistry.hasSkill(signals.sessionContext.skill)) {
+    //   console.log(`[IntentRouter] ⚡ 活跃会话上下文 ${signals.sessionContext.skill}，直接继续该任务`);
+    //   return {
+    //     intent: 'skill_task',
+    //     confidence: signals.sessionContext.confidence,
+    //     tasks: [
+    //       {
+    //         requirement: userInput,
+    //         skillName: signals.sessionContext.skill,
+    //         intent: 'skill_task',
+    //       },
+    //     ],
+    //   };
+    // }
 
     const skills = this.skillRegistry.getAllMetadata();
     const systemNames = skills
@@ -611,6 +611,10 @@ ${userInput}
 
 【辅助信息】`;
 
+    if (signals.sessionContext) {
+      prompt += `\n- 当前会话上下文: ${signals.sessionContext.skill}（已进行 ${signals.sessionContext.turnCount} 轮对话）`;
+    }
+
     if (signals.keywordMatch) {
       prompt += `\n- 关键词匹配: ${signals.keywordMatch.skill}`;
     }
@@ -623,7 +627,11 @@ ${userInput}
       prompt += `\n- 常用系统: ${signals.userProfile.commonSystems.join(', ')}`;
     }
 
-    prompt += '\n\n请根据会话上下文和辅助信息判断用户意图。';
+    prompt += `\n\n【决策指导】
+1. 优先判断用户是否想要继续当前会话上下文的任务，还是想要切换到新的话题
+2. 如果用户明确表示想要问其他问题、有其他问题、或者提到了新的系统/话题，应该优先匹配新的技能
+3. 如果用户的回复是对之前问题的追问、补充或确认，应该继续当前技能
+4. 请结合对话历史和用户当前输入综合判断`;
 
     const result = await this.llm.generateStructured(
       prompt,

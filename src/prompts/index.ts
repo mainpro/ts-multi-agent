@@ -13,3 +13,8 @@ export {
   SUB_AGENT_BASE_PROMPT,
   buildSubAgentPrompt,
 } from './sub-agent';
+
+export {
+  buildSessionPrompt,
+  buildTaskContextPrompt,
+} from './session-context-prompt';

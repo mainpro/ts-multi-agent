@@ -7,6 +7,8 @@
  * - 用于当前聊天窗口内的状态保持
  */
 
+import { Session } from '../types';
+
 export interface SessionMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -153,6 +155,97 @@ export class SessionContextService {
         this.contexts.delete(sessionId);
       }
     }
+  }
+
+  /**
+   * 从持久化的 Session 数据恢复上下文（服务重启后使用）
+   *
+   * 将 session 中的 requests、questions、对话历史恢复到内存上下文中，
+   * 使得 IntentRouter 等组件能获取到之前的会话状态。
+   */
+  restoreFromSession(sessionId: string, session: Session): void {
+    // 如果内存中已有上下文且是活跃的，不覆盖
+    if (this.contexts.has(sessionId) && this.hasActiveContext(sessionId)) {
+      console.log(`[SessionContext] ℹ️ 会话 ${sessionId} 已有活跃上下文，跳过恢复`);
+      return;
+    }
+
+    const context = this.getContext(sessionId);
+
+    // 从 requests 中恢复对话历史
+    for (const req of session.requests) {
+      // 用户消息
+      context.conversation.push({
+        role: 'user',
+        content: req.content,
+        timestamp: new Date(req.createdAt).getTime(),
+      });
+
+      // 问答历史（请求级）
+      for (const qa of req.questions) {
+        if (qa.content) {
+          context.conversation.push({
+            role: 'assistant',
+            content: qa.content,
+            timestamp: new Date(qa.createdAt).getTime(),
+          });
+        }
+        if (qa.answer) {
+          context.conversation.push({
+            role: 'user',
+            content: qa.answer,
+            timestamp: qa.answeredAt ? new Date(qa.answeredAt).getTime() : Date.now(),
+          });
+        }
+      }
+
+      // 任务级问答历史
+      for (const task of req.tasks || []) {
+        for (const qa of task.questions || []) {
+          if (qa.content) {
+            context.conversation.push({
+              role: 'assistant',
+              content: qa.content,
+              timestamp: new Date(qa.createdAt).getTime(),
+            });
+          }
+          if (qa.answer) {
+            context.conversation.push({
+              role: 'user',
+              content: qa.answer,
+              timestamp: qa.answeredAt ? new Date(qa.answeredAt).getTime() : Date.now(),
+            });
+          }
+        }
+      }
+
+      // 最终结果
+      if (req.result && req.status === 'completed') {
+        context.conversation.push({
+          role: 'assistant',
+          content: req.result,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    // 从活跃请求中恢复当前技能/系统信息
+    const activeRequest = session.requests.find(r =>
+      r.requestId === session.activeRequestId ||
+      r.status === 'processing' ||
+      r.status === 'waiting'
+    );
+    if (activeRequest) {
+      const activeTask = activeRequest.tasks?.find(t => t.status === 'waiting' || t.status === 'pending' || t.status === 'running');
+      if (activeTask?.skillName) {
+        context.currentSkill = activeTask.skillName;
+      }
+    }
+
+    context.turnCount = session.requests.length;
+    context.lastInteractionAt = Date.now();
+
+    console.log(`[SessionContext] 🔄 从持久化数据恢复会话 ${sessionId}: ${context.conversation.length} 条消息, turnCount=${context.turnCount}`);
   }
 
   /**
