@@ -9,7 +9,21 @@ import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
 import { Task, TaskResult } from './types';
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+// 端口优先级：命令行参数 > 环境变量 > 默认值 3000
+function getPort(): number {
+  const cliArg = process.argv.find(arg => arg.startsWith('--port='));
+  if (cliArg) {
+    const port = parseInt(cliArg.split('=')[1], 10);
+    if (!isNaN(port) && port > 0 && port <= 65535) return port;
+  }
+  if (process.env.PORT) {
+    const port = parseInt(process.env.PORT, 10);
+    if (!isNaN(port) && port > 0 && port <= 65535) return port;
+  }
+  return 3000;
+}
+
+const PORT = getPort();
 const SKILL_DIR = process.env.SKILL_DIR || './skills';
 
 let skillRegistry: SkillRegistry;

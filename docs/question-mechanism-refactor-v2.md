@@ -933,7 +933,7 @@ async generateWithToolsTracked(
   messages.push({ role: 'user', content: prompt });
 
   const toolCallsResults: ToolCallResult[] = [];
-  let maxIterations = 10;
+  let maxIterations = 20;
 
   while (maxIterations-- > 0) {
     const result = await this.makeToolRequestStream(messages, tools, signal);
