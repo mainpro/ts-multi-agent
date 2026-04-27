@@ -337,7 +337,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/costCenter/searchCo
 ```bash
 # 查询费用项目列表（返回 data[].id, costCode, costName）
 # ⚠️ 此接口参数必须放在 body 中
-node scripts/api-call.js '{"method":"POST","path":"/edo-base/resourceCostDetail/searchCostItemByOrgAndResourcePage","body":{"resourceCode":"sqcl","orgId":"<costCenterId>"}}'
+node scripts/api-call.js '{"method":"POST","path":"/edo-base/resourceCostDetail/searchCostItemByOrgAndResourcePage","body":{"resourceCode":"sqcl","orgId":"<costCenterId>","current":1,"size":10}}'
 ```
 
 **步骤3：用户选择**

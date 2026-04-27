@@ -188,6 +188,8 @@
 |--------|------|------|------|
 | resourceCode | String | 是 | 单据类型编码，固定传 `sqcl` |
 | orgId | Long | 是 | 预算占用部门id |
+| current | number | 是 | 当前页码，默认传 `1` |
+| size | number | 是 | 每页数量，默认传 `10` |
 
 ### 输出 data 结构
 
