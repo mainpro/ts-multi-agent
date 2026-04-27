@@ -345,6 +345,21 @@ export class SubAgent {
             console.log(`[SubAgent] ✅ 工具执行成功: ${toolCall.name} (耗时 ${toolDuration}ms)`);
             console.log(`[SubAgent] 📤 工具返回: ${dataPreview}`);
 
+            // bash 工具：检测脚本返回的非 200 状态码，直接报错中断
+            if (toolCall.name === 'bash' && toolResult.data) {
+              const toolData = typeof toolResult.data === 'string'
+                ? toolResult.data
+                : JSON.stringify(toolResult.data);
+              // 从 stdout 中提取 API 返回的 code 字段
+              const codeMatch = toolData.match(/"code"\s*:\s*(\d+)/);
+              if (codeMatch && codeMatch[1] !== '200') {
+                const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
+                console.log(`[SubAgent] 🚫 ${errMsg}`);
+                console.log(`[SubAgent] 🚫 接口返回: ${dataPreview}`);
+                throw new Error(errMsg);
+              }
+            }
+
             // 触发工具调用后钩子
             await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
               skillName: skill.name,
