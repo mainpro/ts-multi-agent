@@ -26,7 +26,6 @@ interface SubmitTaskRequest {
   image?: string;
   userId?: string; // 可选，默认 'default'
   sessionId?: string; // 可选，默认使用 userId
-  recallRequestId?: string; // 可选，召回指定的挂起请求
   accessToken?: string; // 可选，透传给技能脚本的认证 token
 }
 
@@ -379,16 +378,9 @@ app.post(
   llmEvents.on('reasoning', handleReasoning);
 
 try {
-      // 支持 recallRequestId 参数用于召回挂起请求
-      const recallRequestId = req.body.recallRequestId as string | undefined;
       const sessionId = req.body.sessionId as string | undefined;
 
-      let result;
-      if (recallRequestId) {
-        result = await mainAgent.recallRequest(userId, sessionId || userId, recallRequestId);
-      } else {
-        result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId);
-      }
+      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId);
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {

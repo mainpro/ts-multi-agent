@@ -107,22 +107,6 @@ export class MainAgent {
       console.log(`[MainAgent] 📊 RequestManager 结果: ${handleResult.type}`);
 
       switch (handleResult.type) {
-        case 'recall_prompt':
-          // 有挂起请求可能需要召回，提示用户
-          return {
-            success: true,
-            data: {
-              type: 'recall_prompt',
-              message: `您之前有类似的请求还在进行中："${handleResult.suspendedRequest.content}"，是否继续执行？`,
-              suspendedRequest: {
-                requestId: handleResult.suspendedRequest.requestId,
-                content: handleResult.suspendedRequest.content,
-                suspendedAt: handleResult.suspendedRequest.suspendedAt,
-              },
-              requestId: handleResult.request.requestId,
-            },
-          };
-
         case 'continue':
           // 用户回复了等待的问题，继续执行
           return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
@@ -209,19 +193,6 @@ export class MainAgent {
       console.error('[MainAgent] 获取会话历史失败:', error);
       return { exists: false, messages: [], activeRequestId: null, requestStatus: null };
     }
-  }
-
-  /**
-   * 召回挂起的请求
-   */
-  async recallRequest(userId: string, sessionId: string, requestId: string): Promise<TaskResult> {
-    const request = await this.requestManager.recallRequest(userId, sessionId, requestId);
-    if (!request) {
-      return { success: false, error: { type: 'FATAL', message: '请求不存在', code: 'REQUEST_NOT_FOUND' } };
-    }
-
-    // 继续执行被召回的请求
-    return this.processNormalRequirement(request.content, userId, sessionId, request, undefined);
   }
 
   /**

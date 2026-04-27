@@ -27,24 +27,6 @@ const CONTINUATION_JUDGE_PROMPT = `你是一个意图判断助手。你的唯一
 ## 输出格式（只输出JSON）
 {"isContinuation": boolean, "confidence": 0.0到1.0, "reason": "简要理由"}`;
 
-const TASK_RECALL_PROMPT = `你是一个任务召回判断助手。判断用户的新消息是否与某个挂起的请求相关。
-
-## 挂起的请求
-请求内容: {requestContent}
-挂起原因: {suspendedReason}
-挂起时间: {suspendedAt}
-
-## 用户最新消息
-{userMessage}
-
-## 判断规则
-1. 用户消息提到与请求相关的关键词/系统/操作 → 应该召回 (shouldRecall: true)
-2. 用户消息明显是全新话题 → 不召回 (shouldRecall: false)
-3. 用户消息模糊但可能相关 → 倾向于召回 (shouldRecall: true)
-
-## 输出格式（只输出JSON）
-{"shouldRecall": boolean, "confidence": 0.0到1.0, "reason": "简要理由"}`;
-
 export class RequestManager {
   constructor(
     private sessionStore: SessionStore,
@@ -86,33 +68,9 @@ export class RequestManager {
       // 用户切换话题 → 挂起当前请求，创建新请求
       console.log(`[RequestManager] 📌 用户切换话题，挂起请求 ${waitingRequest.requestId}`);
       await this.sessionStore.suspendRequest(userId, sessionId, waitingRequest.requestId, '用户发起了新请求');
-
-      const newRequest = await this.sessionStore.createRequest(userId, sessionId, userInput);
-      return { type: 'new_request', request: newRequest };
     }
 
-    // 2. 检查挂起的请求
-    const suspendedRequests = await this.sessionStore.getSuspendedRequests(userId, sessionId);
-    if (suspendedRequests.length > 0) {
-      console.log(`[RequestManager] 🔄 检测到 ${suspendedRequests.length} 个挂起请求`);
-
-      for (const sr of suspendedRequests) {
-        const recallResult = await this.shouldRecall(sr, userInput);
-        console.log(`[RequestManager] 📊 召回判断: ${sr.requestId} → ${recallResult.shouldRecall} (置信度: ${recallResult.confidence})`);
-
-        if (recallResult.shouldRecall && recallResult.confidence >= 0.6) {
-          // 创建新请求（用户可能想继续也可能想新建）
-          const newRequest = await this.sessionStore.createRequest(userId, sessionId, userInput);
-          return {
-            type: 'recall_prompt',
-            request: newRequest,
-            suspendedRequest: sr,
-          };
-        }
-      }
-    }
-
-    // 3. 创建新请求
+    // 2. 创建新请求
     const newRequest = await this.sessionStore.createRequest(userId, sessionId, userInput);
     return { type: 'new_request', request: newRequest };
   }
@@ -133,8 +91,8 @@ export class RequestManager {
       .replace('{userAnswer}', userInput);
 
     // 内部判断逻辑（测试阶段保留完整 reasoning 日志）
-    const response = await this.llm.generateText(prompt);
     try {
+      const response = await this.llm.generateText(prompt);
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
@@ -146,37 +104,5 @@ export class RequestManager {
       console.warn('[RequestManager] 延续判断失败，默认为延续:', error);
     }
     return { isContinuation: true, confidence: 0.5 };
-  }
-
-  /**
-   * 判断是否应该召回挂起请求
-   */
-  private async shouldRecall(request: Request, userInput: string): Promise<{
-    shouldRecall: boolean;
-    confidence: number;
-    reason: string;
-  }> {
-    const prompt = TASK_RECALL_PROMPT
-      .replace('{requestContent}', request.content)
-      .replace('{suspendedReason}', request.suspendedReason || '未知')
-      .replace('{suspendedAt}', request.suspendedAt || '未知')
-      .replace('{userMessage}', userInput);
-
-    // 内部判断逻辑（测试阶段保留完整 reasoning 日志）
-    const response = await this.llm.generateText(prompt);
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          shouldRecall: !!parsed.shouldRecall,
-          confidence: parsed.confidence || 0.5,
-          reason: parsed.reason || '未提供理由',
-        };
-      }
-    } catch (error) {
-      console.warn('[RequestManager] 召回判断失败:', error);
-    }
-    return { shouldRecall: false, confidence: 0.3, reason: '判断失败' };
   }
 }

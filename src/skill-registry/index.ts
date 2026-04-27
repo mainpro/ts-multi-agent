@@ -32,7 +32,6 @@ export class SkillRegistry {
 
   // P2-3: 热重载
   private watcher: ReturnType<typeof watch> | null = null;
-  private fallbackScanTimer: ReturnType<typeof setInterval> | null = null;
   private rescanDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -96,11 +95,11 @@ export class SkillRegistry {
           // Check for duplicate names
           if (this.metadataCache.has(metadata.name)) {
             const existing = this.metadataCache.get(metadata.name)!;
-            this.logger.warn(
-              `Duplicate skill name "${metadata.name}" found. ` +
-                `Existing: ${existing.skillFilePath}, New: ${skillFilePath}. ` +
-                `Skipping new entry.`
-            );
+            // this.logger.warn(
+            //   `Duplicate skill name "${metadata.name}" found. ` +
+            //     `Existing: ${existing.skillFilePath}, New: ${skillFilePath}. ` +
+            //     `Skipping new entry.`
+            // );
             continue;
           }
 
@@ -291,7 +290,7 @@ export class SkillRegistry {
     return this.metadataCache.size;
   }
 
-  // P2-3: 技能热重载
+  // P2-3: 技能热重载（基于 fs.watch，事件驱动，零轮询开销）
   startWatch(): void {
     const skillsDir = CONFIG.SKILL_DIRECTORY;
     try {
@@ -306,11 +305,6 @@ export class SkillRegistry {
         }
       });
       console.log(`[SkillRegistry] 已启动技能目录监听: ${skillsDir}`);
-
-      // 兜底全量扫描
-      this.fallbackScanTimer = setInterval(() => {
-        this.scanSkills(skillsDir);
-      }, 60_000);
     } catch (error) {
       console.warn(`[SkillRegistry] 无法启动目录监听:`, error);
     }
@@ -318,24 +312,40 @@ export class SkillRegistry {
 
   stopWatch(): void {
     if (this.watcher) { this.watcher.close(); this.watcher = null; }
-    if (this.fallbackScanTimer) { clearInterval(this.fallbackScanTimer); this.fallbackScanTimer = null; }
     if (this.rescanDebounceTimer) { clearTimeout(this.rescanDebounceTimer); this.rescanDebounceTimer = null; }
   }
 
-  rescanSkill(filename: string): void {
+  async rescanSkill(filename: string): Promise<void> {
     const parts = filename.replace(/\\/g, '/').split('/');
     const skillDirIndex = parts.indexOf('skills');
     if (skillDirIndex === -1 || skillDirIndex + 1 >= parts.length) return;
     const skillName = parts[skillDirIndex + 1];
-    // Clear caches - use (this as any) since these may be private
-    const self = this as any;
-    if (self.metadataCache) self.metadataCache.delete(skillName);
-    if (self.skillCache) self.skillCache.delete(skillName);
+
     const skillDir = path.join(CONFIG.SKILL_DIRECTORY, skillName);
-    if (self.scanSingleSkill) {
-      self.scanSingleSkill(skillDir, skillName);
+    const skillFilePath = path.join(skillDir, 'SKILL.md');
+
+    // 清除旧缓存
+    this.metadataCache.delete(skillName);
+
+    // 检查文件是否仍存在（可能被删除）
+    const fileStat = await fs.stat(skillFilePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      console.log(`[SkillRegistry] 技能 ${skillName} 已移除`);
+      return;
     }
-    console.log(`[SkillRegistry] 技能 ${skillName} 已重新加载`);
+
+    // 重新解析并缓存
+    const metadata = await this.parseFrontmatterOnly(skillFilePath);
+    if (metadata && metadata.name && metadata.description) {
+      this.metadataCache.set(metadata.name, {
+        metadata,
+        skillDir,
+        skillFilePath,
+      });
+      console.log(`[SkillRegistry] 技能 ${metadata.name} 已重新加载`);
+    } else {
+      console.warn(`[SkillRegistry] 技能 ${skillName} 重新加载失败：解析元数据出错`);
+    }
   }
 }
 
