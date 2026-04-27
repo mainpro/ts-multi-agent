@@ -316,8 +316,9 @@ export class SubAgent {
       messages,
       tools,
       async (toolCall) => {
-        console.log(`[SubAgent] 调用工具: ${toolCall.name}`);
-        console.log(`[SubAgent] 工具参数: ${JSON.stringify(toolCall.arguments)}`);
+        const toolStartTime = Date.now();
+        console.log(`[SubAgent] 🔧 调用工具: ${toolCall.name} (开始于 ${new Date().toISOString()})`);
+        console.log(`[SubAgent] 📥 工具参数: ${JSON.stringify(toolCall.arguments)}`);
 
         // 触发工具调用前钩子
         await hookManager.emit(HookEvent.BEFORE_TOOL_CALL, {
@@ -336,10 +337,13 @@ export class SubAgent {
           );
 
           if (toolResult.success) {
+            const toolDuration = Date.now() - toolStartTime;
             const data = typeof toolResult.data === 'string'
               ? toolResult.data
               : JSON.stringify(toolResult.data, null, 2);
-            console.log(`[SubAgent] 工具执行成功: ${data.substring(0, 500)}`);
+            const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
+            console.log(`[SubAgent] ✅ 工具执行成功: ${toolCall.name} (耗时 ${toolDuration}ms)`);
+            console.log(`[SubAgent] 📤 工具返回: ${dataPreview}`);
 
             // 触发工具调用后钩子
             await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
@@ -364,7 +368,9 @@ export class SubAgent {
 
             return data;
           } else {
-            console.log(`[SubAgent] 工具执行失败: ${toolResult.error}`);
+            const toolDuration = Date.now() - toolStartTime;
+            console.log(`[SubAgent] ❌ 工具执行失败: ${toolCall.name} (耗时 ${toolDuration}ms)`);
+            console.log(`[SubAgent] ❌ 失败原因: ${toolResult.error}`);
 
             await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
               skillName: skill.name,

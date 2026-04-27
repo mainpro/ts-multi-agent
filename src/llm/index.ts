@@ -905,9 +905,15 @@ export class LLMClient {
 
     const toolCallsResults: ToolCallResult[] = [];
     let maxIterations = 10;
+    let iteration = 0;
 
     while (maxIterations-- > 0) {
+      iteration++;
+      console.log(`[LLM] [Tracked] 🔄 第 ${iteration} 轮工具调用循环开始 (${new Date().toISOString()})`);
+      const llmStartTime = Date.now();
       const result = await this.makeToolRequestStream(trackedMessages, tools, signal);
+      const llmDuration = Date.now() - llmStartTime;
+      console.log(`[LLM] [Tracked] ⏱️ LLM 响应耗时 ${llmDuration}ms`);
 
       if (!result.message) {
         throw new LLMError('API_ERROR', 'No message in response');
@@ -974,7 +980,10 @@ export class LLMClient {
 
             let toolResult: string;
             try {
+              const execStart = Date.now();
               toolResult = await toolExecutor({ name: toolName, arguments: toolArgs });
+              const execDuration = Date.now() - execStart;
+              console.log(`[LLM] [Tracked] ✅ 并行工具完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
             } catch (execError) {
               console.error('[LLM] [Tracked] 工具执行失败:', execError);
               toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
@@ -1019,10 +1028,13 @@ export class LLMClient {
 
         let toolResult: string;
         try {
+          const execStart = Date.now();
           toolResult = await toolExecutor({
             name: toolName,
             arguments: toolArgs,
           });
+          const execDuration = Date.now() - execStart;
+          console.log(`[LLM] [Tracked] ✅ 工具执行完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
         } catch (execError) {
           console.error('[LLM] [Tracked] 工具执行失败:', execError);
           toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;

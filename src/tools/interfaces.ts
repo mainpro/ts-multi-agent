@@ -31,6 +31,8 @@ export interface ToolContext {
   userId: string;
   /** Session ID for this execution */
   sessionId: string;
+  /** Access token for downstream API calls (optional, passed from user request) */
+  accessToken?: string;
 }
 
 /**

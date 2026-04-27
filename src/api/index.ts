@@ -7,6 +7,7 @@ import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { metrics } from '../observability/metrics';
+import { RequestContext } from '../context/request-context';
 
 interface ImageAttachment {
   data: Buffer;
@@ -26,6 +27,7 @@ interface SubmitTaskRequest {
   userId?: string; // 可选，默认 'default'
   sessionId?: string; // 可选，默认使用 userId
   recallRequestId?: string; // 可选，召回指定的挂起请求
+  accessToken?: string; // 可选，透传给技能脚本的认证 token
 }
 
 /**
@@ -83,6 +85,32 @@ interface SkillsResponse {
 interface HealthResponse {
   status: string;
   timestamp: string;
+}
+
+/**
+ * 从请求中提取 accessToken（兼容 Header 和参数两种方式）
+ * 优先级：Header(accesstoken / Authorization) > Query > Body
+ */
+function extractAccessToken(req: Request): string | undefined {
+  // 1. Header: accesstoken (case-insensitive)
+  const headerToken = req.headers['accesstoken'] as string | undefined;
+  if (headerToken) return headerToken;
+
+  // 2. Header: Authorization: Bearer xxx
+  const authHeader = req.headers['authorization'] as string | undefined;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+
+  // 3. Query parameter
+  const queryToken = req.query.accessToken as string | undefined;
+  if (queryToken) return queryToken;
+
+  // 4. Body
+  const bodyToken = (req.body as any)?.accessToken as string | undefined;
+  if (bodyToken) return bodyToken;
+
+  return undefined;
 }
 
 /**
@@ -223,7 +251,7 @@ export function createAPIServer(
   ) => {
     try {
       const { requirement, userId } = req.body;
-
+      const accessToken = extractAccessToken(req);
       // Validate request
       if (!requirement || typeof requirement !== 'string') {
         res.status(400).json({
@@ -237,8 +265,10 @@ export function createAPIServer(
       const taskId = randomUUID();
       const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-      // Start processing asynchronously via MainAgent
-      processTaskAsync(taskId, requirement, effectiveUserId);
+      // Start processing asynchronously via MainAgent（在 RequestContext 中传递 accessToken）
+      RequestContext.run({ accessToken }, () => {
+        processTaskAsync(taskId, requirement, effectiveUserId);
+      });
 
       res.status(201).json({
         taskId,
@@ -268,6 +298,10 @@ app.post(
   ) => {
     const { requirement } = req.body;
     const userId = req.body.userId || 'default';
+    const accessToken = extractAccessToken(req);
+
+    // 使用 RequestContext 包裹整个请求处理，使 accessToken 可在整条调用链中访问
+    return RequestContext.run({ accessToken }, async () => {
     let imageAttachment: ImageAttachment | undefined;
 
     // 检查 JSON body 中的 base64 图片
@@ -385,8 +419,9 @@ try {
       } finally {
         res.end();
       }
-    }
-  );
+    }); // end RequestContext.run
+  }
+);
 
   /**
    * Get task status

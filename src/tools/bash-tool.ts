@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Tool, ToolContext, ToolResult } from './interfaces';
 import { PathGuard } from '../security/path-guard';
+import { getAccessToken } from '../context/request-context';
 
 const execAsync = promisify(exec);
 
@@ -33,10 +34,17 @@ export class BashTool implements Tool {
     }
 
     try {
+      // 从请求上下文获取 accessToken，注入到子进程环境变量
+      const accessToken = getAccessToken();
+      const env = accessToken
+        ? { ...process.env, SKILL_ACCESS_TOKEN: accessToken }
+        : process.env;
+
       const { stdout, stderr } = await execAsync(command, {
         cwd: context.workDir,
         timeout,
         maxBuffer: 1024 * 1024 * 10, // 10MB
+        env,
       });
 
       return {

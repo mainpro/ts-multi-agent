@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const http = require('http');
+const path = require('path');
+const { getAuthHeaders } = require(path.join(__dirname, 'token-manager'));
 
 const BASE_URL = process.env.TRAVEL_APPLY_BASE_URL || 'http://221.224.251.134:6770/api/';
 
@@ -20,8 +22,7 @@ function request(method, url, data) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
-        'authorization':'Basic c2FiZXI6c2FiZXJfc2VjcmV0',
-        'blade-auth': 'bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0ZW5hbnRfaWQiOiIwMDAwMDAiLCJ1c2VyX25hbWUiOiJKSDAwMTQwIiwicmVhbF9uYW1lIjoi5b6Q6aqPIiwiYXZhdGFyIjoiIiwiY2xpZW50X2lkIjoic2FiZXIiLCJyb2xlX25hbWUiOiIiLCJsaWNlbnNlIjoicG93ZXJlZCBieSBibGFkZXgiLCJwb3N0X2lkIjoiIiwidXNlcl9pZCI6IjE3Mjc1OTYxMzk4ODIzOTc2OTgiLCJyb2xlX2lkIjoiIiwic2NvcGUiOlsiYWxsIl0sIm5pY2tfbmFtZSI6IuW-kOmqjyIsIm9hdXRoX2lkIjoiIiwiZGV0YWlsIjp7Im9yZ0lkIjoxNzI3NTA3NTU2NjQzMzY0ODY2LCJ1c2VyVHlwZSI6ImFkbWluIn0sImV4cCI6MTc3NzAxMjYyMywiZGVwdF9pZCI6IiIsImp0aSI6ImMyYTdlZDNhLWE2YTUtNGI4YS1iMzBhLTNiMTExZGU1ZWFhMiIsImFjY291bnQiOiJKSDAwMTQwIn0.RWOf1HGbMfrT2bYoGaeXqs4hQSRE9Ak9dzg1ZXAeEUU',
+        ...getAuthHeaders(),
       },
       timeout: 30000,
     }, (res) => {
@@ -59,13 +60,13 @@ async function main() {
   }
 
   const method = (args.method || 'POST').toUpperCase();
-  const path = args.path;
-  if (!path) {
+  const path_ = args.path;
+  if (!path_) {
     console.error(JSON.stringify({ error: '"path" is required', code: 400 }));
     process.exit(1);
   }
 
-  let fullUrl = BASE_URL.replace(/\/+$/, '') + path;
+  let fullUrl = BASE_URL.replace(/\/+$/, '') + path_;
 
   if (args.params && Object.keys(args.params).length > 0) {
     const qs = Object.entries(args.params)

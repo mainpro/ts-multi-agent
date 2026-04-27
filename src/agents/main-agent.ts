@@ -968,7 +968,7 @@ ${resultsContext}
     sessionId: string,
     request: Request
   ): Promise<TaskResult> {
-    const maxWaitTime = 60000;
+    const maxWaitTime = CONFIG.TASK_TIMEOUT_MS;
     const pollInterval = 500;
     const startTime = Date.now();
 

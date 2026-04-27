@@ -716,7 +716,8 @@ addMsg('user', userContent);
 const requestBody = { 
   userId, 
   sessionId,
-  requirement: text || '请分析这张图片' 
+  requirement: text || '请分析这张图片',
+  accessToken: 'bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0ZW5hbnRfaWQiOiIwMDAwMDAiLCJ1c2VyX25hbWUiOiJKSDAwMTQwIiwicmVhbF9uYW1lIjoi5b6Q6aqPIiwiYXZhdGFyIjoiIiwiY2xpZW50X2lkIjoic2FiZXIiLCJyb2xlX25hbWUiOiIiLCJsaWNlbnNlIjoicG93ZXJlZCBieSBibGFkZXgiLCJwb3N0X2lkIjoiIiwidXNlcl9pZCI6IjE3Mjc1OTYxMzk4ODIzOTc2OTgiLCJyb2xlX2lkIjoiIiwic2NvcGUiOlsiYWxsIl0sIm5pY2tfbmFtZSI6IuW-kOmqjyIsIm9hdXRoX2lkIjoiIiwiZGV0YWlsIjp7Im9yZ0lkIjoxNzI3NTA3NTU2NjQzMzY0ODY2LCJ1c2VyVHlwZSI6ImFkbWluIn0sImV4cCI6MTc3NzI1ODM3NCwiZGVwdF9pZCI6IiIsImp0aSI6IjdiMzRhNGY3LThjYTQtNDVlNC1hMzM5LTY0MWYzZTljOTc1ZCIsImFjY291bnQiOiJKSDAwMTQwIn0.aFy4643ksPRfBFedmFmnNIQW1gKhlT8pO8Zy8MT13IE'
 };
 if (selectedImage && selectedImage.length > 100) {
   requestBody.image = selectedImage;
