@@ -346,12 +346,13 @@ app.post(
       console.log = (...args: unknown[]) => {
         const msg = args.join(' ');
         // Capture MainAgent, SubAgent, UnifiedPlanner process messages
-        if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]')) {
+        if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]') || msg.includes('[LLM]')) {
           stepCount++;
           let agent = 'MainAgent';
           if (msg.includes('[SubAgent]')) agent = 'SubAgent';
           else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
           else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
+          else if (msg.includes('[LLM]')) agent = 'LLM';
 
           sendEvent('step', {
             step: stepCount,
