@@ -27,8 +27,12 @@
 | 操作系统 | Linux / macOS | Ubuntu 22.04 LTS |
 | 内存 | 512MB | 2GB+ |
 | 磁盘 | 200MB | 1GB+ |
+| Shell | /bin/sh（必须） | /bin/bash |
 
-> **注意**：生产环境推荐使用 Node.js 运行编译后的代码，开发环境使用 Bun 以获得更快的重启速度。
+> **注意**：
+> - 生产环境推荐使用 Node.js 运行编译后的代码，开发环境使用 Bun 以获得更快的重启速度。
+> - 系统必须安装 `/bin/sh`（所有 Linux 发行版默认自带）。如果使用 `/bin/bash`，可获更好的命令兼容性，但非必须。
+> - 如需启用沙箱隔离（推荐），需安装 bubblewrap（见下方说明）。
 
 ---
 
@@ -255,6 +259,9 @@ RUN npm run build
 FROM node:20-alpine AS runner
 
 WORKDIR /app
+
+# 安装 bubblewrap（沙箱隔离）和 bash（更好的命令兼容性）
+RUN apk add --no-cache bubblewrap bash
 
 # 仅复制运行时所需文件
 COPY package.json package-lock.json* ./
@@ -594,6 +601,66 @@ pm2 logs ts-multi-agent --lines 100
 docker logs --tail 100 -f ts-multi-agent
 ```
 
+### 12.6 沙箱系统
+
+系统内置了基于 bubblewrap（bwrap）的沙箱隔离机制，用于安全执行 bash 命令。
+
+#### 工作原理
+
+```
+用户命令 → PathGuard（命令过滤） → Sandbox（沙箱隔离） → 执行结果
+```
+
+- **PathGuard**：前置过滤器，拦截危险命令（如 `rm -rf /`、`sudo` 等）和敏感路径访问
+- **Sandbox**：使用 bubblewrap 创建隔离环境，限制文件系统和网络访问
+
+#### 安装 bubblewrap
+
+```bash
+# Ubuntu / Debian
+sudo apt install bubblewrap
+
+# Alpine Linux（Docker 常用基础镜像）
+apk add bubblewrap
+
+# CentOS / RHEL
+sudo yum install bubblewrap
+
+# 验证安装
+command -v bwrap  # 应输出 /usr/bin/bwrap
+```
+
+#### 判断沙箱是否生效
+
+查看日志中 `module: "Sandbox"` 的输出：
+
+**沙箱已启用**（bwrap 可用）：
+```json
+{"level":"info","module":"Sandbox","message":"bubblewrap 可用，沙箱隔离已启用"}
+{"level":"info","module":"Sandbox","message":"沙箱执行命令","command":"npm install","network":"isolated","shell":"/bin/bash"}
+{"level":"info","module":"Sandbox","message":"沙箱命令执行完成","exitCode":0}
+```
+
+**沙箱未启用**（bwrap 不可用，回退到直接执行）：
+```json
+{"level":"warn","module":"Sandbox","message":"bubblewrap 不可用，命令将在无隔离环境下直接执行"}
+{"level":"warn","module":"Sandbox","message":"命令在无隔离环境下执行","reason":"bubblewrap 不可用"}
+```
+
+#### 常见问题
+
+**Q: 日志中出现 `spawn /bin/bash ENOENT`**
+- **原因**：部署环境（如 Alpine Docker 镜像）默认没有 `/bin/bash`
+- **修复**：系统已自动回退到 `/bin/sh`，无需额外操作。如需 bash，安装即可：`apk add bash`
+
+**Q: 日志显示 `bubblewrap 不可用`**
+- **原因**：未安装 bubblewrap
+- **修复**：按上方说明安装，或确认容器镜像中包含 bwrap
+
+**Q: 命令执行报权限不足**
+- **原因**：沙箱默认禁用网络（`--unshare-net`），某些需要网络的命令（如 `npm install`）会失败
+- **说明**：这是预期行为。如需网络访问，需在代码中显式配置 `network: true`
+
 ---
 
 ## 附录：部署检查清单
@@ -610,3 +677,5 @@ docker logs --tail 100 -f ts-multi-agent
 - [ ] PM2 / Docker 进程管理已配置（生产环境）
 - [ ] 日志收集已配置
 - [ ] 防火墙规则已设置（仅开放 80/443 端口）
+- [ ] bubblewrap 已安装（`command -v bwrap`），沙箱隔离生效
+- [ ] 日志中确认 `module: "Sandbox"` 输出沙箱执行状态

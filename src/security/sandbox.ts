@@ -6,6 +6,7 @@
 import { execSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import { existsSync } from 'fs';
 import { createLogger } from '../observability/logger';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +28,31 @@ export interface SandboxResult {
 export class Sandbox {
   private static readonly logger = createLogger({ module: 'Sandbox' });
   private static isAvailable: boolean | null = null;
+  private static shellPath: string | null = null;
+
+  /**
+   * 检测可用的 shell 路径
+   * 优先使用 /bin/bash，不存在时回退到 /bin/sh（兼容 Alpine 等精简镜像）
+   */
+  static detectShell(): string {
+    if (this.shellPath !== null) return this.shellPath;
+
+    const candidates = ['/bin/bash', '/bin/sh'];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        this.shellPath = candidate;
+        if (candidate !== '/bin/bash') {
+          this.logger.info('使用备用 shell', { shell: candidate, reason: '/bin/bash 不存在（可能为 Alpine 等精简镜像）' });
+        }
+        return this.shellPath;
+      }
+    }
+
+    // 最终兜底：使用 /bin/sh（即使文件不存在，让 OS 报错）
+    this.shellPath = '/bin/sh';
+    this.logger.warn('未找到可用的 shell，使用 /bin/sh 作为兜底');
+    return this.shellPath;
+  }
 
   /**
    * 检查 bubblewrap 是否可用
@@ -49,6 +75,7 @@ export class Sandbox {
    */
   static async execute(command: string, workDir: string, options?: SandboxOptions): Promise<SandboxResult> {
     const env = options?.env ? { ...process.env, ...options.env } : process.env;
+    const shell = this.detectShell();
     // 截断命令用于日志展示（避免过长）
     const displayCmd = command.length > 200 ? command.substring(0, 200) + '...' : command;
 
@@ -57,10 +84,11 @@ export class Sandbox {
       this.logger.warn('命令在无隔离环境下执行', {
         command: displayCmd,
         workDir,
+        shell,
         reason: 'bubblewrap 不可用',
       });
       try {
-        const { stdout, stderr } = await execFileAsync('/bin/bash', ['-c', command], {
+        const { stdout, stderr } = await execFileAsync(shell, ['-c', command], {
           cwd: workDir,
           timeout: options?.timeout || 30000,
           maxBuffer: 10 * 1024 * 1024,
@@ -103,11 +131,12 @@ export class Sandbox {
       bwrapArgs.push('--bind', resolvedDir, resolvedDir);
     }
 
-    bwrapArgs.push('--', '/bin/bash', '-c', command);
+    bwrapArgs.push('--', shell, '-c', command);
 
     this.logger.info('沙箱执行命令', {
       command: displayCmd,
       workDir,
+      shell,
       allowedDirs,
       network: networkMode,
       timeout: options?.timeout || 30000,
