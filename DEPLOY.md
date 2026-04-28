@@ -240,60 +240,25 @@ curl -sf http://localhost:3000/health || echo "Service down!"
 
 ### 8.1 Dockerfile
 
-在项目根目录创建 `Dockerfile`：
+项目根目录已提供 `Dockerfile`，采用多阶段构建：
 
 ```dockerfile
 # ---- 构建阶段 ----
 FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-COPY package.json package-lock.json* bun.lock* ./
-RUN npm install
-
-COPY tsconfig.json ./
-COPY src/ ./src/
-RUN npm run build
+# 安装依赖 + TypeScript 编译
 
 # ---- 运行阶段 ----
 FROM node:20-alpine AS runner
-
-WORKDIR /app
-
-# 安装 bubblewrap（沙箱隔离）和 bash（更好的命令兼容性）
-RUN apk add --no-cache bubblewrap bash
-
-# 仅复制运行时所需文件
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-
-COPY --from=builder /app/dist ./dist
-COPY config/ ./config/
-
-# 创建非 root 用户
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
-
-EXPOSE 3000
-
-ENV NODE_ENV=production
-ENV PORT=3000
-
-CMD ["node", "dist/index.js"]
+# 安装 bubblewrap（沙箱隔离）+ bash（命令兼容性）
+# 关键：chmod u+s /usr/bin/bwrap — 解决容器内 user namespace 权限问题
+# 创建非 root 用户运行服务
 ```
+
+> **关于 bubblewrap setuid**：Docker 容器默认禁用了非特权 user namespace，bwrap 需要以 setuid root 权限运行才能创建隔离环境。Dockerfile 中已通过 `chmod u+s /usr/bin/bwrap` 处理。如果日志中出现 `Creating new namespace failed` 错误，请确认 bwrap 具有 setuid 权限：`ls -la /usr/bin/bwrap`（应显示 `-rwsr-xr-x`）。
 
 ### 8.2 .dockerignore
 
-```
-node_modules
-dist
-__tests__
-docs
-.git
-*.md
-.env
-.env.*
-```
+项目根目录已提供 `.dockerignore`，排除 `node_modules`、`dist`、`__tests__`、`.env` 等非必要文件，加速构建。
 
 ### 8.3 构建与运行
 
@@ -319,36 +284,7 @@ docker stop ts-multi-agent
 
 ### 8.4 Docker Compose
 
-创建 `docker-compose.yml`：
-
-```yaml
-version: '3.8'
-
-services:
-  ts-multi-agent:
-    build: .
-    container_name: ts-multi-agent
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    volumes:
-      - ./config:/app/config:ro
-      - ./data:/app/data
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M
-```
+项目根目录已提供 `docker-compose.yml`，包含健康检查和资源限制配置。
 
 ```bash
 # 启动
@@ -660,6 +596,11 @@ command -v bwrap  # 应输出 /usr/bin/bwrap
 **Q: 命令执行报权限不足**
 - **原因**：沙箱默认禁用网络（`--unshare-net`），某些需要网络的命令（如 `npm install`）会失败
 - **说明**：这是预期行为。如需网络访问，需在代码中显式配置 `network: true`
+
+**Q: 日志中出现 `Creating new namespace failed`**
+- **原因**：Docker 容器默认禁用了非特权 user namespace，bwrap 无法创建隔离环境
+- **修复**：在 Dockerfile 中为 bwrap 设置 setuid 权限：`chmod u+s /usr/bin/bwrap`（项目 Dockerfile 已包含此配置）
+- **验证**：进入容器执行 `ls -la /usr/bin/bwrap`，应显示 `-rwsr-xr-x`（注意 `s` 标志）
 
 ---
 

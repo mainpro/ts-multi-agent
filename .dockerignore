@@ -1,0 +1,11 @@
+node_modules
+dist
+__tests__
+docs
+.trae
+.git
+.gitignore
+*.md
+.env
+.env.*
+bun.lock
