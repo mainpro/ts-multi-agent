@@ -1,0 +1,24 @@
+[
+  {
+    "role": "user",
+    "content": "我要出差",
+    "timestamp": "2026-04-28T02:37:16.943Z"
+  },
+  {
+    "role": "assistant",
+    "content": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？",
+    "timestamp": "2026-04-28T02:37:16.943Z",
+    "skill": "travel-expense-apply"
+  },
+  {
+    "role": "user",
+    "content": "下周三去上海出差，3000元，财务科",
+    "timestamp": "2026-04-28T02:37:42.131Z"
+  },
+  {
+    "role": "assistant",
+    "content": "\n\n系统接口异常，请稍后重试。",
+    "timestamp": "2026-04-28T02:37:42.131Z",
+    "skill": "travel-expense-apply"
+  }
+]

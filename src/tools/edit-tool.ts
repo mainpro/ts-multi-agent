@@ -35,7 +35,7 @@ export class EditTool implements Tool {
       : path.join(context.workDir, filePath);
 
     // P0-2: 路径安全检查
-    const pathCheck = PathGuard.checkPath(fullPath);
+    const pathCheck = await PathGuard.checkPath(fullPath, context.workDir);
     if (!pathCheck.safe) {
       return { success: false, error: pathCheck.reason };
     }

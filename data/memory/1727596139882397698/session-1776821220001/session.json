@@ -1,0 +1,59 @@
+{
+  "sessionId": "session-1776821220001",
+  "userId": "1727596139882397698",
+  "createdAt": "2026-04-28T02:37:00.208Z",
+  "updatedAt": "2026-04-28T02:37:42.131Z",
+  "requests": [
+    {
+      "requestId": "req-1777343822771-fuf7a",
+      "content": "我要出差",
+      "status": "completed",
+      "createdAt": "2026-04-28T02:37:02.772Z",
+      "updatedAt": "2026-04-28T02:37:16.943Z",
+      "suspendedAt": null,
+      "suspendedReason": null,
+      "questions": [],
+      "currentQuestion": null,
+      "tasks": [
+        {
+          "taskId": "plan-1777343832779-task-1",
+          "content": "用户要出差，需要申请差旅",
+          "status": "pending",
+          "skillName": "travel-expense-apply",
+          "createdAt": "2026-04-28T02:37:12.779Z",
+          "updatedAt": "2026-04-28T02:37:12.779Z",
+          "result": null,
+          "questions": [],
+          "currentQuestion": null
+        }
+      ],
+      "result": "\n\n您好！我可以帮您申请差旅费用。您可以选择：\n\n1. **快速模式（推荐）**：直接告诉我出差相关信息，比如\"下周三去上海出差，3000元，财务科\"\n2. **引导模式**：我一步步引导您填写每个字段\n\n请告诉我您想选择哪种模式？"
+    },
+    {
+      "requestId": "req-1777343843785-v28xt",
+      "content": "下周三去上海出差，3000元，财务科",
+      "status": "completed",
+      "createdAt": "2026-04-28T02:37:23.785Z",
+      "updatedAt": "2026-04-28T02:37:42.131Z",
+      "suspendedAt": null,
+      "suspendedReason": null,
+      "questions": [],
+      "currentQuestion": null,
+      "tasks": [
+        {
+          "taskId": "plan-1777343853605-task-1",
+          "content": "申请差旅费用，出差时间：下周三，目的地：上海，金额：3000元，部门：财务科",
+          "status": "pending",
+          "skillName": "travel-expense-apply",
+          "createdAt": "2026-04-28T02:37:33.605Z",
+          "updatedAt": "2026-04-28T02:37:33.605Z",
+          "result": null,
+          "questions": [],
+          "currentQuestion": null
+        }
+      ],
+      "result": "\n\n系统接口异常，请稍后重试。"
+    }
+  ],
+  "activeRequestId": null
+}

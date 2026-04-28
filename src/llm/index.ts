@@ -700,6 +700,20 @@ export class LLMClient {
       } catch (error) {
         console.log('[LLM] 流式请求错误:', error);
 
+        // 区分 AbortError（超时）和其他网络错误
+        const errObj = error instanceof Error ? error : null;
+        const isAbort = errObj?.name === 'AbortError';
+
+        if (isAbort) {
+          lastError = new LLMError('TIMEOUT', `LLM 流式请求超时 (${this.timeoutMs}ms)`);
+          if (attempt < this.maxRetries - 1) {
+            const delay = Math.pow(2, attempt) * 1000;
+            console.log(`[LLM] ⏱️ 流式请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
+            await this.sleep(delay);
+          }
+          continue;
+        }
+
         if (error instanceof LLMError) {
           lastError = error;
           if (error.type === 'INVALID_KEY') throw error;
@@ -1125,6 +1139,20 @@ export class LLMClient {
         };
       } catch (error) {
         console.log('[LLM] 工具调用请求错误:', error);
+
+        // 区分 AbortError（超时）和其他网络错误
+        const errObj = error instanceof Error ? error : null;
+        const isAbort = errObj?.name === 'AbortError';
+
+        if (isAbort) {
+          lastError = new LLMError('TIMEOUT', `LLM 请求超时 (${this.timeoutMs}ms)`);
+          if (attempt < this.maxRetries - 1) {
+            const delay = Math.pow(2, attempt) * 1000;
+            console.log(`[LLM] ⏱️ 请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
+            await this.sleep(delay);
+          }
+          continue;
+        }
 
         if (error instanceof LLMError) {
           lastError = error;

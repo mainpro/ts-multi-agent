@@ -1,10 +1,7 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { Tool, ToolContext, ToolResult } from './interfaces';
 import { PathGuard } from '../security/path-guard';
+import { Sandbox } from '../security/sandbox';
 import { getAccessToken } from '../context/request-context';
-
-const execAsync = promisify(exec);
 
 export interface BashInput {
   command: string;
@@ -22,55 +19,62 @@ export class BashTool implements Tool {
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { command, timeout = 30000 } = input as BashInput;
-    
+
     if (!command) {
       return { success: false, error: 'command is required' };
     }
 
-    // P0-2: 命令安全检查
+    // P0-2: 命令安全检查（前置防线）
     const cmdCheck = PathGuard.checkBashCommand(command);
     if (!cmdCheck.safe) {
       return { success: false, error: cmdCheck.reason };
     }
 
     try {
-      // 从请求上下文获取 accessToken，注入到子进程环境变量
+      // 构建环境变量
       const accessToken = getAccessToken();
-      const env = accessToken
-        ? { ...process.env, SKILL_ACCESS_TOKEN: accessToken }
-        : process.env;
+      const env: Record<string, string> = accessToken
+        ? { ...process.env as Record<string, string>, SKILL_ACCESS_TOKEN: accessToken }
+        : process.env as Record<string, string>;
 
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: context.workDir,
+      // P3-1: 使用沙箱执行（隔离防线）
+      const result = await Sandbox.execute(command, context.workDir, {
+        allowedDirs: [context.workDir],
+        network: false,   // 默认禁用网络
         timeout,
-        maxBuffer: 1024 * 1024 * 10, // 10MB
-        env,
+        env,              // 传递环境变量（含 SKILL_ACCESS_TOKEN）
       });
+
+      if (result.exitCode !== 0) {
+        return {
+          success: false,
+          error: [
+            `Command failed (exit ${result.exitCode}): ${command}`,
+            result.stdout ? `\n[stdout]:\n${result.stdout}` : '',
+            result.stderr ? `\n[stderr]:\n${result.stderr}` : '',
+          ].join(''),
+          data: {
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            exitCode: result.exitCode,
+            sandboxed: result.sandboxed,
+          },
+        };
+      }
 
       return {
         success: true,
         data: {
-          stdout: stdout || '(empty)',
-          stderr: stderr || '(empty)',
+          stdout: result.stdout || '(empty)',
+          stderr: result.stderr || '(empty)',
           exitCode: 0,
+          sandboxed: result.sandboxed,
         },
       };
     } catch (error: any) {
-      const errorMsg = [
-        `Command failed: ${command}`,
-        error.stdout ? `\n[stdout]:\n${error.stdout}` : '',
-        error.stderr ? `\n[stderr]:\n${error.stderr}` : '',
-        error.message && !error.stdout && !error.stderr ? `\n[error]: ${error.message}` : '',
-      ].join('');
-
       return {
         success: false,
-        error: errorMsg,
-        data: {
-          stdout: error.stdout || '',
-          stderr: error.stderr || '',
-          exitCode: error.code || 1,
-        },
+        error: `Sandbox execution error: ${error.message}`,
       };
     }
   }
