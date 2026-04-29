@@ -7,10 +7,25 @@ const { getAuthHeaders } = require(path.join(__dirname, 'token-manager'));
 const BASE_URL = process.env.TRAVEL_APPLY_BASE_URL || 'http://221.224.251.134:6770/api/';
 const SAVE_ENDPOINT = '/edo-reimburse/applyTravel/saveApplyTravel';
 
+function safeJsonParse(str) {
+  const safe = str.replace(
+      /("(?:[^"\\]|\\.)*")|(\b\d{16,}\b)/g,
+      (match, str, num) => num ? `"${num}"` : match
+  );
+  return JSON.parse(safe);
+}
+
+function safeJsonStringify(obj) {
+  return JSON.stringify(obj).replace(
+      /"(-?\d{16,})"/g,
+      '$1'
+  );
+}
+
 function post(url, data) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
-    const body = JSON.stringify(data);
+    const body = safeJsonStringify(data);
     const req = http.request({
       hostname: urlObj.hostname,
       port: urlObj.port,
@@ -28,7 +43,7 @@ function post(url, data) {
       res.on('end', () => {
         try {
           const raw = Buffer.concat(chunks).toString();
-          resolve(JSON.parse(raw));
+          resolve(safeJsonParse(raw));
         } catch (e) {
           reject(new Error('Invalid response: ' + e.message));
         }
@@ -60,13 +75,16 @@ function buildPayload(formData) {
     applyOrgId: formData.applyOrgId,
     applyOrgCode: formData.applyOrgCode,
     applyOrgName: formData.applyOrgName,
-    approvalStatus: 'sp',
+    approvalStatus: 'dtj',
     costOrgId: formData.costOrgId,
     costOrgCode: formData.costOrgCode,
     costOrgName: formData.costOrgName,
     enterpriseId: formData.enterpriseId,
     enterpriseCode: formData.enterpriseCode,
     enterpriseName: formData.enterpriseName,
+    costCenterId: formData.costCenterId,
+    costCenterCode: formData.costCenterCode,
+    costCenterName: formData.costCenterName,
     costId: formData.costId,
     costCode: formData.costCode,
     costName: formData.costName,
@@ -94,7 +112,7 @@ async function main() {
 
   let formData;
   try {
-    formData = JSON.parse(input);
+    formData = safeJsonParse(input);
   } catch (e) {
     console.error(JSON.stringify({ error: 'Invalid JSON: ' + e.message, code: 400 }));
     process.exit(1);
@@ -129,7 +147,7 @@ async function main() {
 
   try {
     const result = await post(BASE_URL + SAVE_ENDPOINT, payload);
-    console.log(JSON.stringify(result));
+    console.log(safeJsonStringify(result));
     process.exit(result.code === 200 ? 0 : 1);
   } catch (err) {
     console.error(JSON.stringify({ error: err.message, code: 500 }));

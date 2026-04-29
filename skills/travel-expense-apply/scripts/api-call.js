@@ -6,13 +6,28 @@ const { getAuthHeaders } = require(path.join(__dirname, 'token-manager'));
 
 const BASE_URL = process.env.TRAVEL_APPLY_BASE_URL || 'http://221.224.251.134:6770/api/';
 
+function safeJsonParse(str) {
+  const safe = str.replace(
+      /("(?:[^"\\]|\\.)*")|(\b\d{16,}\b)/g,
+      (match, str, num) => num ? `"${num}"` : match
+  );
+  return JSON.parse(safe);
+}
+
+function safeJsonStringify(obj) {
+  return JSON.stringify(obj).replace(
+      /"(-?\d{16,})"/g,
+      '$1'
+  );
+}
+
 function request(method, url, data) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const isGet = method.toUpperCase() === 'GET';
     let body = '';
     if (!isGet && data) {
-      body = JSON.stringify(data);
+      body = safeJsonStringify(data);
     }
     const req = http.request({
       hostname: urlObj.hostname,
@@ -30,7 +45,7 @@ function request(method, url, data) {
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString()));
+          resolve(safeJsonParse(Buffer.concat(chunks).toString()));
         } catch (e) {
           reject(new Error('Invalid response JSON: ' + e.message));
         }
@@ -54,7 +69,7 @@ async function main() {
   }
 
   let args;
-  try { args = JSON.parse(input); } catch (e) {
+  try { args = safeJsonParse(input); } catch (e) {
     console.error(JSON.stringify({ error: 'Invalid JSON: ' + e.message, code: 400 }));
     process.exit(1);
   }
@@ -70,15 +85,15 @@ async function main() {
 
   if (args.params && Object.keys(args.params).length > 0) {
     const qs = Object.entries(args.params)
-      .filter(([, v]) => v !== null && v !== undefined && v !== '')
-      .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
-      .join('&');
+        .filter(([, v]) => v !== null && v !== undefined && v !== '')
+        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+        .join('&');
     if (qs) fullUrl += '?' + qs;
   }
 
   try {
     const result = await request(method, fullUrl, args.body || null);
-    console.log(JSON.stringify(result));
+    console.log(safeJsonStringify(result));
     process.exit(result.code === 200 ? 0 : 1);
   } catch (err) {
     console.error(JSON.stringify({ error: err.message, code: 500 }));

@@ -51,9 +51,9 @@ allowedTools:
 **自动进入快速模式的条件**：用户输入中包含以下信息中的至少3项：
 - 出差时间（如"下周三"、"4月20日"、"5.1到5.3"）
 - 出差地点（如"上海"、"北京"、"广州"）
-- 申请金额（如"3000元"、"5000块"、"2000美元"）
+- 申请金额（如"3000元"、"5000块"、"2000美元"、"1000"）
 - 预算部门（如"财务科"、"信息部"、"研发部"）
-- 业务描述（如"去洽谈业务"、"参加培训"、"开会"）
+- 业务描述（如"去洽谈业务"、"参加培训"、"开会"、"出差申请单"、"差旅申请单"、"差旅费用申请单"）
 
 **示例**：
 - ✅ "下周三去上海出差，3000元，财务科" → 自动进入快速模式
@@ -185,9 +185,9 @@ allowedTools:
 | costCenterId | searchCostCenterListByEnterpriseIdAndOrgId | `data[].id` |
 | costCenterCode | searchCostCenterListByEnterpriseIdAndOrgId | `data[].costCenterCode` |
 | costCenterName | searchCostCenterListByEnterpriseIdAndOrgId | `data[].costCenterName` |
-| costId | searchCostItemByOrgAndResourcePage | `data[].id` |
-| costCode | searchCostItemByOrgAndResourcePage | `data[].costCode` |
-| costName | searchCostItemByOrgAndResourcePage | `data[].costName` |
+| costId | searchCostItemByOrgAndResourcePage | `data.records[].costId` |
+| costCode | searchCostItemByOrgAndResourcePage | `data.records[].costCode` |
+| costName | searchCostItemByOrgAndResourcePage | `data.records[].costName` |
 | currencyId | searchCurrencyList | `data[].id` |
 | currencyCode | searchCurrencyList | `data[].currencyCode` |
 | currencyName | searchCurrencyList | `data[].currencyName` |
@@ -338,8 +338,8 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/costCenter/searchCo
 使用 bash 工具执行以下命令：
 ```bash
 # 查询费用项目列表（返回 data[].id, costCode, costName）
-# ⚠️ 此接口参数必须放在 body 中
-node scripts/api-call.js '{"method":"POST","path":"/edo-base/resourceCostDetail/searchCostItemByOrgAndResourcePage","body":{"resourceCode":"sqcl","orgId":"<costCenterId>","current":1,"size":10}}'
+# ⚠️ 此接口参数必须放在 params 中
+node scripts/api-call.js '{"method":"POST","path":"/edo-base/resourceCostDetail/searchCostItemByOrgAndResourcePage","params":{"resourceCode":"sqcl","orgId":"<costCenterId>","current":1,"size":10},"body":{}}'
 ```
 
 **步骤3：用户选择**
@@ -382,7 +382,7 @@ node scripts/api-call.js '{"method":"POST","path":"/edo-base/areas/seachAreasLis
 - `areasCode` = 所选项的 `areasCode`
 - `areasName` = 所选项的 `areasName`
 
-**同行人员**（可选，用户输入姓名）：
+**同行人员**（可选，默认申请人为同行人员，用户可输入姓名选择其他同行人）：
 
 使用 bash 工具执行以下命令：
 ```bash
