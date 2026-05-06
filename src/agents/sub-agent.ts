@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { SkillRegistry } from '../skill-registry';
 import { LLMClient, llmEvents } from '../llm';
 import {
@@ -61,6 +62,7 @@ export function detectQuestion(
     /请输入/,
     /请确认/,
     /请回复/,
+    /请告诉/,
     /需要您?(?:提供|确认|选择|输入|回复)/,
     /您?(?:希望|想要|需要).*(?:哪个|哪些|什么)/,
     /请.?问.*(?:多少|什么|哪个|哪些)/,
@@ -209,7 +211,7 @@ export class SubAgent {
     signal?: AbortSignal
   ): Promise<SubAgentInternalResult> {
     const skillRootDir = './skills/' + skill.name;
-    const absoluteSkillRootDir = require('path').resolve(skillRootDir);
+    const absoluteSkillRootDir = path.resolve(skillRootDir);
 
     // ===== v2: 构建增强的 system prompt =====
     const systemPrompt = buildSubAgentPrompt(
@@ -470,7 +472,7 @@ export class SubAgent {
       if (error.message.includes('not found') || error.message.includes('ENOENT')) {
         return { type: 'FATAL', message: error.message, code: 'FILE_NOT_FOUND' };
       }
-      if (error.message.includes('permission') || error.message.includes('EACCES')) {
+      if (/permission/i.test(error.message) || error.message.includes('EACCES')) {
         return { type: 'FATAL', message: 'Permission denied: ' + error.message, code: 'PERMISSION_DENIED' };
       }
       return { type: 'RETRYABLE', message: error.message, code: 'EXECUTION_ERROR' };

@@ -250,11 +250,6 @@ export interface Task {
   }>;
 }
 
-export interface ProfessionalSkill extends Skill {
-  type: 'professional';
-  targetAgent: 'reflector' | 'optimizer';
-}
-
 /**
  * LLM message for chat completions
  */
@@ -420,16 +415,6 @@ export interface TaskGraph {
   nodes: TaskGraphNode[];
   /** 拓扑排序后的执行层级（layers[0]=可立即执行, layers[1]=依赖layers[0]的任务...） */
   layers: string[][];
-}
-
-/**
- * 汇总判断结果
- */
-export interface SummaryJudgment {
-  /** 是否满足用户需求 */
-  completed: boolean;
-  /** 汇总文本 */
-  summary: string;
 }
 
 /**
@@ -697,19 +682,4 @@ export const TaskPlanSchema = z.object({
 // Type inference from schemas (for runtime validation)
 // ============================================================================
 
-/** Inferred SkillMetadata type from schema */
-export type SkillMetadataInferred = z.infer<typeof SkillMetadataSchema>;
-/** Inferred UserProfile type from schema */
-export type UserProfileInferred = z.infer<typeof UserProfileSchema>;
-/** Inferred Skill type from schema */
-export type SkillInferred = z.infer<typeof SkillSchema>;
-/** Inferred TaskError type from schema */
-export type TaskErrorInferred = z.infer<typeof TaskErrorSchema>;
-/** Inferred Task type from schema */
-export type TaskInferred = z.infer<typeof TaskSchema>;
-/** Inferred TaskResult type from schema */
-export type TaskResultInferred = z.infer<typeof TaskResultSchema>;
-/** Inferred RequirementAnalysis type from schema */
-export type RequirementAnalysisInferred = z.infer<typeof RequirementAnalysisSchema>;
-/** Inferred TaskPlan type from schema */
-export type TaskPlanInferred = z.infer<typeof TaskPlanSchema>;
+// Inferred types are available for internal use but not exported to avoid pollution

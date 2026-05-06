@@ -1,4 +1,4 @@
-import { Session, Request } from '../types';
+import { Session } from '../types';
 
 /**
  * 将 Session 结构转为 LLM 系统提示词
@@ -44,27 +44,6 @@ export function buildSessionPrompt(session: Session): string {
       parts.push(`- 请求ID: ${r.requestId}`);
       parts.push(`- 内容: "${r.content}"`);
       parts.push(`- 挂起原因: ${r.suspendedReason || '未知'}`);
-    });
-  }
-
-  return parts.join('\n');
-}
-
-/**
- * 为子智能体构建任务上下文提示词
- */
-export function buildTaskContextPrompt(request: Request, taskId: string): string {
-  const parts: string[] = ['## 当前任务上下文'];
-
-  parts.push(`### 所属请求`);
-  parts.push(`- 请求ID: ${request.requestId}`);
-  parts.push(`- 请求内容: "${request.content}"`);
-
-  const task = request.tasks.find(t => t.taskId === taskId);
-  if (task && task.questions.length > 0) {
-    parts.push('### 询问历史（请勿重复询问）');
-    task.questions.forEach((q, i) => {
-      parts.push(`${i + 1}. "${q.content}" → "${q.answer || '(等待回答)'}"`);
     });
   }
 

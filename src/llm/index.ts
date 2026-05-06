@@ -434,6 +434,14 @@ export class LLMClient {
 
         console.log('LLM request response status:', response.status);
 
+        // 先检查 HTTP 状态码，避免对非 JSON 响应调用 .json()
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw this.classifyError(response.status, {
+            message: errorText || `HTTP ${response.status}`,
+          });
+        }
+
         const data = (await response.json()) as GLMResponse;
         console.log('LLM request response data:', JSON.stringify(data, null, 2));
 
@@ -446,20 +454,18 @@ export class LLMClient {
           });
         }
 
-        if (!response.ok) {
-          console.log('LLM request not ok:', response.status);
-          throw this.classifyError(response.status);
-        }
-
         console.log('LLM request successful');
         return data;
       } catch (error) {
         console.log('LLM request error:', error);
 
-        // 区分外部取消、内部超时、其他错误
+        // 区分外部取消、内部超时（含流式读取超时）、其他错误
         const errObj = error instanceof Error ? error : null;
         const isExternalAbort = signal?.aborted && errObj?.name === 'AbortError';
-        const isInternalTimeout = !signal?.aborted && errObj?.name === 'AbortError';
+        const isInternalTimeout = !signal?.aborted && (
+          errObj?.name === 'AbortError' ||
+          (errObj?.message?.includes('流式读取超时'))
+        );
 
         if (isExternalAbort) {
           throw new LLMError('CANCELLED', 'Request cancelled by external signal');

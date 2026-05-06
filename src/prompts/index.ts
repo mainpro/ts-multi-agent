@@ -15,5 +15,4 @@ export {
 
 export {
   buildSessionPrompt,
-  buildTaskContextPrompt,
 } from './session-context-prompt';

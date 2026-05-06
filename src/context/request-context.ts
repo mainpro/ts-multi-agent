@@ -25,13 +25,6 @@ export interface RequestContextData {
 export const RequestContext = new AsyncLocalStorage<RequestContextData>();
 
 /**
- * 获取当前请求上下文
- */
-export function getRequestContext(): RequestContextData | undefined {
-  return RequestContext.getStore();
-}
-
-/**
  * 获取当前请求的 accessToken
  */
 export function getAccessToken(): string | undefined {

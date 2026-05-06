@@ -22,9 +22,9 @@ export class EditTool implements Tool {
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const params = input as Record<string, unknown>;
     // 向后兼容：支持 filePath、fileName 和 file_path 参数名
-    const filePath = params.filePath || params.fileName || params.file_path;
-    const oldString = params.oldString;
-    const newString = params.newString;
+    const filePath = String(params.filePath || params.fileName || params.file_path || '');
+    const oldString = String(params.oldString || '');
+    const newString = String(params.newString || '');
     
     if (!filePath || !oldString) {
       return { success: false, error: 'filePath and oldString are required' };
