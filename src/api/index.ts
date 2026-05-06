@@ -6,7 +6,6 @@ import { TaskQueue } from '../task-queue';
 import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
 import { llmEvents, ReasoningEvent } from '../llm';
-import { metrics } from '../observability/metrics';
 import { RequestContext } from '../context/request-context';
 
 interface ImageAttachment {
@@ -552,14 +551,6 @@ const response: TaskResultResponse = {
   );
 
   // ============================================================================
-  // P2-1: Prometheus 指标端点
-  // ============================================================================
-  app.get('/metrics', (_req, res) => {
-    res.type('text/plain');
-    res.send(metrics.toPrometheus());
-  });
-
-  // ============================================================================
   // P2-4: Plan Mode 执行确认端点
   // ============================================================================
   app.post('/tasks/execute', async (req, res) => {
@@ -655,37 +646,6 @@ if (updatedTask && result.success) {
   }
 
   return app;
-}
-
-/**
- * Start the API server
- */
-export function startAPIServer(
-  mainAgent: MainAgent,
-  skillRegistry: SkillRegistry,
-  taskQueue: TaskQueue,
-  port: number = 3000
-): void {
-  const app = createAPIServer(mainAgent, skillRegistry, taskQueue);
-
-  // Metrics endpoint
-  app.get('/metrics', (_req: Request, res: Response) => {
-    res.set('Content-Type', 'text/plain');
-    res.send(metrics.toPrometheus());
-  });
-
-  app.listen(port, () => {
-    console.log(`🚀 API server running on http://localhost:${port}`);
-    console.log(`📋 Available endpoints:`);
-    console.log(`   GET    /health`);
-    console.log(`   GET    /skills`);
-    console.log(`   GET    /tasks`);
-    console.log(`   POST   /tasks`);
-    console.log(`   GET    /tasks/:id`);
-    console.log(`   GET    /tasks/:id/result`);
-    console.log(`   DELETE /tasks/:id`);
-    console.log(`   GET    /metrics`);
-  });
 }
 
 export default createAPIServer;

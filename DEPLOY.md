@@ -27,8 +27,12 @@
 | 操作系统 | Linux / macOS | Ubuntu 22.04 LTS |
 | 内存 | 512MB | 2GB+ |
 | 磁盘 | 200MB | 1GB+ |
+| Shell | /bin/sh（必须） | /bin/bash |
 
-> **注意**：生产环境推荐使用 Node.js 运行编译后的代码，开发环境使用 Bun 以获得更快的重启速度。
+> **注意**：
+> - 生产环境推荐使用 Node.js 运行编译后的代码，开发环境使用 Bun 以获得更快的重启速度。
+> - 系统必须安装 `/bin/sh`（所有 Linux 发行版默认自带）。如果使用 `/bin/bash`，可获更好的命令兼容性，但非必须。
+> - 如需启用沙箱隔离（推荐），需安装 bubblewrap（见下方说明）。
 
 ---
 
@@ -236,57 +240,25 @@ curl -sf http://localhost:3000/health || echo "Service down!"
 
 ### 8.1 Dockerfile
 
-在项目根目录创建 `Dockerfile`：
+项目根目录已提供 `Dockerfile`，采用多阶段构建：
 
 ```dockerfile
 # ---- 构建阶段 ----
 FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-COPY package.json package-lock.json* bun.lock* ./
-RUN npm install
-
-COPY tsconfig.json ./
-COPY src/ ./src/
-RUN npm run build
+# 安装依赖 + TypeScript 编译
 
 # ---- 运行阶段 ----
 FROM node:20-alpine AS runner
-
-WORKDIR /app
-
-# 仅复制运行时所需文件
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-
-COPY --from=builder /app/dist ./dist
-COPY config/ ./config/
-
-# 创建非 root 用户
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
-
-EXPOSE 3000
-
-ENV NODE_ENV=production
-ENV PORT=3000
-
-CMD ["node", "dist/index.js"]
+# 安装 bubblewrap（沙箱隔离）+ bash（命令兼容性）
+# 关键：chmod u+s /usr/bin/bwrap — 解决容器内 user namespace 权限问题
+# 创建非 root 用户运行服务
 ```
+
+> **关于 bubblewrap setuid**：Docker 容器默认禁用了非特权 user namespace，bwrap 需要以 setuid root 权限运行才能创建隔离环境。Dockerfile 中已通过 `chmod u+s /usr/bin/bwrap` 处理。如果日志中出现 `Creating new namespace failed` 错误，请确认 bwrap 具有 setuid 权限：`ls -la /usr/bin/bwrap`（应显示 `-rwsr-xr-x`）。
 
 ### 8.2 .dockerignore
 
-```
-node_modules
-dist
-__tests__
-docs
-.git
-*.md
-.env
-.env.*
-```
+项目根目录已提供 `.dockerignore`，排除 `node_modules`、`dist`、`__tests__`、`.env` 等非必要文件，加速构建。
 
 ### 8.3 构建与运行
 
@@ -312,36 +284,7 @@ docker stop ts-multi-agent
 
 ### 8.4 Docker Compose
 
-创建 `docker-compose.yml`：
-
-```yaml
-version: '3.8'
-
-services:
-  ts-multi-agent:
-    build: .
-    container_name: ts-multi-agent
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    volumes:
-      - ./config:/app/config:ro
-      - ./data:/app/data
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M
-```
+项目根目录已提供 `docker-compose.yml`，包含健康检查和资源限制配置。
 
 ```bash
 # 启动
@@ -594,6 +537,71 @@ pm2 logs ts-multi-agent --lines 100
 docker logs --tail 100 -f ts-multi-agent
 ```
 
+### 12.6 沙箱系统
+
+系统内置了基于 bubblewrap（bwrap）的沙箱隔离机制，用于安全执行 bash 命令。
+
+#### 工作原理
+
+```
+用户命令 → PathGuard（命令过滤） → Sandbox（沙箱隔离） → 执行结果
+```
+
+- **PathGuard**：前置过滤器，拦截危险命令（如 `rm -rf /`、`sudo` 等）和敏感路径访问
+- **Sandbox**：使用 bubblewrap 创建隔离环境，限制文件系统和网络访问
+
+#### 安装 bubblewrap
+
+```bash
+# Ubuntu / Debian
+sudo apt install bubblewrap
+
+# Alpine Linux（Docker 常用基础镜像）
+apk add bubblewrap
+
+# CentOS / RHEL
+sudo yum install bubblewrap
+
+# 验证安装
+command -v bwrap  # 应输出 /usr/bin/bwrap
+```
+
+#### 判断沙箱是否生效
+
+查看日志中 `module: "Sandbox"` 的输出：
+
+**沙箱已启用**（bwrap 可用）：
+```json
+{"level":"info","module":"Sandbox","message":"bubblewrap 可用，沙箱隔离已启用"}
+{"level":"info","module":"Sandbox","message":"沙箱执行命令","command":"npm install","network":"isolated","shell":"/bin/bash"}
+{"level":"info","module":"Sandbox","message":"沙箱命令执行完成","exitCode":0}
+```
+
+**沙箱未启用**（bwrap 不可用，回退到直接执行）：
+```json
+{"level":"warn","module":"Sandbox","message":"bubblewrap 不可用，命令将在无隔离环境下直接执行"}
+{"level":"warn","module":"Sandbox","message":"命令在无隔离环境下执行","reason":"bubblewrap 不可用"}
+```
+
+#### 常见问题
+
+**Q: 日志中出现 `spawn /bin/bash ENOENT`**
+- **原因**：部署环境（如 Alpine Docker 镜像）默认没有 `/bin/bash`
+- **修复**：系统已自动回退到 `/bin/sh`，无需额外操作。如需 bash，安装即可：`apk add bash`
+
+**Q: 日志显示 `bubblewrap 不可用`**
+- **原因**：未安装 bubblewrap
+- **修复**：按上方说明安装，或确认容器镜像中包含 bwrap
+
+**Q: 命令执行报权限不足**
+- **原因**：沙箱默认禁用网络（`--unshare-net`），某些需要网络的命令（如 `npm install`）会失败
+- **说明**：这是预期行为。如需网络访问，需在代码中显式配置 `network: true`
+
+**Q: 日志中出现 `Creating new namespace failed`**
+- **原因**：Docker 容器默认禁用了非特权 user namespace，bwrap 无法创建隔离环境
+- **修复**：在 Dockerfile 中为 bwrap 设置 setuid 权限：`chmod u+s /usr/bin/bwrap`（项目 Dockerfile 已包含此配置）
+- **验证**：进入容器执行 `ls -la /usr/bin/bwrap`，应显示 `-rwsr-xr-x`（注意 `s` 标志）
+
 ---
 
 ## 附录：部署检查清单
@@ -610,3 +618,5 @@ docker logs --tail 100 -f ts-multi-agent
 - [ ] PM2 / Docker 进程管理已配置（生产环境）
 - [ ] 日志收集已配置
 - [ ] 防火墙规则已设置（仅开放 80/443 端口）
+- [ ] bubblewrap 已安装（`command -v bwrap`），沙箱隔离生效
+- [ ] 日志中确认 `module: "Sandbox"` 输出沙箱执行状态

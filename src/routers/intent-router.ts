@@ -477,7 +477,7 @@ export class IntentRouter {
   generateGuessQuestions(): { systems: string[]; fullResponse: string } {
     return {
       systems: [],
-      fullResponse: '您好，我帮您转到人工这边，让工程师进一步帮您排查一下。',
+      fullResponse: '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。',
     };
   }
 
@@ -577,6 +577,8 @@ export class IntentRouter {
         z.object({
           type: z.enum(['system_confirm', 'skill_confirm']),
           content: z.string(),
+          candidateSkills: z.array(z.string()).optional()
+            .describe('候选技能名列表（1-3个），仅 confirm_system 时需要填写'),
         }),
         z.object({}).transform(() => null)
       ]).nullable().optional()
@@ -652,14 +654,32 @@ ${userInput}
     }
 
     if (result.intent === 'confirm_system') {
-      const confirmOptions = systemNames.join('"、"');
+      // 使用 LLM 返回的候选系统列表（如果有），否则使用所有系统作为兜底
+      const candidateSkills = (result.question as any)?.candidateSkills as string[] | undefined;
+      let questionContent: string;
+
+      if (candidateSkills && candidateSkills.length > 0) {
+        // LLM 提供了候选系统，用它生成确认问题
+        const candidateNames = candidateSkills.map(skillName => {
+          const skill = this.skillRegistry.getAllMetadata().find(s => s.name === skillName);
+          return skill?.metadata?.systemName || skillName;
+        });
+        questionContent = `抱歉，我目前没有该系统的相关技能，请问您指的是以下哪个？\n${candidateNames.map(n => `- ${n}`).join('\n')}`;
+      } else {
+        // 兜底：列出所有系统
+        questionContent = `抱歉，我目前没有该系统的相关技能，请问您指的是以下哪个？\n${systemNames.map(n => `- ${n}`).join('\n')}`;
+      }
+
       return {
         intent: 'confirm_system',
         confidence: result.confidence || 0.9,
         tasks: [],
-        question: result.question || {
-          type: 'system_confirm',
-          content: `请问您说的是"${confirmOptions}"中的哪一个？`,
+        question: result.question && 'content' in result.question && result.question.content ? {
+          type: result.question.type,
+          content: result.question.content,
+        } : {
+          type: 'system_confirm' as const,
+          content: questionContent,
         },
       };
     }
@@ -715,7 +735,10 @@ ${userInput}
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
       tasks,
-      question: result.question,
+      question: result.question && 'content' in result.question ? {
+        type: result.question.type,
+        content: result.question.content,
+      } : result.question as any,
     };
   }
 

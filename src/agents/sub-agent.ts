@@ -181,6 +181,14 @@ export class SubAgent {
         ...cleanResult
       } = result;
 
+      // 防止 response 为空或 undefined 时返回无意义内容
+      if (!cleanResult.response) {
+        return {
+          success: false,
+          error: { type: 'FATAL', message: '任务执行异常：未能生成有效回复', code: 'EMPTY_RESPONSE' },
+        };
+      }
+
       return { success: true, data: cleanResult };
     } catch (error) {
       return { success: false, error: this.classifyError(error) };
@@ -311,8 +319,8 @@ export class SubAgent {
     // ===== v2: 跟踪工具调用 =====
     const trackedToolCalls: CompletedToolCall[] = [...(completedToolCalls || [])];
 
-    // ===== v2: 使用 generateWithToolsTracked =====
-    const result = await this.llm.generateWithToolsTracked(
+    // ===== v2: 使用 generateWithTools =====
+    const result = await this.llm.generateWithTools(
       messages,
       tools,
       async (toolCall) => {

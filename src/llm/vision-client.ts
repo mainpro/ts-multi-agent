@@ -1,6 +1,18 @@
 import { LLMError } from './index';
 
 /**
+ * Zod schema for VisionAnalysisResult validation
+ */
+import { z } from 'zod';
+
+const VisionAnalysisResultSchema = z.object({
+  system: z.string().optional(),
+  errorType: z.string().optional(),
+  description: z.string(),
+  suggestedAction: z.string().optional(),
+});
+
+/**
  * Vision analysis result structure
  */
 export interface VisionAnalysisResult {
@@ -13,18 +25,6 @@ export interface VisionAnalysisResult {
   /** Suggested action based on analysis */
   suggestedAction?: string;
 }
-
-/**
- * Zod schema for VisionAnalysisResult validation
- */
-import { z } from 'zod';
-
-export const VisionAnalysisResultSchema = z.object({
-  system: z.string().optional(),
-  errorType: z.string().optional(),
-  description: z.string(),
-  suggestedAction: z.string().optional(),
-});
 
 /**
  * Vision LLM client for analyzing images using GLM-4V-Flash API
@@ -273,12 +273,4 @@ export class VisionLLMClient {
     console.log('All retry attempts failed');
     throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
   }
-}
-
-/**
- * Create a default Vision LLM client instance
- * @returns VisionLLMClient instance
- */
-export function createVisionLLMClient(): VisionLLMClient {
-  return new VisionLLMClient();
 }

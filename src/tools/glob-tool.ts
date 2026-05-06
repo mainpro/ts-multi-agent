@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Tool, ToolContext, ToolResult } from './interfaces';
+import { PathGuard } from '../security/path-guard';
 
 export interface GlobInput {
   pattern: string;
@@ -24,6 +25,13 @@ export class GlobTool implements Tool {
     }
 
     const baseDir = cwd || context.workDir;
+
+    // P0-2: 路径安全检查
+    const pathCheck = await PathGuard.checkPath(baseDir, context.workDir);
+    if (!pathCheck.safe) {
+      return { success: false, error: pathCheck.reason };
+    }
+
     const results: string[] = [];
 
     async function walkDir(dir: string): Promise<void> {

@@ -54,7 +54,7 @@ export class FileReadTool extends BaseTool {
         const fullPath = params.filePath;
         
         // P0-2: 路径安全检查
-        const pathCheck = PathGuard.checkPath(fullPath);
+        const pathCheck = await PathGuard.checkPath(fullPath, context.workDir);
         if (!pathCheck.safe) {
           return { success: false, error: pathCheck.reason };
         }
@@ -86,7 +86,7 @@ export class FileReadTool extends BaseTool {
         const fullPath = path.join(searchPath, params.filePath);
 
         // P0-2: 路径安全检查
-        const pathCheck = PathGuard.checkPath(fullPath);
+        const pathCheck = await PathGuard.checkPath(fullPath, context.workDir);
         if (!pathCheck.safe) {
           return { success: false, error: pathCheck.reason };
         }

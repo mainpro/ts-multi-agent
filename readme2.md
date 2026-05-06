@@ -128,8 +128,7 @@ src/
 ├── config/
 │   └── fallback.ts             # 保底机制配置加载器
 ├── context/
-│   ├── dynamic-context.ts      # 动态上下文构建器
-│   └── claude-md-loader.ts     # CLAUDE.md 加载器
+│   └── dynamic-context.ts      # 动态上下文构建器
 ├── hooks/
 │   ├── types.ts                # HookEvent 枚举 + HookContext 接口
 │   └── hook-manager.ts         # 钩子管理器（全局单例）
@@ -137,8 +136,6 @@ src/
 │   ├── index.ts                # LLM 客户端（多 Provider + 并行工具执行）
 │   ├── error-recovery.ts       # 错误恢复管理器
 │   └── vision-client.ts        # 视觉模型客户端
-├── mcp/
-│   └── mcp-client.ts           # MCP 协议客户端（stdio + SSE）
 ├── memory/
 │   ├── index.ts                # 统一导出
 │   ├── memory-service.ts       # 统一记忆服务
@@ -148,9 +145,7 @@ src/
 │   ├── auto-compact.ts         # 四层上下文压缩
 │   └── token-counter.ts        # Token 精确计算
 ├── observability/
-│   ├── logger.ts               # 结构化 JSON 日志
-│   ├── log-manager.ts          # 日志管理器
-│   └── metrics.ts              # Prometheus 指标采集
+│   └── logger.ts               # 结构化 JSON 日志
 ├── planners/
 │   └── unified-planner.ts      # 统一规划器（合并分析+匹配+规划）
 ├── prompts/
@@ -357,14 +352,8 @@ src/
 ### 7.1 日志系统
 
 - 结构化 JSON 日志（`logger.ts`）
-- 日志管理器支持按模块配置日志级别（`log-manager.ts`）
 
-### 7.2 指标采集
-
-- Prometheus 格式指标端点（`GET /metrics`）
-- 内置指标：任务完成数、失败数、超时数、平均执行时间
-
-### 7.3 生命周期钩子
+### 7.2 生命周期钩子
 
 8 种 Hook 事件覆盖完整请求生命周期：
 
@@ -397,7 +386,7 @@ src/
 |--------|------|-----------|
 | **P0** | 安全加固 | 工具白名单（allowedTools）、默认安全工具集、PathGuard 增强 |
 | **P1** | 性能优化 | 并行工具调用（safe/unsafe 分组）、统一规划器（3→2 次 LLM 调用）、压缩后上下文重注入 |
-| **P2** | 可观测性 | Prometheus 指标、Hook 生命周期系统、技能热重载 |
+| **P2** | 可观测性 | Hook 生命周期系统、技能热重载 |
 | **P3** | 架构演进 | 弱依赖支持、错误记忆、执行路径追踪 |
 
 ---
@@ -442,7 +431,6 @@ src/
 | GET | `/tasks/:id/result` | 获取任务结果 |
 | DELETE | `/tasks/:id` | 取消任务 |
 | GET | `/sessions/:sessionId/history` | 获取会话历史 |
-| GET | `/metrics` | Prometheus 指标 |
 
 ---
 

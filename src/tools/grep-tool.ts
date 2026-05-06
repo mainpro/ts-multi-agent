@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Tool, ToolContext, ToolResult } from './interfaces';
+import { PathGuard } from '../security/path-guard';
 
 export interface GrepInput {
   pattern: string;
@@ -32,6 +33,13 @@ export class GrepTool implements Tool {
     }
 
     const baseDir = searchPath || context.workDir;
+
+    // P0-2: 路径安全检查
+    const pathCheck = await PathGuard.checkPath(baseDir, context.workDir);
+    if (!pathCheck.safe) {
+      return { success: false, error: pathCheck.reason };
+    }
+
     const matches: GrepMatch[] = [];
     const regex = new RegExp(pattern, 'gi');
 
