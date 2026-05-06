@@ -132,8 +132,7 @@ src/
 ├── config/
 │   └── fallback.ts           # 保底机制配置加载器
 ├── context/
-│   ├── dynamic-context.ts    # 动态上下文构建器
-│   └── claude-md-loader.ts   # CLAUDE.md 加载器
+│   └── dynamic-context.ts    # 动态上下文构建器
 ├── hooks/                    # 🆕 P2-2: Hooks 生命周期系统
 │   ├── types.ts              # HookEvent 枚举 + HookContext 接口
 │   └── hook-manager.ts       # Hook 管理器（注册/触发/隔离）
@@ -185,8 +184,7 @@ src/
 │   ├── context-tool.ts       # 上下文管理工具
 │   └── vision-analyze-tool.ts # 视觉分析工具
 ├── types/
-│   ├── index.ts              # 核心类型（+ 🆕 P0-4: LLMErrorType 扩展 + P3-4: weakDependencies）
-│   └── requirement-types.ts  # 需求拆解类型定义
+│   └── index.ts              # 核心类型（+ 🆕 P0-4: LLMErrorType 扩展 + P3-4: weakDependencies）
 └── user-profile/
     └── index.ts              # 用户画像服务
 ```
@@ -746,8 +744,8 @@ FALLBACK_CONFIG=ecommerce.md   # 电商业务
 | ZHIPU_API_KEY | 智谱 API Key | - |
 | NVIDIA_API_KEY | NVIDIA API Key | - |
 | OPENROUTER_API_KEY | OpenRouter API Key | - |
-| LLM_PROVIDER | LLM 提供商 | zhipu |
-| LLM_MODEL | 模型名称 | glm-4.5-air |
+| LLM_PROVIDER | LLM 提供商 | siliconflow |
+| LLM_MODEL | 模型名称 | Pro/MiniMaxAI/MiniMax-M2.5 |
 | FALLBACK_CONFIG | 保底机制配置文件 | fallback.md |
 
 ### 系统常量
@@ -841,23 +839,6 @@ const result = Sandbox.execute('cat /etc/passwd', '/workspace', {
 // bwrap 不可用时自动回退到直接执行并发出警告
 ```
 
-### MCP 协议集成
-
-`MCPClient` 支持通过 MCP 协议接入外部工具（JIRA、GitLab 等）：
-
-```typescript
-import { MCPClient } from './mcp/mcp-client';
-
-const mcp = new MCPClient();
-await mcp.connectServer({
-  name: 'jira',
-  transport: 'stdio',
-  command: 'npx',
-  args: ['@anthropic/mcp-server-jira'],
-});
-const result = await mcp.callTool('jira', 'search_issues', { jql: 'project=API' });
-```
-
 ### 分层编排器
 
 `Orchestrator` 将调度、监控、重规划逻辑从 MainAgent 中分离：
@@ -874,20 +855,15 @@ const result = await orchestrator.orchestrate(plan);
 
 ## 测试
 
-使用 vitest 运行测试：
+使用 bun:test 运行测试：
 
 ```bash
 # 运行全部测试
-npx vitest run
-
-# 运行优化项测试（66 个用例）
-npx vitest run __tests__/optimizations.test.ts
+bun test
 
 # TypeScript 编译检查
 npx tsc --noEmit
 ```
-
-**测试覆盖**: 66 个测试用例，覆盖 P0-P3 全部 18 项优化的核心逻辑。
 
 ---
 
@@ -903,9 +879,6 @@ cp .env.example .env
 
 # 启动
 bun run src/index.ts
-
-# 测试页面
-open http://localhost:3000/test.html
 ```
 
 ---
@@ -952,4 +925,4 @@ open http://localhost:3000/test.html
 | P3-4 | 弱依赖级联失败 | — | task-queue/index.ts, types/index.ts |
 | P3-5 | 分层编排器 | orchestrator/index.ts | — |
 
-**变更统计**: 新增 12 个文件，修改 14 个文件，66 个测试用例全部通过，TypeScript 编译零错误。
+**变更统计**: 新增 12 个文件，修改 14 个文件，测试用例全部通过，TypeScript 编译零错误。

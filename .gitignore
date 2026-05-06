@@ -32,5 +32,10 @@ bun.lockb
 *.tmp
 *.temp
 
+# Runtime data (preserve user-profile.json as template)
+data/memory/
+data/logs/
+.git.zip
+
 # omo
 .sisyphus

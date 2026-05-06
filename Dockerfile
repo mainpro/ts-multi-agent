@@ -3,7 +3,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json* bun.lock* ./
 RUN npm install
 
 COPY tsconfig.json ./
@@ -21,8 +21,8 @@ RUN apk add --no-cache bubblewrap bash && \
     chmod u+s /usr/bin/bwrap
 
 # 仅复制运行时所需文件
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+COPY package.json package-lock.json* bun.lock* ./
+RUN npm install --omit=dev
 
 COPY --from=builder /app/dist ./dist
 COPY config/ ./config/

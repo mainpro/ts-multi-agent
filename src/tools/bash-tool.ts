@@ -40,7 +40,7 @@ export class BashTool implements Tool {
       // P3-1: 使用沙箱执行（隔离防线）
       const result = await Sandbox.execute(command, context.workDir, {
         allowedDirs: [context.workDir],
-        network: false,   // 默认禁用网络
+        network: true,    // 允许网络访问（npm install、API 调用等需要）
         timeout,
         env,              // 传递环境变量（含 SKILL_ACCESS_TOKEN）
       });

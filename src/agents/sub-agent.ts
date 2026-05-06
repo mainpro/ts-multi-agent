@@ -319,8 +319,8 @@ export class SubAgent {
     // ===== v2: 跟踪工具调用 =====
     const trackedToolCalls: CompletedToolCall[] = [...(completedToolCalls || [])];
 
-    // ===== v2: 使用 generateWithToolsTracked =====
-    const result = await this.llm.generateWithToolsTracked(
+    // ===== v2: 使用 generateWithTools =====
+    const result = await this.llm.generateWithTools(
       messages,
       tools,
       async (toolCall) => {

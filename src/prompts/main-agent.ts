@@ -1,5 +1,6 @@
 import { SkillMetadata } from '../types';
 import { PromptBuilder } from './prompt-builder';
+import { getFallbackContent } from '../config/fallback';
 
 /**
  * 主智能体 SystemPrompt
@@ -80,6 +81,10 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与
 2. **关键词模糊匹配**：用户说的系统名没有精确匹配，但问题内容匹配关键词 → 反问确认
 3. **无法匹配**：用户说的系统和问题都无法匹配 → 返回 unclear
 
+### ⚠️ 系统名优先于会话上下文
+- 如果用户明确提到了某个系统名（如"BCC系统"、"OA系统"等），必须优先处理系统匹配，忽略当前会话上下文
+- 如果用户提到的系统名不在可用技能列表中，禁止自行猜测，必须返回 confirm_system 询问用户
+
 ### ✅ 多信号一致
 如果关键词命中和 Session/历史技能指向同一技能 → 提高置信度
 
@@ -98,6 +103,11 @@ export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个专业的意图识别与
   - 直接返回 unclear，不再继续猜测
 - **情况3**：根据systemName 完全匹配没有匹配到，根据关键词模糊匹配也无法确定
   - 返回 unclear
+- **情况4**：用户提到了一个不在可用技能列表中的系统名（如"BCC"、"OA"等），且无法确定对应哪个技能
+  - **禁止自行猜测匹配**，必须返回 confirm_system
+  - question.content 中必须包含你认为**最可能相关的 1-3 个候选系统**（基于关键词、问题内容、用户画像等信号推断），不要列出所有系统
+  - 示例：question.content = "您提到的BCC系统不在我的服务范围内，请问您指的是以下哪个？\n- 报销系统（EES）\n- GEAM影像系统"
+  - 如果完全无法猜测对应关系，返回 unclear
 
 
 ## 返回规则
@@ -265,26 +275,6 @@ function buildSkillsBlock(skills: SkillMetadata[]): string {
 }
 
 /**
- * 注入技能列表到主智能体 SystemPrompt
- */
-export function buildMainAgentPrompt(skills: SkillMetadata[]): string {
-  // 静态部分
-  const staticParts = [
-    { key: 'main-agent-base', content: MAIN_AGENT_SYSTEM_PROMPT }
-  ];
-  
-  // 动态部分
-  const skillsBlock = buildSkillsBlock(skills);
-  
-  const dynamicParts = [
-    `## 可用技能列表
-${skillsBlock}`
-  ];
-  
-  return PromptBuilder.build(staticParts, dynamicParts);
-}
-
-/**
  * 注入技能列表到技能匹配器 SystemPrompt
  */
 export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
@@ -303,7 +293,6 @@ export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
     })
     .join('; ');
   
-  const { getFallbackContent } = require('../config/fallback');
   const fallbackContent = getFallbackContent() || '## 决策规则\n请根据辅助信息判断用户意图并匹配技能';
   
   const dynamicParts = [
@@ -362,7 +351,6 @@ export default {
   SKILL_MATCHER_SYSTEM_PROMPT,
   TASK_PLANNER_SYSTEM_PROMPT,
   REPLAN_SYSTEM_PROMPT,
-  buildMainAgentPrompt,
   buildSkillMatcherPrompt,
   buildTaskPlannerPrompt,
   buildReplanPrompt,

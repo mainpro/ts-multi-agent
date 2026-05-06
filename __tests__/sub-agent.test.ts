@@ -226,5 +226,26 @@ describe('SubAgent', () => {
       const result = detectQuestion(null as any);
       expect(result).toBeNull();
     });
+
+    it('should not detect query results as questions (with toolCallResults context)', () => {
+      const result = detectQuestion(
+        '查询到3条记录，以下是结果：\n1. 记录A\n2. 记录B',
+        [{ name: 'conversation-get', result: '3 records' }]
+      );
+      expect(result).toBeNull();
+    });
+
+    it('should detect question with toolCallResults context', () => {
+      const result = detectQuestion(
+        '查询到3条记录，请问您需要哪个？',
+        [{ name: 'conversation-get', result: '3 records' }]
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('should detect question without toolCallResults', () => {
+      const result = detectQuestion('请确认是否继续执行此操作');
+      expect(result).toBeDefined();
+    });
   });
 });

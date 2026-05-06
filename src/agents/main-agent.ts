@@ -590,7 +590,7 @@ export class MainAgent {
       const tasksToExecute = tasksWithSkill;
 
       if (tasksToExecute.length === 0) {
-        assistantResponse = '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。';
+        assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
         sessionContextService.addAssistantMessage(sessionId, assistantResponse);
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
         return { success: true, data: { message: assistantResponse, type: 'unclear' } };
@@ -792,7 +792,7 @@ export class MainAgent {
       }
 
       if (hasTransferRequest) {
-        finalResponse = '您好，您的这个问题我暂时无法通过知识库解决，我帮您转到人工这边，让工程师进一步帮您排查一下。\n\n' + finalResponse;
+        finalResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。\n\n' + finalResponse;
       }
 
       assistantResponse = finalResponse;
