@@ -90,6 +90,10 @@ export class AutoCompactService {
       return messages;
     }
 
+    if (messages.length === 0) {
+      return messages;
+    }
+
     if (!this.llmClient) {
       console.log('[AutoCompact] No LLM client available');
       return messages;
@@ -151,5 +155,62 @@ export class AutoCompactService {
       total += await countTokens(content);
     }
     return total;
+  }
+
+  async sessionCompact(
+    messages: Message[],
+    context?: {
+      currentSkill?: string;
+      userProfile?: { department: string; commonSystems: string[] };
+    }
+  ): Promise<Message[]> {
+    if (messages.length === 0) {
+      return messages;
+    }
+
+    const importanceThreshold = 0.5;
+    const kept: Message[] = [];
+    const lowImportance: Message[] = [];
+
+    for (const msg of messages) {
+      const importance = (msg as any).importance ?? 0.5;
+      if (importance >= importanceThreshold) {
+        kept.push(msg);
+      } else {
+        lowImportance.push(msg);
+      }
+    }
+
+    if (lowImportance.length === 0) {
+      return this.autoCompact(kept, context as any);
+    }
+
+    return kept;
+  }
+
+  validateCompactSummary(original: Message[], summary: Message[]): { valid: boolean; retainedEntities: string[]; missingEntities: string[] } {
+    const entityPatterns = /(?:[\u4e00-\u9fff]{2,}|[A-Z][\w-]+)/g;
+    const originalText = original.map(m => m.content).join(' ');
+    const summaryText = summary.map(m => m.content).join(' ');
+
+    const originalEntities = new Set((originalText.match(entityPatterns) || []).map(e => e.toLowerCase()));
+    const summaryEntities = new Set((summaryText.match(entityPatterns) || []).map(e => e.toLowerCase()));
+
+    const retainedEntities: string[] = [];
+    const missingEntities: string[] = [];
+
+    for (const entity of originalEntities) {
+      if (summaryEntities.has(entity)) {
+        retainedEntities.push(entity);
+      } else {
+        missingEntities.push(entity);
+      }
+    }
+
+    return {
+      valid: missingEntities.length === 0,
+      retainedEntities,
+      missingEntities,
+    };
   }
 }

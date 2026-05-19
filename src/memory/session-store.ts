@@ -367,16 +367,25 @@ export class SessionStore {
     const request = session.requests.find(r => r.requestId === requestId);
     if (!request) return;
 
-    request.status = 'completed';
     request.result = result;
     request.updatedAt = new Date().toISOString();
 
-    if (session.activeRequestId === requestId) {
+    // Use syncRequestStatus to derive status from tasks instead of hardcoding 'completed'.
+    // This prevents race conditions where a task was set to waiting_user_input
+    // (with currentQuestion) but completeRequest overwrote it to 'completed',
+    // causing subsequent user messages to not find the waiting request.
+    if (request.tasks.length > 0) {
+      this.syncRequestStatus(request);
+    } else {
+      request.status = 'completed';
+    }
+
+    if (request.status === 'completed' && session.activeRequestId === requestId) {
       session.activeRequestId = null;
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ✅ 完成请求: ${requestId}`);
+    console.log(`[SessionStore] ✅ 完成请求: ${requestId} (status=${request.status})`);
   }
 
   /**

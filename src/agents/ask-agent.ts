@@ -3,12 +3,12 @@ import { SessionStore } from '../memory/session-store';
 import { QAEntry, ContinuationResult, HandleResult, Request } from '../types';
 
 /**
- * RequestManager — 请求生命周期管理器
+ * AskAgent — 询问系统智能体
  *
  * 核心职责：
- * 1. 判断用户输入是延续回答还是新请求
- * 2. 管理请求的创建、挂起、召回
- * 3. 确保请求状态和任务状态一致
+ * 1. 判断用户输入是对问题的回答还是其他意图（新请求/话题切换）
+ * 2. 管理询问的生命周期：创建、等待回答、判断意图
+ * 3. 确保用户输入被正确路由到对应的处理流程
  */
 
 const CONTINUATION_JUDGE_PROMPT = `你是一个意图判断助手。你的唯一任务是判断用户最新的回复是否是对上一个问题的回答。
@@ -27,7 +27,7 @@ const CONTINUATION_JUDGE_PROMPT = `你是一个意图判断助手。你的唯一
 ## 输出格式（只输出JSON）
 {"isContinuation": boolean, "confidence": 0.0到1.0, "reason": "简要理由"}`;
 
-export class RequestManager {
+export class AskAgent {
   constructor(
     private sessionStore: SessionStore,
     private llm: LLMClient
@@ -41,7 +41,7 @@ export class RequestManager {
     sessionId: string,
     userInput: string
   ): Promise<HandleResult> {
-    console.log(`[RequestManager] 📥 处理用户输入: "${userInput.substring(0, 80)}..."`);
+    console.log(`[AskAgent] 📥 处理用户输入: "${userInput.substring(0, 80)}..."`);
 
     // 1. 检查是否有等待的请求
     const waitingRequest = await this.sessionStore.getWaitingRequest(userId, sessionId);
@@ -49,10 +49,10 @@ export class RequestManager {
       // 获取当前等待的问题（可能是主智能体或子智能体的）
       const currentQuestion = await this.sessionStore.getCurrentQuestion(userId, sessionId, waitingRequest.requestId);
       if (currentQuestion) {
-        console.log(`[RequestManager] 🔔 检测到等待请求: ${waitingRequest.requestId} (来源: ${currentQuestion.source})`);
+        console.log(`[AskAgent] 🔔 检测到等待请求: ${waitingRequest.requestId} (来源: ${currentQuestion.source})`);
 
         const judgeResult = await this.judgeContinuation(currentQuestion, userInput);
-        console.log(`[RequestManager] 🎯 延续判断: ${judgeResult.isContinuation} (置信度: ${judgeResult.confidence})`);
+        console.log(`[AskAgent] 🎯 延续判断: ${judgeResult.isContinuation} (置信度: ${judgeResult.confidence})`);
 
         if (judgeResult.isContinuation) {
           const updated = await this.sessionStore.answerQuestion(
@@ -66,7 +66,7 @@ export class RequestManager {
       }
 
       // 用户切换话题 → 挂起当前请求，创建新请求
-      console.log(`[RequestManager] 📌 用户切换话题，挂起请求 ${waitingRequest.requestId}`);
+      console.log(`[AskAgent] 📌 用户切换话题，挂起请求 ${waitingRequest.requestId}`);
       await this.sessionStore.suspendRequest(userId, sessionId, waitingRequest.requestId, '用户发起了新请求');
     }
 
@@ -101,7 +101,7 @@ export class RequestManager {
           : { isContinuation: false, confidence: parsed.confidence || 0.7, reason: parsed.reason || '未提供理由' };
       }
     } catch (error) {
-      console.warn('[RequestManager] 延续判断失败，默认为延续:', error);
+      console.warn('[AskAgent] 延续判断失败，默认为延续:', error);
     }
     return { isContinuation: true, confidence: 0.5 };
   }

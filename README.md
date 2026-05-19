@@ -471,13 +471,16 @@ interface Tool {
 
 ## 记忆与上下文系统
 
-### 三层记忆架构
+### 四层记忆架构
 
 | 层级 | 组件 | 存储 | 生命周期 | 用途 |
 |------|------|------|---------|------|
 | L1 | SessionContextService | 内存 (Map) | 会话级（30分钟过期） | 当前对话窗口状态、临时变量 |
 | L2 | ConversationMemoryService | 文件系统 (JSON) | 持久化（滑动窗口） | 对话历史记录 |
 | L3 | UserProfileService | 文件系统 (JSON) | 永久 | 用户画像（部门、常用系统、标签） |
+| L4 | LayeredMemoryService | 文件系统 (JSON) | 按类型TTL | Working/Episodic/Semantic/Procedural 分层记忆 |
+
+LayeredMemoryService 实现 4 层记忆（Working → Episodic → Semantic → Procedural），语义检索基于 3D 评分（recency/semantic/importance），共享记忆池支持多智能体协作。Round 2 深度优化新增：记忆去重（阈值 0.98）与合并（0.85）、LLM 重要性推理（含启发式降级）、自适应检索深度（置信度阈值 0.8/0.5）、TTL 过期淘汰、命中统计（hitCount/lastHitAt）、嵌入缓存、中文实体校验，以及 `scripts/migrate-memory.ts` 迁移 CLI。
 
 ### 四层上下文压缩
 

@@ -30,13 +30,23 @@ export class ErrorRecoveryManager {
     const actions: RecoveryAction[] = [];
 
     switch (error.type) {
-      case 'RATE_LIMIT':
+      case 'RATE_LIMIT': {
+        // 退避时间序列：10s → 30s → 60s
+        const backoffDelays = [10000, 30000, 60000];
+        let attempt = 0;
         actions.push({
           strategy: 'extended_backoff',
           description: '延长退避时间后重试（10s → 30s → 60s）',
-          execute: async () => true,
+          execute: async () => {
+            const delay = backoffDelays[Math.min(attempt, backoffDelays.length - 1)];
+            attempt++;
+            console.log(`[ErrorRecovery] RATE_LIMIT 退避等待 ${delay / 1000}s (第 ${attempt} 次)`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return true;
+          },
         });
         break;
+      }
 
       case 'TIMEOUT':
         actions.push({

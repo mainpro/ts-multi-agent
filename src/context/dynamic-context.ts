@@ -1,9 +1,5 @@
 import { MemoryService, UserMemory } from '../memory/memory-service';
 
-export interface DynamicContextConfig {
-  memoryDataDir?: string;
-}
-
 /**
  * Dynamic Context Builder for Multi-Agent System
  * 
@@ -12,11 +8,8 @@ export interface DynamicContextConfig {
 export class DynamicContextBuilder {
   private memoryService: MemoryService;
 
-  constructor(config: DynamicContextConfig = {}) {
-    const memoryDir = config.memoryDataDir || 'data';
-    this.memoryService = new MemoryService(memoryDir, {
-      storagePath: `${memoryDir}/memory`,
-    });
+  constructor(memoryService: MemoryService) {
+    this.memoryService = memoryService;
   }
 
   /**
@@ -73,7 +66,7 @@ export class DynamicContextBuilder {
       lines.push(`- **对话次数**: ${memory.profile.conversationCount}`);
     }
 
-    if (memory.conversationHistory && memory.conversationHistory.length > 0) {
+    if (memory.episodicEntries && memory.episodicEntries.length > 0) {
       lines.push('\n### 对话历史');
       const historyContext = this.memoryService.buildContextPrompt(memory);
       if (historyContext) {

@@ -107,15 +107,23 @@ export class TaskQueue {
    * @returns true if added successfully, false if rejected
    * @throws Error if circular dependency detected or queue full
    */
-  addTask(task: Task): boolean {
+  addTask(task: Task): { success: boolean; error?: string; taskId?: string } {
     if (this.tasks.size >= CONFIG.MAX_QUEUE_SIZE) {
-      throw new Error(
-        `Queue full: cannot exceed ${CONFIG.MAX_QUEUE_SIZE} tasks`,
-      );
+      // 尝试清理已完成的任务后再判断
+      this.cleanup();
+      if (this.tasks.size >= CONFIG.MAX_QUEUE_SIZE) {
+        return {
+          success: false,
+          error: `Queue full: cannot exceed ${CONFIG.MAX_QUEUE_SIZE} tasks`,
+        };
+      }
     }
 
     if (this.tasks.has(task.id)) {
-      throw new Error(`Task with ID "${task.id}" already exists`);
+      return {
+        success: false,
+        error: `Task with ID "${task.id}" already exists`,
+      };
     }
 
     for (const depId of task.dependencies) {
@@ -125,9 +133,10 @@ export class TaskQueue {
     }
 
     if (this.wouldCreateCycle(task)) {
-      throw new Error(
-        `Adding task "${task.id}" would create a circular dependency`,
-      );
+      return {
+        success: false,
+        error: `Adding task "${task.id}" would create a circular dependency`,
+      };
     }
 
     this.tasks.set(task.id, task);
@@ -141,7 +150,7 @@ export class TaskQueue {
 
     this.processQueue();
 
-    return true;
+    return { success: true, taskId: task.id };
   }
 
   getTask(taskId: string): Task | undefined {
@@ -289,7 +298,7 @@ export class TaskQueue {
     this.isProcessing = true;
 
     try {
-      const readyTasks = this.findReadyTasks();
+      const { tasks: readyTasks } = this.findReadyTasks();
 
       for (const task of readyTasks) {
         if (this.running.size >= CONFIG.MAX_CONCURRENT_SUBAGENTS) {
@@ -307,14 +316,15 @@ export class TaskQueue {
 
       if (
         this.running.size < CONFIG.MAX_CONCURRENT_SUBAGENTS &&
-        this.hasReadyTasks()
+        this.findReadyTasks().hasReady
       ) {
         setImmediate(() => this.processQueue());
       }
     }
   }
 
-  private findReadyTasks(): Task[] {
+  // #21: Merged findReadyTasks and hasReadyTasks into single method
+  private findReadyTasks(): { tasks: Task[]; hasReady: boolean } {
     const ready: Task[] = [];
 
     for (const task of this.tasks.values()) {
@@ -339,31 +349,7 @@ export class TaskQueue {
 
     ready.sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
 
-    return ready;
-  }
-
-  private hasReadyTasks(): boolean {
-    for (const task of this.tasks.values()) {
-      if (task.status !== "pending") {
-        continue;
-      }
-
-      // Skip tasks without skillName - these are tracking tasks, not execution tasks
-      if (!task.skillName) {
-        continue;
-      }
-
-      const allDepsCompleted = task.dependencies.every((depId) => {
-        const dep = this.tasks.get(depId);
-        return dep && dep.status === "completed";
-      });
-
-      if (allDepsCompleted) {
-        return true;
-      }
-    }
-
-    return false;
+    return { tasks: ready, hasReady: ready.length > 0 };
   }
 
   private async executeTask(task: Task): Promise<void> {
@@ -442,14 +428,16 @@ export class TaskQueue {
       return;
     }
 
-    const resultSize = JSON.stringify(result).length;
+    const resultStr = JSON.stringify(result);
+    const resultSize = resultStr.length;
     if (resultSize > this.MAX_RESULT_SIZE) {
       console.warn(
         `[TaskQueue] Task ${taskId} result exceeds size limit (${resultSize} bytes)`,
       );
       result = {
         warning: "Result truncated due to size limit",
-        partialResult: JSON.stringify(result).substring(0, 1000) + "...",
+        partialResult: resultStr.substring(0, 1000) + "...",
+        originalSize: resultSize,
       };
     }
 
@@ -463,7 +451,7 @@ export class TaskQueue {
       this.metrics.totalExecutionTime / this.metrics.tasksCompleted;
 
     this.emitter.emit('task-completed', { taskId, result });
-    this.notifyDependents(taskId);
+    // notifyDependents removed: processQueue() in finally block already handles dependent task scheduling
   }
 
   private failTask(
@@ -490,19 +478,8 @@ export class TaskQueue {
     this.failDependents(taskId, error);
   }
 
-  private notifyDependents(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      return;
-    }
-
-    for (const dependentId of task.dependents || []) {
-      const dependent = this.tasks.get(dependentId);
-      if (dependent && dependent.status === "pending") {
-        // Queue will be processed after current execution
-      }
-    }
-  }
+  // #20: notifyDependents removed - processQueue() in executeTask's finally block already handles scheduling
+  // private notifyDependents(taskId: string): void { ... }
 
   private failDependents(failedTaskId: string, error: TaskError): void {
     const failedTask = this.tasks.get(failedTaskId);

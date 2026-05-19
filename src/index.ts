@@ -8,6 +8,7 @@ import { MainAgent } from './agents/main-agent';
 import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
 import { Task, TaskResult } from './types';
+import { MemoryService } from './memory/memory-service';
 
 // 端口优先级：命令行参数 > 环境变量 > 默认值 3000
 function getPort(): number {
@@ -67,7 +68,8 @@ async function bootstrap() {
 
     // 4. Create SubAgent
     console.log('🤖 Initializing SubAgent...');
-    const subAgent = new SubAgent(skillRegistry, llmClient);
+    const sharedMemoryService = new MemoryService('data', {}, llmClient);
+    const subAgent = new SubAgent(skillRegistry, llmClient, sharedMemoryService);
     console.log('✅ SubAgent initialized\n');
 
     // 5. Create Task Queue with SubAgent as executor
@@ -119,19 +121,29 @@ async function bootstrap() {
   }
 }
 
-process.on('uncaughtException', (error) => {
+// #3/#18: 优雅关闭函数
+async function gracefulShutdown(exitCode: number = 0): Promise<void> {
+  console.log('[Shutdown] Graceful shutdown initiated...');
+  try {
+    skillRegistry?.stopWatch();
+  } catch (e) {
+    // ignore
+  }
+  process.exit(exitCode);
+}
+
+process.on('uncaughtException', async (error) => {
   console.error('❌ Uncaught Exception:', error);
-  process.exit(1);
+  await gracefulShutdown(1);
 });
 
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled Rejection:', reason);
-  process.exit(1);
+// #3: 不再直接 process.exit(1)，记录后让进程继续运行
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 process.on('SIGTERM', () => {
-  skillRegistry.stopWatch();
-  process.exit(0);
+  gracefulShutdown(0);
 });
 
 bootstrap();

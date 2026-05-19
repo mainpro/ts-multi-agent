@@ -99,13 +99,14 @@ export function buildSubAgentPrompt(
     dynamicParts.push(`## 技能根目录\n${skillRootDir}`);
   }
 
-  // 合并参数和用户 ID（排除 latestUserAnswer，它用于断点续执行而非 prompt 展示）
+  // 合并参数和用户 ID（排除内部使用的参数，它们有专门的处理路径）
   let mergedParams = { ...params };
   if (userId) {
     mergedParams.userId = userId;
   }
-  // 排除内部使用的参数
+  const conversationSummary = mergedParams.conversationSummary as string | undefined;
   delete mergedParams.latestUserAnswer;
+  delete mergedParams.conversationSummary;
 
   if (mergedParams && Object.keys(mergedParams).length > 0) {
     const paramsList = Object.entries(mergedParams)
@@ -131,6 +132,10 @@ export function buildSubAgentPrompt(
     dynamicParts.push(
       `## 已完成的执行步骤\n以下是之前已经执行过的步骤，**请勿重复执行**：\n${stepsSummary}`
     );
+  }
+
+  if (conversationSummary) {
+    dynamicParts.push(`## 之前的对话\n以下是之前与用户的对话记录，这些问题已经被回答，请不要重复询问：\n${conversationSummary}`);
   }
 
   if (questionHistory && questionHistory.length > 0) {

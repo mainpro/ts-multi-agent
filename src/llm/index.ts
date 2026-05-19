@@ -2,6 +2,7 @@ import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import { ErrorRecoveryManager } from './error-recovery';
 import { AutoCompactService } from '../memory/auto-compact';
+import { Agent } from 'undici';
 
 export type LLMEventType = 'reasoning' | 'response';
 
@@ -176,6 +177,16 @@ export class LLMClient {
   private provider: LLMProvider;
   private capabilities: ProviderCapabilities;
   private errorRecoveryManager: ErrorRecoveryManager;
+  
+  // HTTP connection pool for reuse
+  private agent: Agent;
+  
+  // Semaphore for limiting concurrent LLM requests
+  private static semaphore = {
+    max: CONFIG.LLM_MAX_CONCURRENT_REQUESTS,
+    current: 0,
+    queue: [] as (() => void)[],
+  };
 
   /**
    * Create a new LLM client
@@ -214,6 +225,41 @@ export class LLMClient {
     // 初始化错误恢复管理器
     const autoCompactService = new AutoCompactService(this);
     this.errorRecoveryManager = new ErrorRecoveryManager(autoCompactService);
+    
+    // 初始化 HTTP 连接池
+    this.agent = new Agent({
+      connect: {
+        keepAlive: true,
+        keepAliveInitialDelay: CONFIG.LLM_CONNECTION_KEEP_ALIVE_MS,
+      },
+      connections: CONFIG.LLM_CONNECTION_POOL_SIZE,
+    });
+  }
+  
+  /**
+   * Acquire a slot for concurrent request limiting
+   */
+  private async acquireSlot(): Promise<void> {
+    if (LLMClient.semaphore.current < LLMClient.semaphore.max) {
+      LLMClient.semaphore.current++;
+      return;
+    }
+    
+    return new Promise(resolve => {
+      LLMClient.semaphore.queue.push(() => {
+        LLMClient.semaphore.current++;
+        resolve();
+      });
+    });
+  }
+  
+  /**
+   * Release a slot after request completion
+   */
+  private releaseSlot(): void {
+    LLMClient.semaphore.current--;
+    const next = LLMClient.semaphore.queue.shift();
+    if (next) next();
   }
 
   private buildRequestBody(
@@ -374,6 +420,17 @@ export class LLMClient {
   }
 
   /**
+   * 统一的退避延迟计算，带 jitter
+   * @param attempt - 当前重试次数（从 0 开始）
+   * @param errorType - 错误类型，用于调整基础延迟
+   * @returns 延迟毫秒数
+   */
+  private getBackoffDelay(attempt: number, errorType?: string): number {
+    const baseDelay = errorType === 'RATE_LIMIT' ? 5000 : 2000;
+    return Math.min(Math.pow(2, attempt) * baseDelay + Math.random() * 1000, 60000);
+  }
+
+  /**
    * Make a request to the GLM API with timeout and retry logic
    * @param messages - Array of messages for the conversation
    * @param responseFormat - Optional response format (e.g., for JSON mode)
@@ -397,7 +454,7 @@ export class LLMClient {
       let onExternalAbort: (() => void) | undefined;
 
       try {
-        console.log(`LLM request attempt ${attempt + 1}/${this.maxRetries}`);
+        console.log(`[LLM] 请求 attempt ${attempt + 1}/${this.maxRetries}`);
 
         // 内部超时
         timeoutId = setTimeout(() => {
@@ -416,6 +473,9 @@ export class LLMClient {
         console.log('Sending LLM request to:', `${this.baseUrl}/chat/completions`);
         console.log('Request body:', JSON.stringify(requestBody, null, 2));
 
+        // Acquire slot for concurrent request limiting
+        await this.acquireSlot();
+        
         const response = await fetch(
           `${this.baseUrl}/chat/completions`,
           {
@@ -426,6 +486,8 @@ export class LLMClient {
             },
             body: JSON.stringify(requestBody),
             signal: controller.signal,
+            // @ts-expect-error undici dispatcher
+            dispatcher: this.agent,
           }
         );
 
@@ -523,6 +585,8 @@ export class LLMClient {
         if (onExternalAbort && signal) {
           signal.removeEventListener('abort', onExternalAbort);
         }
+        // Release slot for concurrent request limiting
+        this.releaseSlot();
       }
     }
 
@@ -622,10 +686,17 @@ export class LLMClient {
       throw new LLMError('CANCELLED', 'Request cancelled by external signal');
     }
 
+    // 总超时计时器（5 分钟），防止整个重试过程无限等待
+    const totalTimeoutController = new AbortController();
+    const totalTimeoutId = setTimeout(() => totalTimeoutController.abort(), 300000);
+    const onTotalTimeoutAbort = () => totalTimeoutController.abort();
+    signal?.addEventListener('abort', onTotalTimeoutAbort);
+
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       const controller = new AbortController();
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       let onExternalAbort: (() => void) | undefined;
+      let onTotalAbort: (() => void) | undefined;
 
       try {
         console.log(`[LLM] 流式请求 attempt ${attempt + 1}/${this.maxRetries}`);
@@ -639,7 +710,14 @@ export class LLMClient {
           signal.addEventListener('abort', onExternalAbort);
         }
 
+        // 总超时 → 转发到内部 controller
+        onTotalAbort = () => controller.abort();
+        totalTimeoutController.signal.addEventListener('abort', onTotalAbort);
+
         const requestBody = this.buildRequestBody(messages, { stream: true });
+
+        // Acquire slot for concurrent request limiting
+        await this.acquireSlot();
 
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -649,6 +727,8 @@ export class LLMClient {
           },
           body: JSON.stringify(requestBody),
           signal: controller.signal,
+          // @ts-expect-error undici dispatcher
+          dispatcher: this.agent,
         });
 
         // 清除初始连接超时，改为每次 read 独立超时
@@ -756,7 +836,7 @@ export class LLMClient {
         if (isInternalTimeout) {
           lastError = new LLMError('TIMEOUT', `LLM 流式请求超时 (${this.timeoutMs}ms)`);
           if (attempt < this.maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 1000;
+            const delay = this.getBackoffDelay(attempt, 'TIMEOUT');
             console.log(`[LLM] ⏱️ 流式请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
             await this.sleep(delay);
           }
@@ -767,13 +847,16 @@ export class LLMClient {
           lastError = error;
           if (error.type === 'INVALID_KEY') throw error;
           if (error.type === 'CANCELLED') throw error;
-          if (!error.type.includes('RATE_LIMIT') && !error.type.includes('SERVER')) throw error;
+          const retryableErrors = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
+          const isRetryable = retryableErrors.includes(error.type) ||
+            (error.type === 'API_ERROR' && error.statusCode && error.statusCode >= 500);
+          if (!isRetryable) throw error;
         } else {
           lastError = new LLMError('NETWORK_ERROR', error instanceof Error ? error.message : 'Unknown error');
         }
 
         if (attempt < this.maxRetries - 1) {
-          const delay = Math.pow(2, attempt) * 1000;
+          const delay = this.getBackoffDelay(attempt, lastError?.type);
           console.log(`[LLM] ${delay}ms 后重试`);
           await this.sleep(delay);
         }
@@ -782,7 +865,16 @@ export class LLMClient {
         if (onExternalAbort && signal) {
           signal.removeEventListener('abort', onExternalAbort);
         }
+        totalTimeoutController.signal.removeEventListener('abort', onTotalAbort!);
+        // Release slot for concurrent request limiting
+        this.releaseSlot();
       }
+    }
+
+    // 清理总超时
+    clearTimeout(totalTimeoutId);
+    if (signal) {
+      signal.removeEventListener('abort', onTotalTimeoutAbort);
     }
 
     throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
@@ -836,6 +928,14 @@ export class LLMClient {
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
         console.log('[LLM] [Tracked] No tool_calls in response, returning content directly');
+
+        // NOTE: 必须在返回前将 assistant 回复加入 trackedMessages，
+        // 否则纯对话技能的 conversationContext 会丢失 assistant 的提问，
+        // 导致断点续执行时 LLM 看不到历史问答而重复提问
+        trackedMessages.push({
+          role: 'assistant',
+          content: message.content || '',
+        });
 
         return {
           content: message.content || '',
@@ -1008,6 +1108,9 @@ export class LLMClient {
 
         const requestBody = this.buildRequestBody(messages, { tools, stream: false });
 
+        // Acquire slot for concurrent request limiting
+        await this.acquireSlot();
+
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -1016,6 +1119,8 @@ export class LLMClient {
           },
           body: JSON.stringify(requestBody),
           signal: controller.signal,
+          // @ts-expect-error undici dispatcher
+          dispatcher: this.agent,
         });
 
         if (timeoutId) clearTimeout(timeoutId);
@@ -1073,7 +1178,7 @@ export class LLMClient {
         if (isInternalTimeout) {
           lastError = new LLMError('TIMEOUT', `LLM 请求超时 (${this.timeoutMs}ms)`);
           if (attempt < this.maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 1000;
+            const delay = this.getBackoffDelay(attempt, 'TIMEOUT');
             console.log(`[LLM] ⏱️ 请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
             await this.sleep(delay);
           }
@@ -1093,7 +1198,7 @@ export class LLMClient {
         }
 
         if (attempt < this.maxRetries - 1) {
-          const delay = Math.pow(2, attempt) * 1000;
+          const delay = this.getBackoffDelay(attempt, lastError?.type);
           console.log(`[LLM] ${delay}ms 后重试`);
           await this.sleep(delay);
         }
@@ -1103,6 +1208,8 @@ export class LLMClient {
         if (onExternalAbort && signal) {
           signal.removeEventListener('abort', onExternalAbort);
         }
+        // Release slot for concurrent request limiting
+        this.releaseSlot();
       }
     }
 

@@ -24,7 +24,7 @@ export class UserProfileService {
     return {
       userId,
       department: '市场部',
-      commonSystems: ['报销系统', '差旅系统'],
+      commonSystems: [],
       tags: [],
       conversationCount: 0,
       lastActiveAt: now,

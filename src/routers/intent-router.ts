@@ -64,6 +64,14 @@ export interface AuxiliarySignals {
     commonSystems: string[];
     confidence: number;
   };
+
+  // 过程性经验（技能执行经验）
+  proceduralExperience?: {
+    skill: string;
+    usageCount: number;
+    lastSuccess: boolean;
+    confidence: number;
+  };
 }
 
 /**
@@ -268,7 +276,8 @@ export class IntentRouter {
     userInput: string,
     userProfile?: UserProfile,
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
-    sessionId?: string
+    sessionId?: string,
+    proceduralExperience?: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }>
   ): AuxiliarySignals {
     const trimmedInput = userInput.trim();
 
@@ -308,6 +317,17 @@ export class IntentRouter {
       };
     }
 
+    let proceduralSignal: AuxiliarySignals['proceduralExperience'] = undefined;
+    if (proceduralExperience && proceduralExperience.length > 0) {
+      const top = [...proceduralExperience].sort((a, b) => b.usageCount - a.usageCount)[0];
+      proceduralSignal = {
+        skill: top.skillName,
+        usageCount: top.usageCount,
+        lastSuccess: top.lastSuccess,
+        confidence: Math.min(0.90, 0.60 + top.usageCount * 0.05),
+      };
+    }
+
     return {
       sessionContext,
       keywordMatch,
@@ -317,6 +337,7 @@ export class IntentRouter {
         commonSystems: userProfile?.commonSystems || [],
         confidence: 0.60,
       },
+      proceduralExperience: proceduralSignal,
     };
   }
 
@@ -366,9 +387,9 @@ export class IntentRouter {
    * 3. 高置信度 → 快速返回
    * 4. 低置信度 → LLM 综合判断
    */
-  async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string): Promise<IntentResult> {
+  async classify(userInput: string, userProfile?: UserProfile, recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>, sessionId?: string, proceduralExperience?: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }>): Promise<IntentResult> {
     // Step 1: 收集所有信号
-    const signals = this.collectSignals(userInput, userProfile, recentHistory, sessionId);
+    const signals = this.collectSignals(userInput, userProfile, recentHistory, sessionId, proceduralExperience);
 
     // Step 2: 决策引擎判断
     const decision = this.decide(signals, userInput);
@@ -627,6 +648,11 @@ ${userInput}
 
     if (signals.userProfile.commonSystems.length > 0) {
       prompt += `\n- 常用系统: ${signals.userProfile.commonSystems.join(', ')}`;
+    }
+
+    if (signals.proceduralExperience) {
+      const pe = signals.proceduralExperience;
+      prompt += `\n- 技能执行经验: ${pe.skill} (执行${pe.usageCount}次, ${pe.lastSuccess ? '成功' : '有失败记录'}, 置信度${(pe.confidence * 100).toFixed(0)}%)`;
     }
 
     prompt += `\n\n【决策指导】

@@ -4,13 +4,13 @@ import { TaskQueue } from "../task-queue";
 import { IntentRouter } from "../routers";
 import { UnifiedPlanner } from "../planners";
 import { UserProfileService } from "../user-profile";
-import { MemoryService, sessionContextService } from "../memory";
+import { MemoryService, sessionContextService, MemoryLayer, SemanticExtractor } from "../memory";
 import { DynamicContextBuilder } from "../context/dynamic-context";
 import { AutoCompactService } from "../memory/auto-compact";
 import { buildReplanPrompt } from "../prompts";
 import { hookManager } from "../hooks/hook-manager";
 import { HookEvent } from "../hooks/types";
-import { RequestManager } from "./request-manager";
+import { AskAgent } from "./ask-agent";
 import { SessionStore } from "../memory/session-store";
 import { buildSessionPrompt } from "../prompts/session-context-prompt";
 import { z } from 'zod';
@@ -37,8 +37,9 @@ export class MainAgent {
   private memoryService: MemoryService;
   private dynamicContextBuilder: DynamicContextBuilder;
   private autoCompactService: AutoCompactService;
-  private requestManager: RequestManager;
+  private askAgent: AskAgent;
   private sessionStore: SessionStore;
+  private semanticExtractor: SemanticExtractor;
 
   constructor(
     private llm: LLMClient,
@@ -49,13 +50,12 @@ export class MainAgent {
     this.maxReplanAttempts = maxReplanAttempts;
     this.intentRouter = new IntentRouter(llm, this.skillRegistry);
     this.userProfileService = new UserProfileService("data");
-    this.memoryService = new MemoryService("data");
-    this.dynamicContextBuilder = new DynamicContextBuilder({
-      memoryDataDir: "data",
-    });
+    this.memoryService = new MemoryService("data", {}, this.llm);
+    this.dynamicContextBuilder = new DynamicContextBuilder(this.memoryService);
     this.autoCompactService = new AutoCompactService(llm);
     this.sessionStore = new SessionStore();
-    this.requestManager = new RequestManager(this.sessionStore, llm);
+    this.semanticExtractor = new SemanticExtractor(llm, this.memoryService, 30000);
+    this.askAgent = new AskAgent(this.sessionStore, llm);
   }
 
   async processRequirement(
@@ -83,12 +83,15 @@ export class MainAgent {
       }
 
       sessionContextService.addUserMessage(effectiveSessionId, requirement);
+      try {
+        await this.memoryService.saveUserMessage(userId, requirement);
+      } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
 
       // ========== 步骤 1: 图片分析 ==========
       if (imageAttachment) {
         console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`);
         try {
-          const VisionLLMClient = (await import("../llm/vision-client.js")).VisionLLMClient;
+          const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
           const visionClient = new VisionLLMClient();
           const visionResult = await visionClient.analyzeImage(
             imageAttachment.data.toString("base64"),
@@ -101,10 +104,9 @@ export class MainAgent {
         }
       }
 
-      // ========== 步骤 2: RequestManager 处理用户输入 ==========
-      const handleResult = await this.requestManager.handleUserInput(userId, effectiveSessionId, requirement);
-
-      console.log(`[MainAgent] 📊 RequestManager 结果: ${handleResult.type}`);
+      // ========== 步骤 2: AskAgent 处理用户输入 ==========
+      const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
+      console.log(`[MainAgent] 📊 AskAgent 结果: ${handleResult.type}`);
 
       switch (handleResult.type) {
         case 'continue':
@@ -207,11 +209,14 @@ export class MainAgent {
     console.log(`[MainAgent] 🔄 继续执行请求: ${request.requestId}`);
     console.log(`[MainAgent] 📝 问题: "${question.content.substring(0, 60)}..."`);
     console.log(`[MainAgent] 📝 回答: "${question.answer}"`);
+    console.log(`[MainAgent] 📝 question.taskId="${question.taskId || '(null)'}" question.source="${question.source || '?'}"`);
 
     // 找到关联的任务（如果有）
     const taskEntry = question.taskId
       ? request.tasks.find(t => t.taskId === question.taskId)
       : null;
+
+    console.log(`[MainAgent] 📝 taskEntry=${taskEntry ? taskEntry.taskId : 'NULL'}, request.tasks=[${request.tasks.map(t => `${t.taskId}(status=${t.status})`).join(', ')}]`);
 
     if (taskEntry) {
       // 检查是否有断点续传的执行进度
@@ -227,11 +232,15 @@ export class MainAgent {
         // 此时不能走 processNormalRequirement 重新执行（会重复派发任务），
         // 而是直接将回答作为结果返回
         console.warn(`[MainAgent] ⚠️ 任务 ${taskEntry.taskId} 在 TaskQueue 中不存在（可能服务重启），直接返回回答`);
+        try {
+          await this.memoryService.saveUserMessage(userId, question.answer || '');
+        } catch (e) { console.error('[MainAgent] Failed to save continued user message to memory:', e); }
         await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, taskEntry.taskId, {
           status: 'completed',
           currentQuestion: null,
         });
         this.syncRequestStatusAfterAnswer(userId, sessionId, request);
+        this.semanticExtractor.extract(userId, question.answer || '', `已记录您的回答：${question.answer}`, taskEntry.skillName || undefined).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
         return {
           success: true,
           data: {
@@ -254,12 +263,25 @@ export class MainAgent {
       task.params = task.params || {};
       task.params.latestUserAnswer = question.answer || '';
 
+      // conversationContext 可能缺少之前的问答（纯对话技能无工具调用时只有2条消息），
+      // 所以从 session.json 的 task.questions 中提取已回答的问答对作为补充上下文
+      const conversationSummary = taskEntry.questions
+        ?.filter((q: QAEntry) => q.answer)
+        ?.map((q: QAEntry, i: number) => `第${i + 1}轮:\n问: ${q.content.replace(/\n/g, ' ')}\n答: ${q.answer}`)
+        ?.join('\n\n') || '';
+      if (conversationSummary) {
+        task.params.conversationSummary = conversationSummary;
+      }
+
       // 重置任务状态
       task.status = "pending";
       task.result = undefined;
       task.error = undefined;
 
       console.log(`[MainAgent] 📝 任务已准备继续: ${taskEntry.taskId} (询问历史: ${task.questionHistory.length}条)`);
+
+      const ctxLen = task.conversationContext?.length ?? 0;
+      console.log(`[MainAgent] 📝 conversationContext entries: ${ctxLen}, completedToolCalls: ${task.completedToolCalls?.length ?? 0}`);
 
       this.taskQueue.triggerProcess();
       return this.pollTaskCompletion(taskEntry.taskId, userId, sessionId, request);
@@ -269,7 +291,7 @@ export class MainAgent {
     // 将回答作为上下文追加到需求中
     console.log(`[MainAgent] 💬 主智能体询问已回答，重新识别意图: "${question.content.substring(0, 40)}..." → "${question.answer}"`);
     const enrichedRequirement = `之前的对话：\n问：${question.content}\n答：${question.answer}\n\n现在请继续处理：${request.content}`;
-    return this.processNormalRequirement(enrichedRequirement, userId, sessionId, request, undefined);
+    return this.processNormalRequirement(enrichedRequirement, userId, sessionId, request, undefined, undefined, 1);
   }
 
   /**
@@ -423,6 +445,9 @@ export class MainAgent {
         if (status === 'completed' && result) {
           completedResults.set(taskId, result);
           allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'completed');
+          } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
 
           const skillData = (result as any)?.data;
           if (skillData?.status === 'waiting_user_input' && skillData.question) {
@@ -439,6 +464,9 @@ export class MainAgent {
             );
           }
         } else if (status === 'failed') {
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
+          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
           return { success: false, error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' } };
         }
       }
@@ -489,53 +517,91 @@ export class MainAgent {
     sessionId: string,
     request: Request,
     _imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
-    options?: { planMode?: boolean }
+    options?: { planMode?: boolean },
+    depth: number = 0,
   ): Promise<TaskResult> {
+    // 递归深度限制，防止无限递归
+    if (depth > 3) {
+      console.error(`[MainAgent] ❌ 递归深度超过限制 (${depth} > 3)，终止处理`);
+      return {
+        success: false,
+        error: { type: 'FATAL', message: '请求处理递归深度超过限制，请简化您的需求后重试', code: 'MAX_RECURSION_DEPTH' },
+      };
+    }
+
     let assistantResponse = '';
 
     try {
-      // ========== 上下文加载 ==========
+      // ========== 上下文加载（并行） ==========
       const skillsMetadata = this.skillRegistry.getAllMetadata();
       this.userProfileService.setSkillsMetadata(skillsMetadata);
 
-      const userProfile = await this.userProfileService.loadProfile(userId);
+      const [userProfile, memory, session, dynamicContext] = await Promise.all([
+        this.userProfileService.loadProfile(userId),
+        this.memoryService.loadUserMemory(userId),
+        this.sessionStore.loadSession(userId, sessionId),
+        this.dynamicContextBuilder.build(requirement, userId),
+      ]);
       console.log(`[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(", ")}`);
 
-      const memory = await this.memoryService.loadMemory(userId);
-      const messages = memory.conversationHistory.map((msg) => ({
-        role: msg.role,
-        content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
-        timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
+      // ========== 召回相关记忆 ==========
+      let recalledContext = '';
+      try {
+        const recalledResults = await this.memoryService.recall(userId, requirement, {
+          namespace: userId,
+          topK: 5,
+          layers: [MemoryLayer.EPISODIC, MemoryLayer.SEMANTIC, MemoryLayer.PROCEDURAL],
+        });
+        if (recalledResults.length > 0) {
+          const lines = recalledResults.map(r => {
+            const layer = r.entry.layer;
+            const content = r.entry.content;
+            return `[${layer}] ${content}`;
+          });
+          recalledContext = '\n[相关记忆]\n' + lines.join('\n');
+        }
+      } catch (e) { console.error('[MainAgent] Failed to recall memory:', e); }
+
+      let sharedContext = '';
+      try {
+        const sharedResults = await this.memoryService.retrieveShared('main-agent', requirement, { topK: 3 });
+        if (sharedResults.length > 0) {
+          sharedContext = '\n[共享记忆]\n' + sharedResults.map(r =>
+            `[${r.entry.metadata?.skillName || '未知技能'}] ${r.entry.content}`
+          ).join('\n');
+        }
+      } catch (e) { console.error('[MainAgent] Failed to retrieve shared memory:', e); }
+
+      // ========== 加载活跃任务（防止重复分派） ==========
+      const activeTasks = await this.memoryService.getActiveTasks(userId);
+      if (activeTasks.length > 0) {
+        console.log(`[MainAgent] 📋 活跃任务: ${activeTasks.length}个`);
+      }
+
+      const messages = memory.episodicEntries.map((entry) => ({
+        role: typeof entry.metadata?.role === 'string' ? entry.metadata.role : 'user',
+        content: entry.content,
+        timestamp: entry.createdAt ? new Date(entry.createdAt).getTime() : Date.now(),
       }));
+      this.autoCompactService.microCompact(messages);
+      await this.autoCompactService.checkAndCompact(messages);
 
-      const microCompactedMessages = this.autoCompactService.microCompact(messages);
-      const compactedMessages = await this.autoCompactService.checkAndCompact(microCompactedMessages);
-
-      const compactedHistory = compactedMessages.map((msg) => ({
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-        timestamp: new Date(msg.timestamp || Date.now()).toISOString(),
-      }));
-
-      const historyPrompt = this.memoryService.buildContextPrompt({
-        ...memory,
-        conversationHistory: compactedHistory,
-      });
+      const historyPrompt = this.memoryService.buildContextPrompt(memory);
 
       let enrichedRequirement = requirement;
       if (historyPrompt) {
-        enrichedRequirement = historyPrompt + "\n\n" + enrichedRequirement;
+        enrichedRequirement = historyPrompt + recalledContext + sharedContext + "\n\n" + enrichedRequirement;
+      } else if (recalledContext || sharedContext) {
+        enrichedRequirement = (recalledContext + sharedContext) + "\n\n" + enrichedRequirement;
       }
 
       // ========== 注入 Session 上下文到提示词 ==========
-      const session = await this.sessionStore.loadSession(userId, sessionId);
       const sessionPrompt = buildSessionPrompt(session);
       if (sessionPrompt) {
         enrichedRequirement = sessionPrompt + "\n\n" + enrichedRequirement;
         console.log(`[MainAgent] 📑 Session 上下文已注入`);
       }
 
-      const dynamicContext = await this.dynamicContextBuilder.build(requirement, userId);
       if (dynamicContext) {
         enrichedRequirement = dynamicContext + "\n\n" + enrichedRequirement;
       }
@@ -547,8 +613,29 @@ export class MainAgent {
         userId, sessionId, data: { requirement }
       });
 
+      const recentHistory = memory.episodicEntries.map(entry => ({
+        role: typeof entry.metadata?.role === 'string' ? entry.metadata.role : 'user',
+        content: entry.content,
+        skill: typeof entry.metadata?.skill === 'string' ? entry.metadata.skill : undefined,
+        system: typeof entry.metadata?.system === 'string' ? entry.metadata.system : undefined,
+      }));
+
+      let proceduralExperience: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }> | undefined;
+      try {
+        const proceduralResults = await this.memoryService.recall(userId, requirement, {
+          layers: [MemoryLayer.PROCEDURAL], topK: 5, namespace: userId,
+        });
+        proceduralExperience = proceduralResults
+          .filter(r => r.entry.metadata?.skillName)
+          .map(r => ({
+            skillName: r.entry.metadata!.skillName as string,
+            usageCount: (r.entry.metadata!.usageCount as number) || 0,
+            lastSuccess: (r.entry.metadata!.lastSuccess as boolean) ?? true,
+          }));
+      } catch (e) { console.error('[MainAgent] Failed to recall procedural memory:', e); }
+
       const intentResult = await this.intentRouter.classify(
-        requirement, userProfile, memory.conversationHistory, sessionId,
+        requirement, userProfile, recentHistory, sessionId, proceduralExperience,
       );
 
       await hookManager.emit(HookEvent.AFTER_INTENT_CLASSIFY, {
@@ -592,6 +679,9 @@ export class MainAgent {
       if (tasksToExecute.length === 0) {
         assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
         sessionContextService.addAssistantMessage(sessionId, assistantResponse);
+        try {
+          await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+        } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
         return { success: true, data: { message: assistantResponse, type: 'unclear' } };
       }
@@ -641,6 +731,9 @@ export class MainAgent {
       // 注册任务到请求中
       for (const taskDef of plan.tasks) {
         const uniqueTaskId = `${plan.id}-${taskDef.id}`;
+
+        const alreadyActive = activeTasks.some(t => t.metadata?.taskId === uniqueTaskId);
+
         const requestTask: RequestTask = {
           taskId: uniqueTaskId,
           content: taskDef.requirement,
@@ -653,6 +746,18 @@ export class MainAgent {
           currentQuestion: null,
         };
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);
+
+        if (!alreadyActive) {
+          try {
+            await this.memoryService.saveWorkingMemory(
+              userId,
+              uniqueTaskId,
+              taskDef.requirement || requirement,
+              'pending',
+              request.requestId,
+            );
+          } catch (e) { console.error('[MainAgent] Failed to save working memory:', e); }
+        }
       }
 
       console.log(`[MainAgent] 🔄 构建 TaskGraph 并执行`);
@@ -703,47 +808,14 @@ export class MainAgent {
             questions: [...(request.tasks.find(t => t.taskId === waitingTaskId)?.questions || []), qaEntry],
           });
 
-          sessionContextService.addAssistantMessage(sessionId, qaEntry.content);
-
-          return {
-            success: true,
-            data: {
-              message: qaEntry.content,
-              type: 'question',
-              question: qaEntry,
-              requestId: request.requestId,
-            },
-          };
-        }
-      }
-
-      // 兼容旧逻辑：遍历所有任务结果检查 waiting_user_input
-      for (const tr of taskResults) {
-        const skillResult = tr.result?.data;
-        if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
-          console.log(`[MainAgent] 🔄 检测到子任务 ${tr.taskId} 需要用户输入`);
-
-          const questionId = `q-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-          const qaEntry: QAEntry = {
-            questionId,
-            content: skillResult.question.content,
-            source: 'sub_agent',
-            taskId: tr.taskId,
-            skillName: tr.skillName || null,
-            answer: null,
-            answeredAt: null,
-            createdAt: new Date().toISOString(),
-          };
-
-          // 子智能体询问只放到任务级 questions，不放请求级
-          // 请求状态通过 syncRequestStatus 自动聚合为 waiting
-          await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, tr.taskId, {
-            currentQuestion: qaEntry,
-            status: 'waiting',
-            questions: [...(request.tasks.find(t => t.taskId === tr.taskId)?.questions || []), qaEntry],
-          });
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, waitingTaskId, 'waiting');
+          } catch (e) { console.error('[MainAgent] Failed to update working memory status to waiting:', e); }
 
           sessionContextService.addAssistantMessage(sessionId, qaEntry.content);
+          try {
+            await this.memoryService.saveAssistantMessage(userId, qaEntry.content, { skill: qaEntry.skillName || undefined });
+          } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
 
           return {
             success: true,
@@ -797,7 +869,10 @@ export class MainAgent {
 
       assistantResponse = finalResponse;
       sessionContextService.addAssistantMessage(sessionId, assistantResponse);
-      await this.memoryService.saveInteraction(userId, requirement, assistantResponse, { skill: taskList[0]?.skillName || '' });
+      try {
+        await this.memoryService.saveAssistantMessage(userId, assistantResponse, { skill: taskList[0]?.skillName || undefined });
+      } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+      this.semanticExtractor.extract(userId, requirement, assistantResponse, taskList[0]?.skillName || undefined).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
 
       return {
         success: result.success,
@@ -832,12 +907,18 @@ export class MainAgent {
     if (intentResult.intent === "small_talk") {
       assistantResponse = intentResult.question?.content || "您好！有什么可以帮助您的吗？";
       sessionContextService.addAssistantMessage(sessionId, assistantResponse);
+      try {
+        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
       return { success: true, data: { message: assistantResponse, type: "small_talk", requestId: request.requestId } };
     }
 
     if (intentResult.intent === "confirm_system") {
       assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
       sessionContextService.addAssistantMessage(sessionId, assistantResponse);
+      try {
+        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
 
       // 主智能体询问 → 记录到请求的 questions 中
       if (intentResult.question) {
@@ -870,6 +951,9 @@ export class MainAgent {
 
     assistantResponse = intentResult.question?.content || "";
     sessionContextService.addAssistantMessage(sessionId, assistantResponse);
+    try {
+      await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+    } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
     return { success: true, data: { message: assistantResponse, type: "unclear", requestId: request.requestId } };
   }
 
@@ -954,6 +1038,26 @@ ${resultsContext}
       }
 
       if (task.status === "failed") {
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
+          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
+
+          if (task.skillName) {
+            try {
+              const taskResult = task.result;
+              await this.memoryService.saveProceduralMemory(
+                userId,
+                task.skillName,
+                task.requirement,
+                task.params,
+                taskResult && typeof taskResult === 'object' && 'data' in taskResult && typeof (taskResult as any).data?.response === 'string'
+                  ? (taskResult as any).data.response.substring(0, 200)
+                  : undefined,
+                false,
+              );
+            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
+          }
+          this.semanticExtractor.extract(userId, task.requirement || '', (task.result && typeof task.result === 'object' && 'data' in task.result && typeof (task.result as any).data?.response === 'string') ? (task.result as any).data.response : JSON.stringify(task.result), task.skillName).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
         return {
           success: false,
           error: task.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' },
@@ -999,7 +1103,14 @@ ${resultsContext}
         questions: [...(request.tasks.find(t => t.taskId === task.id)?.questions || []), qaEntry],
       });
 
+      try {
+        await this.memoryService.updateWorkingMemoryStatus(userId, task.id, 'waiting');
+      } catch (e) { console.error('[MainAgent] Failed to update working memory status to waiting:', e); }
+
       sessionContextService.addAssistantMessage(sessionId, qaEntry.content);
+      try {
+        await this.memoryService.saveAssistantMessage(userId, qaEntry.content, { skill: qaEntry.skillName || undefined });
+      } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
 
       return {
         success: true,
@@ -1016,7 +1127,7 @@ ${resultsContext}
         tempVariables: new Map(),
       } as any);
       console.log(`[MainAgent] 🔄 检测到用户回复与当前任务无关，重新识别意图`);
-      return this.processNormalRequirement(request.content, userId, sessionId, request, undefined);
+      return this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1);
     }
 
     // 正常完成 → 更新请求中的任务状态
@@ -1024,6 +1135,24 @@ ${resultsContext}
       status: 'completed',
       result: skillData?.response || null,
     });
+
+    try {
+      await this.memoryService.updateWorkingMemoryStatus(userId, task.id, 'completed');
+    } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
+
+    if (task.skillName) {
+      try {
+        await this.memoryService.saveProceduralMemory(
+          userId,
+          task.skillName,
+          task.requirement || '',
+          task.params,
+          typeof skillData?.response === 'string' ? skillData.response.substring(0, 200) : undefined,
+          true,
+        );
+      } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
+      this.semanticExtractor.extract(userId, task.requirement || '', typeof skillData?.response === 'string' ? skillData.response : JSON.stringify(skillData), task.skillName).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+    }
 
     // 检查是否所有任务都已完成，如果是则完成请求
     const updatedSession = await this.sessionStore.loadSession(userId, sessionId);
@@ -1273,6 +1402,20 @@ ${resultsContext}
             result,
           });
 
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'completed');
+          } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
+
+          if (node.skillName) {
+            try {
+              await this.memoryService.saveProceduralMemory(
+                userId, node.skillName, node.content, undefined,
+                typeof result === 'string' ? result.substring(0, 200) : undefined,
+                true
+              );
+            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
+          }
+
           // 检查是否需要用户输入
           const skillData = (result as any)?.data;
           if (skillData?.status === 'waiting_user_input' && skillData.question) {
@@ -1297,6 +1440,17 @@ ${resultsContext}
           }
         } else if (status === 'failed') {
           console.error(`[MainAgent] ❌ 任务 ${taskId} 执行失败`);
+          try {
+            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
+          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
+          if (node.skillName) {
+            try {
+              await this.memoryService.saveProceduralMemory(
+                userId, node.skillName, node.content, undefined,
+                undefined, false
+              );
+            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
+          }
           return {
             success: false,
             error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
@@ -1489,7 +1643,8 @@ ${resultsContext}
       }
 
       return newPlan as TaskPlan;
-    } catch {
+    } catch (e) {
+      console.error('[MainAgent] Failed to replan:', e);
       return failedPlan;
     }
   }

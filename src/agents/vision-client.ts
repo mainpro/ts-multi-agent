@@ -1,4 +1,4 @@
-import { LLMError } from './index';
+import { LLMError } from '../llm/index';
 
 /**
  * Zod schema for VisionAnalysisResult validation

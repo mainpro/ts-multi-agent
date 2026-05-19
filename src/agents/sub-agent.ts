@@ -9,6 +9,7 @@ import { ToolRegistry, ToolContext, Tool } from '../tools';
 import { buildSubAgentPrompt } from '../prompts';
 import { hookManager } from '../hooks/hook-manager';
 import { HookEvent } from '../hooks/types';
+import { MemoryService } from '../memory/memory-service';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -113,11 +114,13 @@ export class SubAgent {
   private skillRegistry: SkillRegistry;
   private llm: LLMClient;
   private toolRegistry: ToolRegistry;
+  private memoryService?: MemoryService;
 
-  constructor(skillRegistry: SkillRegistry, llm: LLMClient) {
+  constructor(skillRegistry: SkillRegistry, llm: LLMClient, memoryService?: MemoryService) {
     this.skillRegistry = skillRegistry;
     this.llm = llm;
     this.toolRegistry = new ToolRegistry();
+    this.memoryService = memoryService;
   }
 
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
@@ -128,7 +131,11 @@ export class SubAgent {
       console.log('[SubAgent] 任务ID: ' + task.id + ' 技能: ' + task.skillName);
       console.log('[SubAgent] 用户ID: ' + task.userId);
       if (task.params) {
-        console.log('[SubAgent] 已获取参数: ' + JSON.stringify(task.params));
+        console.log('[SubAgent] 已获取参数: ' + JSON.stringify({
+          taskId: task.id,
+          skillName: task.skillName,
+          paramKeys: task.params ? Object.keys(task.params) : [],
+        }));
       }
 
       // ===== v2: 断点续执行检测 =====
@@ -136,6 +143,8 @@ export class SubAgent {
       if (isResuming) {
         console.log(`[SubAgent] 🔄 断点续执行模式: 恢复 ${task.conversationContext!.length} 条对话上下文`);
       }
+
+      console.log(`[SubAgent] 📊 execute() 入口状态: isResuming=${isResuming}, conversationContext=${task.conversationContext?.length ?? 'null'}, questionHistory=${task.questionHistory?.length ?? 0}, latestUserAnswer="${(task.params as any)?.latestUserAnswer ?? '(无)'}"`);
 
       if (!task.skillName) {
         return {
@@ -191,6 +200,26 @@ export class SubAgent {
         };
       }
 
+      // ===== 发布执行结果到共享记忆池 =====
+      if (this.memoryService && cleanResult.response) {
+        const responseText = cleanResult.response.substring(0, 200);
+        this.memoryService.shareMemory('sub-agent', {
+          id: `shared-${task.id}-${Date.now()}`,
+          layer: 'procedural' as any,
+          content: responseText,
+          metadata: {
+            publishedBy: 'sub-agent',
+            skillName: task.skillName,
+            taskId: task.id,
+            success: true,
+          },
+          importance: 0.7,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          namespace: 'shared/sub-agent',
+        }).catch(e => console.error('[SubAgent] Failed to publish to shared pool:', e));
+      }
+
       return { success: true, data: cleanResult };
     } catch (error) {
       return { success: false, error: this.classifyError(error) };
@@ -225,10 +254,9 @@ export class SubAgent {
 
     const allTools = this.toolRegistry.list();
 
-    // P0-1: 根据 allowedTools 过滤工具
-    const skillDef = await this.skillRegistry.loadFullSkill(skill.name);
-    const allowedToolNames = (skillDef?.allowedTools && skillDef.allowedTools.length > 0)
-      ? new Set(skillDef.allowedTools)
+    // P0-1: 根据 allowedTools 过滤工具（直接使用 execute 中已加载的 skill，避免重复加载）
+    const allowedToolNames = (skill.allowedTools && skill.allowedTools.length > 0)
+      ? new Set(skill.allowedTools)
       : DEFAULT_SAFE_TOOLS;
 
     const filteredTools = allTools.filter((tool: any) => allowedToolNames.has(tool.name));
@@ -293,9 +321,20 @@ export class SubAgent {
         console.log(`[SubAgent] 🔄 替换 system prompt（原长度: ${messages[0].content.length} → 新长度: ${refreshedSystemPrompt.length}）`);
         messages[0] = { role: 'system', content: refreshedSystemPrompt };
       } else {
-        // 如果没有 system 消息，在最前面插入
         console.log(`[SubAgent] 🔄 插入新的 system prompt（长度: ${refreshedSystemPrompt.length}）`);
         messages.unshift({ role: 'system', content: refreshedSystemPrompt });
+      }
+
+      // 纯对话技能的 conversationContext 可能只有 [system, user] 而缺少 assistant 提问，
+      // 仅靠 system prompt 中的询问历史文本不足以让 LLM 遵循"不重复提问"，
+      // 必须将问答对注入到消息流中，LLM 才会在正确的上下文中继续
+      const hasAssistantMessage = messages.some(m => m.role === 'assistant');
+      if (!hasAssistantMessage && questionHistory && questionHistory.length > 0) {
+        console.log(`[SubAgent] 🔧 conversationContext 缺少 assistant 消息，注入 ${questionHistory.length} 条问答对到对话历史`);
+        for (const qh of questionHistory) {
+          messages.push({ role: 'assistant', content: qh.question.content });
+          messages.push({ role: 'user', content: qh.answer });
+        }
       }
 
       // 追加用户最新回复（从 params 中获取）
@@ -317,6 +356,12 @@ export class SubAgent {
       }
       messages.push({ role: 'user', content: requirement });
     }
+
+    console.log(`[SubAgent] 📊 发送给LLM: messages=${messages.length}条, 分支=${(conversationContext && conversationContext.length > 0) ? '断点续执行' : '首次执行'}`);
+    messages.forEach((m, i) => {
+      const preview = typeof m.content === 'string' ? m.content.substring(0, 120).replace(/\n/g, '\\n') : `(non-string: ${typeof m.content})`;
+      console.log(`[SubAgent] 📊 msg[${i}]: role=${m.role} len=${typeof m.content === 'string' ? m.content.length : '?'} preview="${preview}..."`);
+    });
 
     // ===== v2: 跟踪工具调用 =====
     const trackedToolCalls: CompletedToolCall[] = [...(completedToolCalls || [])];
@@ -383,11 +428,24 @@ export class SubAgent {
               }
             });
 
-            // 记录工具调用
+            // 记录工具调用（截断过大的结果，避免无限累积）
+            const MAX_RESULT_LENGTH = 2000;
+            let truncatedResult: string;
+            if (typeof data === 'string') {
+              truncatedResult = data.length > MAX_RESULT_LENGTH
+                ? data.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + data.length + ' 字符]'
+                : data;
+            } else {
+              const jsonStr = JSON.stringify(data);
+              truncatedResult = jsonStr.length > MAX_RESULT_LENGTH
+                ? jsonStr.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + jsonStr.length + ' 字符]'
+                : jsonStr;
+            }
+
             trackedToolCalls.push({
               name: toolCall.name,
               arguments: toolCall.arguments,
-              result: data,
+              result: truncatedResult,
               timestamp: new Date(),
             });
 

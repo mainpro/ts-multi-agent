@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import { MainAgent } from '../agents/main-agent';
 import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
@@ -125,6 +126,33 @@ export function createAPIServer(
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
 
+  // Rate limiting middleware - 10000 requests per minute per IP (high limit for capacity testing)
+  const limiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 10000,
+    message: {
+      error: 'Too Many Requests',
+      message: 'Rate limit exceeded. Please try again later.',
+      code: 'RATE_LIMIT',
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use(limiter);
+
+  // Stricter rate limit for task submission - 1000 requests per minute per IP
+  const taskLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 1000,
+    message: {
+      error: 'Too Many Requests',
+      message: 'Task submission rate limit exceeded. Please try again later.',
+      code: 'RATE_LIMIT',
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
   // Static files middleware
   app.use(express.static('public'));
 
@@ -170,7 +198,9 @@ export function createAPIServer(
 
   // 获取会话历史记录（前端恢复对话使用）
   app.get('/sessions/:sessionId/history', async (req: Request, res: Response) => {
-    const { sessionId } = req.params;
+    // Express 5: req.params values can be string | string[]
+    const sessionIdRaw = req.params.sessionId;
+    const sessionId = Array.isArray(sessionIdRaw) ? sessionIdRaw[0] : sessionIdRaw;
     const userId = (req.query.userId as string) || 'default';
 
     if (!sessionId) {
@@ -243,10 +273,11 @@ export function createAPIServer(
    */
   app.post(
     '/tasks',
+    taskLimiter,
     async (
     req: Request<{}, {}, SubmitTaskRequest>,
     res: Response<SubmitTaskResponse | ApiError>
-  ) => {
+    ): Promise<void> => {
     try {
       const { requirement, userId } = req.body;
       const accessToken = extractAccessToken(req);
@@ -263,9 +294,44 @@ export function createAPIServer(
       const taskId = randomUUID();
       const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-      // Start processing asynchronously via MainAgent（在 RequestContext 中传递 accessToken）
+      // #12: 先创建 task 对象尝试入队，再启动异步处理
+      const task: Task = {
+        id: taskId,
+        requirement,
+        status: 'pending',
+        dependencies: [],
+        dependents: [],
+        createdAt: new Date(),
+        retryCount: 0,
+        userId: effectiveUserId,
+      };
+
+      const addResult = taskQueue.addTask(task);
+      if (!addResult.success) {
+        // #1/#12: 队列满返回 429 而非崩溃
+        res.status(429).json({
+          error: 'Too Many Requests',
+          message: addResult.error ?? 'Queue full',
+          code: 'QUEUE_FULL',
+        });
+        return;
+      }
+
+      // #2: 添加 .catch() 防止 unhandledRejection
       RequestContext.run({ accessToken }, () => {
-        processTaskAsync(taskId, requirement, effectiveUserId);
+        processTaskAsync(taskId, requirement, effectiveUserId).catch((err) => {
+          console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
+          const t = taskQueue.getTask(taskId);
+          if (t && t.status === 'pending') {
+            t.status = 'failed';
+            t.error = {
+              type: 'FATAL' as const,
+              message: err instanceof Error ? err.message : 'Unknown error',
+              code: 'PROCESSING_FAILED',
+            };
+            t.completedAt = new Date();
+          }
+        });
       });
 
       res.status(201).json({
@@ -597,20 +663,26 @@ const response: TaskResultResponse = {
   );
 
   async function processTaskAsync(taskId: string, requirement: string, userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`): Promise<void> {
-    // Create task and add to queue for tracking
-    const task: Task = {
-      id: taskId,
-      requirement,
-      status: 'pending',
-      dependencies: [],
-      dependents: [],
-      createdAt: new Date(),
-      retryCount: 0,
-      userId,
-    };
-
-    // Add task to queue for tracking
-    taskQueue.addTask(task);
+    // Task 已在 POST /tasks 路由中入队，此处直接处理
+    // 兼容：如果 task 不存在（如直接调用），则创建并入队
+    let existingTask = taskQueue.getTask(taskId);
+    if (!existingTask) {
+      const task: Task = {
+        id: taskId,
+        requirement,
+        status: 'pending',
+        dependencies: [],
+        dependents: [],
+        createdAt: new Date(),
+        retryCount: 0,
+        userId,
+      };
+      const addResult = taskQueue.addTask(task);
+      if (!addResult.success) {
+        console.error(`[API] Failed to add task ${taskId}: ${addResult.error}`);
+        return;
+      }
+    }
 
     try {
       console.log(`Processing task ${taskId} with requirement: ${requirement} for user: ${userId}`);

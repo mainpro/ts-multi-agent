@@ -470,6 +470,12 @@ export const CONFIG = {
   VISION_TIMEOUT_MS: parseInt(process.env.VISION_TIMEOUT_MS || '60000', 10),
   /** Vision API max retries */
   VISION_MAX_RETRIES: parseInt(process.env.VISION_MAX_RETRIES || '3', 10),
+  /** Maximum concurrent LLM API requests to prevent rate limiting */
+  LLM_MAX_CONCURRENT_REQUESTS: parseInt(process.env.LLM_MAX_CONCURRENT_REQUESTS || '20', 10),
+  /** HTTP connection pool size for LLM requests */
+  LLM_CONNECTION_POOL_SIZE: parseInt(process.env.LLM_CONNECTION_POOL_SIZE || '100', 10),
+  /** Connection keep-alive timeout in milliseconds */
+  LLM_CONNECTION_KEEP_ALIVE_MS: parseInt(process.env.LLM_CONNECTION_KEEP_ALIVE_MS || '60000', 10),
 } as const;
 
 // ============================================================================

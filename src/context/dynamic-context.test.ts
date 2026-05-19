@@ -1,14 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { DynamicContextBuilder } from './dynamic-context';
+import { MemoryService } from '../memory/memory-service';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
 describe('DynamicContextBuilder', () => {
   let tempDir: string;
+  let memoryDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dynamic-context-test-'));
+    memoryDir = path.join(tempDir, 'data');
+    await fs.mkdir(memoryDir, { recursive: true });
   });
 
   afterEach(async () => {
@@ -16,48 +20,20 @@ describe('DynamicContextBuilder', () => {
   });
 
   describe('build()', () => {
-    test('should return user memory section even for new users', async () => {
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
+    test('should return user context section even for new users', async () => {
+      const svc = new MemoryService(memoryDir, { storagePath: path.join(memoryDir, 'memory') });
+      const builder = new DynamicContextBuilder(svc);
       const result = await builder.build('test input', 'new-user');
-      
-      expect(result).toContain('## 用户记忆');
+
+      expect(result).toContain('## 用户上下文');
       expect(result).toContain('用户画像');
       expect(result).toContain('new-user');
     });
 
-    test('should include CLAUDE.md content when available', async () => {
-      const claudeMdContent = '# Test Project\n\nThis is a test configuration.';
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.md'), claudeMdContent);
-
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test input', 'user');
-      
-      expect(result).toContain('## 项目配置 (CLAUDE.md)');
-      expect(result).toContain(claudeMdContent);
-    });
-
-    test('should include Git status when in a Git repository', async () => {
-      const builder = new DynamicContextBuilder();
-      const result = await builder.build('test input', 'user');
-      
-      if (result.includes('## Git 状态')) {
-        expect(result).toContain('当前分支');
-        expect(result).toContain('最近提交');
-      }
-    });
-
-    test('should handle non-Git directory gracefully', async () => {
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test input', 'user');
-      
-      expect(result).not.toContain('## Git 状态');
-    });
-
     test('should include custom user profile when available', async () => {
-      const memoryDir = path.join(tempDir, 'data');
-      await fs.mkdir(memoryDir, { recursive: true });
-      
       const userId = 'test-user';
+      const svc = new MemoryService(memoryDir, { storagePath: path.join(memoryDir, 'memory') });
+
       const profile = {
         userId,
         department: 'Engineering',
@@ -68,33 +44,25 @@ describe('DynamicContextBuilder', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      
+
       await fs.writeFile(
         path.join(memoryDir, 'user-profile.json'),
         JSON.stringify({ [userId]: profile })
       );
 
-      const builder = new DynamicContextBuilder({ 
-        projectRoot: tempDir,
-        memoryDataDir: memoryDir 
-      });
-      
+      const builder = new DynamicContextBuilder(svc);
       const result = await builder.build('test input', userId);
-      expect(result).toContain('## 用户记忆');
+      expect(result).toContain('## 用户上下文');
       expect(result).toContain('用户画像');
       expect(result).toContain(userId);
       expect(result).toContain('Engineering');
       expect(result).toContain('SystemA, SystemB');
     });
 
-    test('should assemble all three sources together', async () => {
-      const claudeMdContent = '# Test Project';
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.md'), claudeMdContent);
-
-      const memoryDir = path.join(tempDir, 'data');
-      await fs.mkdir(memoryDir, { recursive: true });
-      
+    test('should include conversation history from episodic layer', async () => {
       const userId = 'test-user';
+      const svc = new MemoryService(memoryDir, { storagePath: path.join(memoryDir, 'memory') });
+
       const profile = {
         userId,
         department: 'Test',
@@ -105,204 +73,88 @@ describe('DynamicContextBuilder', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      
+
       await fs.writeFile(
         path.join(memoryDir, 'user-profile.json'),
         JSON.stringify({ [userId]: profile })
       );
 
-      const builder = new DynamicContextBuilder({ 
-        projectRoot: tempDir,
-        memoryDataDir: memoryDir 
-      });
-      
-      const result = await builder.build('test input', userId);
-      
-      expect(result).toContain('## 项目配置 (CLAUDE.md)');
-      expect(result).toContain('## 用户记忆');
-    });
-  });
+      await svc.saveUserMessage(userId, 'Hello');
+      await svc.saveAssistantMessage(userId, 'Hi there!');
 
-  describe('CLAUDE.md integration', () => {
-    test('should load CLAUDE.md from project root', async () => {
-      const content = '# Project Config\n\nProject-specific settings.';
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.md'), content);
-
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(result).toContain(content);
-    });
-
-    test('should load CLAUDE.md from .claude directory', async () => {
-      const claudeDir = path.join(tempDir, '.claude');
-      await fs.mkdir(claudeDir, { recursive: true });
-      
-      const content = '# Claude Config\n\nClaude-specific settings.';
-      await fs.writeFile(path.join(claudeDir, 'CLAUDE.md'), content);
-
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(result).toContain(content);
-    });
-
-    test('should load CLAUDE.local.md', async () => {
-      const content = '# Local Config\n\nLocal override settings.';
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.local.md'), content);
-
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(result).toContain(content);
-    });
-
-    test('should merge multiple CLAUDE.md files', async () => {
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.md'), '# Project');
-      
-      const claudeDir = path.join(tempDir, '.claude');
-      await fs.mkdir(claudeDir, { recursive: true });
-      await fs.writeFile(path.join(claudeDir, 'CLAUDE.md'), '# Claude');
-      
-      await fs.writeFile(path.join(tempDir, 'CLAUDE.local.md'), '# Local');
-
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(result).toContain('# Project');
-      expect(result).toContain('# Claude');
-      expect(result).toContain('# Local');
-    });
-  });
-
-  describe('Git status retrieval', () => {
-    test('should handle Git command timeout', async () => {
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(typeof result).toBe('string');
-    });
-
-    test('should not throw on non-Git directory', async () => {
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'user');
-      expect(typeof result).toBe('string');
-    });
-  });
-
-  describe('Memory recall', () => {
-    test('should return default profile for missing user', async () => {
-      const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-      const result = await builder.build('test', 'nonexistent-user');
-      expect(result).toContain('## 用户记忆');
-      expect(result).toContain('nonexistent-user');
-    });
-
-    test('should include conversation history when available', async () => {
-      const memoryDir = path.join(tempDir, 'data');
-      await fs.mkdir(memoryDir, { recursive: true });
-      
-      const userId = 'test-user';
-      const profile = {
-        userId,
-        department: 'Test',
-        commonSystems: [],
-        tags: [],
-        conversationCount: 1,
-        lastActiveAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      
-      await fs.writeFile(
-        path.join(memoryDir, 'user-profile.json'),
-        JSON.stringify({ [userId]: profile })
-      );
-
-      const historyDir = path.join(memoryDir, 'memory', userId);
-      await fs.mkdir(historyDir, { recursive: true });
-      
-      const history = [
-        {
-          role: 'user',
-          content: 'Hello',
-          timestamp: new Date().toISOString(),
-        },
-        {
-          role: 'assistant',
-          content: 'Hi there!',
-          timestamp: new Date().toISOString(),
-        },
-      ];
-      
-      await fs.writeFile(
-        path.join(historyDir, 'conversations.json'),
-        JSON.stringify(history)
-      );
-
-      const builder = new DynamicContextBuilder({ 
-        projectRoot: tempDir,
-        memoryDataDir: memoryDir 
-      });
-      
+      const builder = new DynamicContextBuilder(svc);
       const result = await builder.build('test', userId);
       expect(result).toContain('对话历史');
       expect(result).toContain('Hello');
       expect(result).toContain('Hi there!');
     });
+
+    test('should assemble profile and conversation history together', async () => {
+      const userId = 'test-user';
+      const svc = new MemoryService(memoryDir, { storagePath: path.join(memoryDir, 'memory') });
+
+      const profile = {
+        userId,
+        department: 'Test',
+        commonSystems: [],
+        tags: [],
+        conversationCount: 1,
+        lastActiveAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await fs.writeFile(
+        path.join(memoryDir, 'user-profile.json'),
+        JSON.stringify({ [userId]: profile })
+      );
+
+      await svc.saveUserMessage(userId, 'Hello');
+      await svc.saveAssistantMessage(userId, 'Hi there!');
+
+      const builder = new DynamicContextBuilder(svc);
+      const result = await builder.build('test input', userId);
+
+      expect(result).toContain('## 用户上下文');
+      expect(result).toContain('用户画像');
+      expect(result).toContain('对话历史');
+    });
+  });
+
+  describe('Memory recall', () => {
+    test('should return default profile for missing user', async () => {
+      const svc = new MemoryService(memoryDir, { storagePath: path.join(memoryDir, 'memory') });
+      const builder = new DynamicContextBuilder(svc);
+      const result = await builder.build('test', 'nonexistent-user');
+      expect(result).toContain('## 用户上下文');
+      expect(result).toContain('nonexistent-user');
+    });
   });
 
   describe('Error handling', () => {
-    test('should handle CLAUDE.md read errors gracefully', async () => {
-      const claudePath = path.join(tempDir, 'CLAUDE.md');
-      await fs.writeFile(claudePath, 'test');
-      await fs.chmod(claudePath, 0o000);
-
-      try {
-        const builder = new DynamicContextBuilder({ projectRoot: tempDir });
-        const result = await builder.build('test', 'user');
-        expect(typeof result).toBe('string');
-      } finally {
-        await fs.chmod(claudePath, 0o644);
-      }
-    });
-
     test('should handle memory load errors gracefully', async () => {
-      const memoryDir = path.join(tempDir, 'data');
-      await fs.mkdir(memoryDir, { recursive: true });
-      
+      const memoryDirBad = path.join(tempDir, 'bad-data');
+      await fs.mkdir(memoryDirBad, { recursive: true });
+
       const userId = 'test-user';
       await fs.writeFile(
-        path.join(memoryDir, 'user-profile.json'),
+        path.join(memoryDirBad, 'user-profile.json'),
         'invalid json'
       );
 
-      const builder = new DynamicContextBuilder({ 
-        projectRoot: tempDir,
-        memoryDataDir: memoryDir 
-      });
-      
+      const svc = new MemoryService(memoryDirBad, { storagePath: path.join(memoryDirBad, 'memory') });
+      const builder = new DynamicContextBuilder(svc);
+
       const result = await builder.build('test', userId);
       expect(typeof result).toBe('string');
     });
   });
 
   describe('Configuration', () => {
-    test('should use custom project root', async () => {
-      const customDir = await fs.mkdtemp(path.join(os.tmpdir(), 'custom-'));
-      
-      try {
-        const content = '# Custom Project';
-        await fs.writeFile(path.join(customDir, 'CLAUDE.md'), content);
-
-        const builder = new DynamicContextBuilder({ projectRoot: customDir });
-        const result = await builder.build('test', 'user');
-        
-        expect(result).toContain(content);
-      } finally {
-        await fs.rm(customDir, { recursive: true, force: true });
-      }
-    });
-
     test('should use custom memory data directory', async () => {
       const customMemoryDir = path.join(tempDir, 'custom-memory');
       await fs.mkdir(customMemoryDir, { recursive: true });
-      
+
       const userId = 'test-user';
       const profile = {
         userId,
@@ -314,17 +166,15 @@ describe('DynamicContextBuilder', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      
+
       await fs.writeFile(
         path.join(customMemoryDir, 'user-profile.json'),
         JSON.stringify({ [userId]: profile })
       );
 
-      const builder = new DynamicContextBuilder({ 
-        projectRoot: tempDir,
-        memoryDataDir: customMemoryDir 
-      });
-      
+      const svc = new MemoryService(customMemoryDir, { storagePath: path.join(customMemoryDir, 'memory') });
+      const builder = new DynamicContextBuilder(svc);
+
       const result = await builder.build('test', userId);
       expect(result).toContain('Custom');
     });
