@@ -6,7 +6,9 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 1. **检查「已获取参数」部分**：主智能体可能已经传递了参数
 2. **检查「询问历史」部分**：之前的询问和用户回复中可能已包含所需参数
-3. **最后才询问用户**：如果以上都没有，才询问用户
+3. **检查请求是否超出技能范围**：如果用户请求超出技能能力范围，直接返回兜底回复
+4. **最后才询问用户**：如果以上都没有，才询问用户
+
 
 **注意**：「已获取参数」和「询问历史」已经直接展示在下方，无需调用任何工具即可查看。**不要为了检查参数而调用 conversation-get**，这会浪费执行轮次。
 
@@ -34,12 +36,24 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 6. **grep** - 搜索文件内容
    - 用途：在文件中搜索特定内容
 
-7. **conversation-get** - 获取对话历史
-   - 用途：仅在需要查看技能说明之外的对话上下文时使用
-   - ⚠️ **慎用**：每次调用会消耗一轮执行机会，不要仅为了检查参数而调用
+7. **ask_user** - 向用户询问信息（**推荐方式**）
+   - 用途：当你需要向用户询问信息才能继续任务时，**必须优先使用此工具**
+   - 优势：系统会自动处理用户回复，无需在文本中重复提问
+   - 参数：
+     - question: 问题内容（必填）
+     - expectedType: 期望回复类型 - text(文本)/choice(选择)/confirm(确认)/number(数字)/date(日期)
+     - options: 选项列表（当 expectedType=choice 时提供）
+     - paramName: 参数名（如"employeeId"），用于系统自动填充
+     - context: 问题背景说明
+
+    **使用示例**：
+    - 需要确认：{ "question": "确定要删除吗？", "expectedType": "confirm", "paramName": "confirmed" }
+    - 需要选择：{ "question": "请选择系统", "expectedType": "choice", "options": ["OA", "ERP"], "paramName": "system" }
+    - 需要文本：{ "question": "请提供工号", "expectedType": "text", "paramName": "employeeId" }
 
 **工具使用原则**：
 - **已获取参数和询问历史已在下方直接展示，无需调用工具查看**
+- **需要询问用户时，优先使用 ask_user 工具，而不是在回复文本中直接提问**
 - 优先执行技能说明中的核心操作（如调用接口、处理数据）
 - 使用 bash 工具执行脚本
 - 使用 read 工具读取文档和配置
@@ -50,29 +64,17 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 ## 执行规则
 1. 仔细阅读技能说明，直接开始执行核心操作
-2. **按优先级获取参数**：已获取参数（已在下方） → 询问历史（已在下方） → 询问用户
-3. 根据技能说明调用相应的工具（bash、file-read 等）
+2. **按优先级获取参数**：已获取参数（已在下方） → 询问历史（已在下方） → 使用 ask_user 工具询问用户
+3. 根据技能说明调用相应的工具（bash、read、ask_user 等）
 4. 只回答文档中明确提到的信息或工具返回的结果
 5. **禁止**：
    - 禁止添加文档中没有的细节或原因
    - 禁止自行推断或扩展答案
    - 禁止编造解决方案
+   - **禁止在文本中直接提问（应使用 ask_user 工具）**
 
 ## 输出规范
-直接输出给用户的回复，不需要 JSON 格式。
 
-## 回复判断逻辑
-当用户回复时，你需要判断回复是否与当前任务相关：
-
-1. **如果回复相关**：继续执行当前任务，根据用户的回复提供相应的信息。
-
-2. **如果回复不相关**：
-   - 直接告诉用户"您的问题与当前任务无关，我将为您重新识别意图。"
-   - 系统会自动重新识别意图并处理新的问题。
-
-## 示例
-- **相关回复示例**："我是财务岗"（回答是否是财务岗的问题）
-- **不相关回复示例**："我还有个问题，关于BCC系统的"（提出了新的系统问题）
 `;
 
 import { PromptBuilder } from './prompt-builder';
@@ -138,13 +140,42 @@ export function buildSubAgentPrompt(
     dynamicParts.push(`## 之前的对话\n以下是之前与用户的对话记录，这些问题已经被回答，请不要重复询问：\n${conversationSummary}`);
   }
 
+  // ===== 展示 ask_user 工具调用历史 =====
+  const askUserCalls = completedToolCalls?.filter(tc => tc.name === 'ask_user');
+  if (askUserCalls && askUserCalls.length > 0) {
+    const askUserSummary = askUserCalls
+      .map((tc, i) => {
+        const args = tc.arguments as { question?: string; options?: string[]; paramName?: string };
+        const optionsStr = args.options ? ` [选项: ${args.options.join('/')}]` : '';
+        const paramStr = args.paramName ? ` (参数名: ${args.paramName})` : '';
+        return `${i + 1}. ${args.question}${optionsStr}${paramStr}`;
+      })
+      .join('\n');
+
+    dynamicParts.push(
+      `## 已发起的询问（等待回复）\n${askUserSummary}\n\n**注意**：以上询问已发送给用户，请等待用户回复后继续执行，不要重复询问。`
+    );
+  }
+
+  // ===== 展示通过 ask_user 获取的参数 =====
+  const filledParamsFromAskUser = questionHistory
+    ?.filter(qh => qh.question.metadata?.source === 'tool_call' && qh.question.metadata?.paramName && qh.answer)
+    ?.map(qh => `- **${qh.question.metadata!.paramName}**: ${qh.answer}`);
+
+  if (filledParamsFromAskUser && filledParamsFromAskUser.length > 0) {
+    dynamicParts.push(
+      `## 通过 ask_user 获取的参数\n${filledParamsFromAskUser.join('\n')}\n\n以上参数已通过 ask_user 工具获取，可直接使用。`
+    );
+  }
+
   if (questionHistory && questionHistory.length > 0) {
     const historyList = questionHistory
       .map((item, index) => {
         const metadata = item.question.metadata
           ? `\n  元数据: ${JSON.stringify(item.question.metadata)}`
           : '';
-        return `### 第 ${index + 1} 次询问
+        const source = item.question.metadata?.source === 'tool_call' ? ' [ask_user工具]' : '';
+        return `### 第 ${index + 1} 次询问${source}
 - **询问类型**: ${item.question.type}
 - **询问内容**: ${item.question.content}${metadata}
 - **用户回复**: ${item.answer}
@@ -154,7 +185,7 @@ export function buildSubAgentPrompt(
     dynamicParts.push(`## 询问历史\n以下是之前的询问和用户回复，请参考这些信息继续执行任务：\n${historyList}`);
 
     // 添加明确的指导，告诉LLM不要重复询问
-    dynamicParts.push(`\n## 重要提示\n如果您之前已经问过用户某个问题，并且用户已经回答了，请不要重复询问相同的问题。请根据用户的回答继续执行任务，跳过已经完成的步骤。`);
+    dynamicParts.push(`\n## 重要提示\n如果您之前已经问过用户某个问题（特别是通过 ask_user 工具），并且用户已经回答了，请不要重复询问相同的问题。请根据用户的回答继续执行任务，跳过已经完成的步骤。`);
   }
 
   return PromptBuilder.build(staticParts, dynamicParts);

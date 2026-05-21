@@ -6,6 +6,7 @@ import { GrepTool } from './grep-tool';
 import { WriteTool } from './write-tool';
 import { EditTool } from './edit-tool';
 import { ConversationGetTool } from './context-tool';
+import { AskUserTool } from './ask-user-tool';
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
@@ -23,6 +24,7 @@ export class ToolRegistry {
       new WriteTool(),
       new EditTool(),
       new ConversationGetTool(),
+      new AskUserTool(),
     ];
 
     for (const tool of defaultTools) {

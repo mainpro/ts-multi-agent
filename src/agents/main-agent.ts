@@ -29,6 +29,7 @@ import {
   TaskGraphNode,
   TaskGraph,
 } from "../types";
+import { EmbeddingService } from "../memory/embedding-service";
 
 export class MainAgent {
   private maxReplanAttempts: number;
@@ -46,9 +47,16 @@ export class MainAgent {
     private skillRegistry: SkillRegistry,
     private taskQueue: TaskQueue,
     maxReplanAttempts: number = CONFIG.MAX_REPLAN_ATTEMPTS,
+    _embeddingService?: EmbeddingService,
   ) {
     this.maxReplanAttempts = maxReplanAttempts;
-    this.intentRouter = new IntentRouter(llm, this.skillRegistry);
+    
+    // 初始化 IntentRouter
+    this.intentRouter = new IntentRouter(
+      llm,
+      this.skillRegistry
+    );
+    
     this.userProfileService = new UserProfileService("data");
     this.memoryService = new MemoryService("data", {}, this.llm);
     this.dynamicContextBuilder = new DynamicContextBuilder(this.memoryService);
@@ -141,7 +149,7 @@ export class MainAgent {
    */
   async getSessionHistory(userId: string, sessionId: string): Promise<{
     exists: boolean;
-    messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }>;
+    messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string; type?: string }>;
     activeRequestId: string | null;
     requestStatus: string | null;
   }> {
@@ -151,35 +159,52 @@ export class MainAgent {
         return { exists: false, messages: [], activeRequestId: null, requestStatus: null };
       }
 
-      const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> = [];
+      const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string; type?: string }> = [];
 
       for (const req of session.requests) {
         // 用户原始请求
         messages.push({ role: 'user', content: req.content, timestamp: req.createdAt });
 
         // 问答历史（请求级 + 任务级）
-        const allQA: Array<{ content: string; answer: string | null; createdAt: string; answeredAt: string | null }> = [];
+        const allQA: Array<{ content: string; answer: string | null; createdAt: string; answeredAt: string | null; source: string }> = [];
         for (const qa of req.questions) {
-          allQA.push(qa);
+          allQA.push({ ...qa });
         }
         for (const task of req.tasks || []) {
           for (const qa of task.questions || []) {
-            allQA.push(qa);
+            allQA.push({ ...qa, source: qa.source || 'sub_agent' });
           }
         }
 
         for (const qa of allQA) {
           if (qa.content) {
-            messages.push({ role: 'assistant', content: qa.content, timestamp: qa.createdAt });
+            // 询问类消息标记为 question
+            messages.push({ role: 'assistant', content: qa.content, timestamp: qa.createdAt, type: 'question' });
           }
           if (qa.answer) {
             messages.push({ role: 'user', content: qa.answer, timestamp: qa.answeredAt || qa.createdAt });
           }
         }
 
-        // 最终结果
-        if (req.result && req.status === 'completed') {
-          messages.push({ role: 'assistant', content: req.result, timestamp: req.updatedAt });
+        // 最终结果（只要有 result 就显示）
+        if (req.result) {
+          // 判断消息类型：
+          // - question: 询问类消息（需要用户回答）
+          // - task_result: 任务执行结果（有任务执行）
+          // - simple: 简单回复（闲聊、确认等）
+          const hasQuestions = req.questions.length > 0 || req.tasks.some(t => (t.questions?.length || 0) > 0);
+          const hasTasks = req.tasks.length > 0;
+          
+          let msgType: string;
+          if (hasQuestions) {
+            msgType = 'question';
+          } else if (hasTasks) {
+            msgType = 'task_result';
+          } else {
+            msgType = 'simple';
+          }
+          
+          messages.push({ role: 'assistant', content: req.result, timestamp: req.updatedAt, type: msgType });
         }
       }
 
@@ -251,10 +276,23 @@ export class MainAgent {
         };
       }
 
+      // 自动填充参数（如果 question 包含 paramName）
+      const paramName = question.metadata?.paramName as string | undefined;
+      if (paramName && question.answer) {
+        task.params = task.params || {};
+        task.params[paramName] = question.answer;
+        console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+      }
+
       // 添加询问历史到 task（用于子智能体 prompt）
       task.questionHistory = task.questionHistory || [];
       task.questionHistory.push({
-        question: { type: 'skill_question', content: question.content, taskId: question.taskId || '' },
+        question: {
+          type: 'skill_question',
+          content: question.content,
+          taskId: question.taskId || '',
+          metadata: question.metadata,  // 保留完整的 metadata
+        },
         answer: question.answer || '',
         timestamp: new Date(),
       });
@@ -635,7 +673,7 @@ export class MainAgent {
       } catch (e) { console.error('[MainAgent] Failed to recall procedural memory:', e); }
 
       const intentResult = await this.intentRouter.classify(
-        requirement, userProfile, recentHistory, sessionId, proceduralExperience,
+        requirement, userProfile, recentHistory, sessionId, proceduralExperience, userId,
       );
 
       await hookManager.emit(HookEvent.AFTER_INTENT_CLASSIFY, {
@@ -910,6 +948,7 @@ export class MainAgent {
       try {
         await this.memoryService.saveAssistantMessage(userId, assistantResponse);
       } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
       return { success: true, data: { message: assistantResponse, type: "small_talk", requestId: request.requestId } };
     }
 
@@ -938,6 +977,7 @@ export class MainAgent {
         );
       }
 
+      // confirm_system 是询问状态，不调用 completeRequest，等待用户回答
       return {
         success: true,
         data: {
@@ -949,11 +989,23 @@ export class MainAgent {
       };
     }
 
-    assistantResponse = intentResult.question?.content || "";
+    if (intentResult.intent === "out_of_scope") {
+      assistantResponse = intentResult.question?.content || "抱歉，这个问题超出了我的处理范围。";
+      sessionContextService.addAssistantMessage(sessionId, assistantResponse);
+      try {
+        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
+      return { success: true, data: { message: assistantResponse, type: "out_of_scope", requestId: request.requestId } };
+    }
+
+    // unclear 或其他非技能意图：使用 LLM 生成的友好回复
+    assistantResponse = intentResult.question?.content || "抱歉，我暂时无法理解您的需求，请换个方式描述或联系人工客服。";
     sessionContextService.addAssistantMessage(sessionId, assistantResponse);
     try {
       await this.memoryService.saveAssistantMessage(userId, assistantResponse);
     } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+    await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
     return { success: true, data: { message: assistantResponse, type: "unclear", requestId: request.requestId } };
   }
 
@@ -1094,6 +1146,8 @@ ${resultsContext}
         answer: null,
         answeredAt: null,
         createdAt: new Date().toISOString(),
+        // 关键：保留完整的 metadata（包含 source, expectedType, options, paramName 等）
+        metadata: skillData.question.metadata,
       };
 
       // 子智能体询问只放到任务级 questions，不放请求级

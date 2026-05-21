@@ -11,7 +11,6 @@ let encoding: any = null;
 async function getEncoding() {
   if (!encoding) {
     try {
-      // @ts-expect-error js-tiktoken is an optional dependency
       const mod = await import('js-tiktoken');
       encoding = mod.encodingForModel('gpt-4');
     } catch {

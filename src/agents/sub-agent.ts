@@ -6,6 +6,7 @@ import {
   Message, CompletedToolCall, QuestionHistoryEntry,
 } from '../types';
 import { ToolRegistry, ToolContext, Tool } from '../tools';
+import type { AskUserArgs } from '../tools/ask-user-tool';
 import { buildSubAgentPrompt } from '../prompts';
 import { hookManager } from '../hooks/hook-manager';
 import { HookEvent } from '../hooks/types';
@@ -17,6 +18,7 @@ const DEFAULT_SAFE_TOOLS = new Set([
   'read',
   'glob',
   'grep',
+  'ask_user',  // 新增：ask_user 工具为只读工具
 ]);
 
 /** 子智能体执行结果（内部使用，包含断点续执行所需的上下文） */
@@ -494,17 +496,50 @@ export class SubAgent {
 
     const response = result.content;
 
-    // ===== v2: 使用增强的 detectQuestion =====
+    // ===== 双轨制：优先检测工具调用，其次文本检测 =====
+
+    // 轨道 1: 检测是否调用了 ask_user 工具
+    const askUserCall = trackedToolCalls.find(tc => tc.name === 'ask_user');
+    if (askUserCall) {
+      const args = askUserCall.arguments as unknown as AskUserArgs;
+      console.log(`[SubAgent] 🔄 检测到 ask_user 工具调用，返回 waiting_user_input 状态`);
+
+      return {
+        response: args.question,
+        status: 'waiting_user_input',
+        question: {
+          type: 'skill_question',
+          content: args.question,
+          metadata: {
+            source: 'tool_call',
+            expectedType: args.expectedType,
+            options: args.options,
+            paramName: args.paramName,
+            isBlocking: args.isBlocking,
+            context: args.context,
+          },
+        },
+        // 保存上下文用于断点续执行
+        _conversationContext: result.messages,
+        _completedToolCalls: trackedToolCalls,
+        _executionProgress: args.question,
+      };
+    }
+
+    // 轨道 2: 文本检测（兼容旧技能）
     const question = detectQuestion(response, result.toolCalls);
     if (question) {
-      console.log(`[SubAgent] 🔄 检测到询问用户意图，返回 waiting_user_input 状态`);
+      console.log(`[SubAgent] 🔄 检测到询问用户意图（文本检测），返回 waiting_user_input 状态`);
       return {
         response,
         status: 'waiting_user_input',
         question: {
           type: 'skill_question',
           content: question.content,
-          metadata: question.metadata,
+          metadata: {
+            source: 'text_detection',
+            ...question.metadata,
+          },
         },
         // 保存上下文用于断点续执行
         _conversationContext: result.messages,

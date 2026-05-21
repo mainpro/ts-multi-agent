@@ -77,6 +77,8 @@ export interface QAEntry {
   answer: string | null;
   answeredAt: string | null;
   createdAt: string;
+  /** 询问元数据（用于 ask_user 工具） */
+  metadata?: Record<string, unknown>;
 }
 
 /** 请求中的任务 */
@@ -476,6 +478,8 @@ export const CONFIG = {
   LLM_CONNECTION_POOL_SIZE: parseInt(process.env.LLM_CONNECTION_POOL_SIZE || '100', 10),
   /** Connection keep-alive timeout in milliseconds */
   LLM_CONNECTION_KEEP_ALIVE_MS: parseInt(process.env.LLM_CONNECTION_KEEP_ALIVE_MS || '60000', 10),
+  /** Intent router config file path */
+  INTENT_ROUTER_CONFIG_PATH: process.env.INTENT_ROUTER_CONFIG || './config/intent-router.json',
 } as const;
 
 // ============================================================================

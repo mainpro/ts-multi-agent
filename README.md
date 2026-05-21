@@ -1,8 +1,8 @@
 # Multi-Agent Collaboration System
 
-多智能体协作系统 —— 主智能体负责需求分析、任务分派与调度，子智能体负责按技能执行任务。
+多智能体协作系统 —— 主智能体(MainAgent)负责需求分析、意图路由、任务规划与调度，子智能体(SubAgent)负责按技能指令执行具体任务，通过 LLM 驱动的协作完成复杂业务场景。
 
-**技术栈**: TypeScript + Bun 运行时 + Express HTTP 框架 + Zod Schema 校验
+**技术栈**: TypeScript + Bun 运行时 + Express HTTP 框架 + Zod Schema 校验 + SSE 实时通信
 
 ---
 
@@ -12,55 +12,74 @@
   - [整体架构图](#整体架构图)
   - [项目结构](#项目结构)
   - [核心设计原则](#核心设计原则)
-- [主智能体 (MainAgent)](#主智能体-mainagent)
+- [主智能体 MainAgent](#主智能体-mainagent)
   - [核心职责](#核心职责)
-  - [processRequirement 主流程](#processrequirement-主流程)
+  - [processRequirement 请求处理主流程](#processrequirement-请求处理主流程)
+  - [processNormalRequirement 正常处理流程](#processnormalrequirement-正常处理流程)
+  - [断点续传机制](#断点续传机制)
   - [关键设计决策](#关键设计决策)
-- [子智能体 (SubAgent)](#子智能体-subagent)
+- [子智能体 SubAgent](#子智能体-subagent)
   - [核心职责](#核心职责)
   - [执行流程](#执行流程)
   - [参数获取优先级](#参数获取优先级)
-- [任务调度 (TaskQueue)](#任务调度-taskqueue)
+  - [ask_user 工具与检测逻辑](#ask_user-工具与检测逻辑)
+  - [断点恢复 (Conversation Resume)](#断点恢复-conversation-resume)
+- [任务调度 TaskQueue](#任务调度-taskqueue)
   - [核心特性](#核心特性)
   - [调度流程](#调度流程)
-- [意图路由 (IntentRouter)](#意图路由-intentrouter)
-  - [多层信号收集](#多层信号收集)
-  - [快速路径 vs LLM 路径](#快速路径-vs-llm-路径)
-- [统一规划器 (UnifiedPlanner)](#统一规划器-unifiedplanner)
+  - [指标采集](#指标采集)
+- [意图路由 IntentRouter](#意图路由-intentrouter)
+  - [多层信号收集 AuxiliarySignals](#多层信号收集-auxiliarysignals)
+  - [决策路径](#决策路径)
+  - [快速路径 Fast Paths](#快速路径-fast-paths)
+  - [LLM 决策路径](#llm-决策路径)
+  - [闲聊模式 SmallTalk](#闲聊模式-smalltalk)
+- [统一规划器 UnifiedPlanner](#统一规划器-unifiedplanner)
 - [工具体系](#工具体系)
   - [工具接口设计](#工具接口设计)
   - [已注册工具一览](#已注册工具一览)
+  - [并发安全控制](#并发安全控制)
   - [安全机制](#安全机制)
 - [记忆与上下文系统](#记忆与上下文系统)
-  - [三层记忆架构](#三层记忆架构)
+  - [四层记忆架构](#四层记忆架构)
   - [四层上下文压缩](#四层上下文压缩)
+  - [语义检索与嵌入](#语义检索与嵌入)
+  - [共享记忆池 SharedMemoryPool](#共享记忆池-sharedmemorypool)
+  - [记忆去重与重要性推断](#记忆去重与重要性推断)
+  - [上下文预算管理 ContextBudget](#上下文预算管理-contextbudget)
+  - [工作记忆生命周期](#工作记忆生命周期)
   - [动态上下文构建](#动态上下文构建)
-- [技能注册表 (SkillRegistry)](#技能注册表-skillregistry)
+- [技能注册表 SkillRegistry](#技能注册表-skillregistry)
   - [渐进式披露设计](#渐进式披露设计)
   - [技能热重载](#技能热重载)
   - [技能文件结构](#技能文件结构)
 - [LLM 客户端](#llm-客户端)
   - [多 Provider 支持](#多-provider-支持)
+  - [消息管理](#消息管理)
+  - [结构化输出](#结构化输出)
+  - [工具调用](#工具调用)
   - [可靠性机制](#可靠性机制)
-  - [并行工具执行](#并行工具执行)
+  - [事件系统](#事件系统)
   - [错误恢复增强](#错误恢复增强)
-- [通信协议与数据流](#通信协议与数据流)
-  - [MainAgent ↔ SubAgent 通信](#mainagent--subagent-通信)
-  - [SubAgent ↔ 工具通信](#subagent--工具通信)
-  - [前端 ↔ API 通信 (SSE)](#前端--api-通信-sse)
-  - [LLM 事件系统](#llm-事件系统)
-- [可观测性](#可观测性)
-  - [结构化日志](#结构化日志)
-  - [指标采集](#指标采集)
-  - [Hooks 生命周期](#hooks-生命周期)
-- [保底机制 (Fallback)](#保底机制-fallback)
-- [扩展能力](#扩展能力)
-  - [Plan Mode](#plan-mode)
-  - [沙箱隔离](#沙箱隔离)
-  - [MCP 协议集成](#mcp-协议集成)
-  - [分层编排器](#分层编排器)
-- [API 接口](#api-接口)
+- [询问系统 AskAgent](#询问系统-askagent)
+  - [核心职责](#询问系统-核心职责)
+  - [延续判断机制](#延续判断机制)
+  - [挂起与召回](#挂起与召回)
+- [请求上下文 RequestContext](#请求上下文-requestcontext)
 - [会话管理](#会话管理)
+  - [SessionContext 短期会话](#sessioncontext-短期会话)
+  - [SessionStore 持久化会话](#sessionstore-持久化会话)
+- [视觉分析 VisionClient](#视觉分析-visionclient)
+- [Hooks 生命周期系统](#hooks-生命周期系统)
+- [可观测性](#可观测性)
+- [保底机制 Fallback](#保底机制-fallback)
+- [安全体系](#安全体系)
+  - [路径安全检查 PathGuard](#路径安全检查-pathguard)
+  - [沙箱执行 Sandbox](#沙箱执行-sandbox)
+  - [命令安全检查](#命令安全检查)
+- [Prompt 构建与缓存](#prompt-构建与缓存)
+- [API 接口](#api-接口)
+- [技能示例](#技能示例)
 - [配置](#配置)
 - [测试](#测试)
 - [快速开始](#快速开始)
@@ -76,358 +95,477 @@
 用户请求
   │
   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  API 层 (Express + SSE)                                         │
-│  POST /tasks/stream → event: start/step/reasoning/complete/error│
-└──────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  API 层 (Express + SSE)                                          │
+│  POST /tasks/stream → event: start/step/reasoning/complete/error │
+│  POST /tasks          → 同步提交                                 │
+│  GET  /tasks/:id      → 查询状态                                 │
+│  GET  /tasks/:id/result → 查询结果                               │
+│  GET  /skills          → 技能列表                                │
+│  GET  /health          → 健康检查                                │
+│  GET  /history         → 会话历史恢复                            │
+└──────────────────────────┬───────────────────────────────────────┘
                            │
                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  MainAgent (规划与调度中枢)                                      │
-│                                                                 │
-│  ① 图片分析 (VisionLLMClient)                                   │
-│  ② 上下文加载 (UserProfile + Memory + SessionContext)            │
-│  ③ 意图路由 (IntentRouter) ──→ small_talk / confirm / unclear   │
-│  ④ 任务规划 (UnifiedPlanner) ──→ 单任务直接 / 多任务 LLM 规划    │
-│  ⑤ 任务调度 (TaskQueue) ──→ DAG 依赖 + 并发控制                 │
-│  ⑥ 结果汇总 + 持久化                                            │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ submitPlanTasks()
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  TaskQueue (调度引擎)                                           │
-│                                                                 │
-│  • DAG 依赖管理 (DFS 循环检测)                                   │
-│  • 并发控制 (MAX_CONCURRENT_SUBAGENTS = 5)                      │
-│  • 任务状态机: pending → running → completed / failed            │
-│  • 超时处理 (AbortController, 默认 400s)                         │
-│  • 失败传播 (强依赖级联 + 弱依赖跳过) 🆕                         │
-│  • 事件驱动 (EventEmitter, 替代轮询) 🆕                          │
-│  • 任务持久化 (防抖 + 原子写入) 🆕                                │
-│  • 自动清理 (每 5 分钟清理已完成/失败 > 1h 的任务)               │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ executeTask(task)
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SubAgent (纯执行层)                                            │
-│                                                                 │
-│  ① 加载技能定义 (SkillRegistry.loadFullSkill)                   │
-│  ② 构建 System Prompt (技能说明 + 参数 + 保底规则)               │
-│  ③ 注册可用工具列表（按 allowedTools 过滤）🆕                    │
-│  ④ LLM 工具调用循环（并行安全工具并发执行）🆕                    │
-│  ⑤ 返回最终文本响应                                              │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  MainAgent (规划与调度中枢)                                       │
+│                                                                  │
+│  ① 图片分析 (VisionLLMClient)                                    │
+│  ② AskAgent 输入处理 → continue / new_request                    │
+│  ③ 上下文加载 (并发的 UserProfile + Memory + Session + Recall)   │
+│  ④ 语义召回 + 共享记忆检索                                        │
+│  ⑤ 微压缩 + 自动压缩检测                                          │
+│  ⑥ 意图路由 (IntentRouter) 多信号决策                             │
+│     ├── small_talk → 快速应答                                     │
+│     ├── confirm_system → 反问确认                                 │
+│     ├── skill_task → 继续处理                                     │
+│     └── unclear → 转人工                                         │
+│  ⑦ 任务规划 (UnifiedPlanner 或单任务直接规划)                     │
+│  ⑧ 构建 TaskGraph → 分层并发执行                                  │
+│  ⑨ 结果汇总 → LLM 汇总 / 单任务直达                              │
+│  ⑩ 语义提取 + 持久化                                              │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│ TaskQueue      │ │ SkillRegistry  │ │ IntentRouter   │
+│ (DAG调度+并发)  │ │ (技能发现+热   │ │ (多信号决策)    │
+│ 并发上限: 5    │ │  重载)         │ │                │
+└───────┬────────┘ └────────────────┘ └────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  SubAgent (技能执行器)                                            │
+│                                                                  │
+│  ① 加载技能说明 (SKILL.md)                                       │
+│  ② 构建执行 Prompt                                              │
+│  ③ LLM 循环: 思考 → 工具调用 → 观察 → 思考...                   │
+│     ├── 8 种工具 (read/write/edit/bash/glob/grep/ask_user/conv)   │
+│     ├── 并发安全控制                                              │
+│     └── PathGuard + Sandbox 安全隔离                              │
+│  ④ ask_user 拦截 → 等待用户输入 → 断点恢复                       │
+│  ⑤ 技能执行结果返回                                              │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 项目结构
 
 ```
-src/
-├── index.ts                  # 应用入口，bootstrap 初始化流程
-├── agents/
-│   ├── main-agent.ts         # 主智能体（规划层）
-│   └── sub-agent.ts          # 子智能体（执行层）
-├── api/
-│   └── index.ts              # Express HTTP API 层（SSE 流式 + /metrics）
+ts-multi-agent/
+├── src/
+│   ├── index.ts                      # 系统启动入口 (bootstrap)
+│   ├── agents/
+│   │   ├── main-agent.ts             # 主智能体 (规划调度中枢)
+│   │   ├── sub-agent.ts              # 子智能体 (技能执行器)
+│   │   ├── ask-agent.ts              # 询问系统智能体
+│   │   └── vision-client.ts          # 视觉分析 (GLM-4V-Flash)
+│   ├── api/
+│   │   └── index.ts                  # Express API + SSE 服务
+│   ├── config/
+│   │   └── fallback.ts               # 保底配置加载
+│   ├── context/
+│   │   ├── dynamic-context.ts        # 动态上下文构建(用户画像+对话历史)
+│   │   ├── dynamic-context.test.ts   # 测试
+│   │   └── request-context.ts        # 请求级 AsyncLocalStorage
+│   ├── hooks/
+│   │   ├── hook-manager.ts           # Hook 管理器 (全局单例)
+│   │   └── types.ts                  # HookEvent + HookContext 定义
+│   ├── llm/
+│   │   ├── index.ts                  # LLMClient (消息管理/结构化输出/工具调用/多Provider)
+│   │   └── error-recovery.ts         # 错误恢复管理器
+│   ├── memory/
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── types.ts                  # 4层记忆类型定义
+│   │   ├── memory-service.ts         # 记忆服务 (统一入口)
+│   │   ├── user-memory-store.ts      # 用户级内存持久化 (JSON文件)
+│   │   ├── episodic-store.ts         # 情景记忆存取
+│   │   ├── session-context.ts        # 短期会话上下文 (内存)
+│   │   ├── session-store.ts          # 会话持久化 (防抖写入)
+│   │   ├── shared-memory-pool.ts     # 智能体间共享记忆
+│   │   ├── semantic-extractor.ts     # 语义知识提取 (LLM驱动)
+│   │   ├── semantic-retrieval.ts     # 语义检索 (向量+关键词)
+│   │   ├── embedding-service.ts      # 嵌入服务 (带余弦相似度)
+│   │   ├── importance-inferencer.ts  # 记忆重要性推断
+│   │   ├── memory-dedup.ts           # 记忆去重与合并
+│   │   ├── context-budget.ts         # 上下文预算管理
+│   │   ├── auto-compact.ts           # 自动上下文压缩 (4层策略)
+│   │   ├── token-counter.ts          # Token 计数
+│   │   └── working-memory-lifecycle.ts # 工作记忆生命周期管理
+│   ├── observability/
+│   │   └── logger.ts                 # 结构化日志 (JSON格式)
+│   ├── planners/
+│   │   ├── index.ts
+│   │   └── unified-planner.ts        # 统一规划器 (合并分析/匹配/规划)
+│   ├── prompts/
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── main-agent.ts             # 主智能体 SystemPrompts
+│   │   ├── sub-agent.ts              # 子智能体 SystemPrompts
+│   │   ├── session-context-prompt.ts # 会话状态 Prompt 构建
+│   │   └── prompt-builder.ts         # Prompt 缓存构建器
+│   ├── routers/
+│   │   ├── index.ts
+│   │   └── intent-router.ts          # 意图路由 (多信号决策)
+│   ├── security/
+│   │   ├── path-guard.ts             # 路径安全检查 (白名单+黑名单)
+│   │   └── sandbox.ts               # 沙箱执行器 (bubblewrap)
+│   ├── skill-registry/
+│   │   └── index.ts                  # 技能注册表 (发现/加载/热重载)
+│   ├── task-queue/
+│   │   └── index.ts                  # 任务队列 (DAG+并发+超时+清理)
+│   ├── tools/
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── interfaces.ts             # Tool/ToolContext/ToolResult 接口
+│   │   ├── base-tool.ts              # 抽象基类
+│   │   ├── tool-registry.ts          # 工具注册表
+│   │   ├── file-read-tool.ts         # read 工具
+│   │   ├── write-tool.ts             # write 工具
+│   │   ├── edit-tool.ts              # edit 工具
+│   │   ├── bash-tool.ts              # bash 工具 (沙箱执行)
+│   │   ├── glob-tool.ts              # glob 工具
+│   │   ├── grep-tool.ts              # grep 工具
+│   │   ├── context-tool.ts           # conversation-get 工具
+│   │   └── ask-user-tool.ts          # ask_user 工具
+│   ├── types/
+│   │   └── index.ts                  # 全局类型定义 (Task/Skill/Session/QA 等)
+│   └── user-profile/
+│       └── index.ts                  # 用户画像服务
+├── skills/                           # 技能目录
+│   ├── templates/                    # 技能模板
+│   │   ├── knowledge-qa/             # 知识问答模板
+│   │   ├── system-operation/         # 系统操作模板
+│   │   ├── approval-workflow/        # 审批流程模板
+│   │   ├── data-query/               # 数据查询模板
+│   │   └── tool-execution/           # 工具执行模板
+│   ├── geam-qa/                      # GEAM 系统问答技能
+│   ├── ees-qa/                       # EES 系统问答技能
+│   ├── time-management-qa/           # 考勤管理问答技能
+│   ├── travel-expense-apply/         # 差旅报销技能
+│   ├── fawu/                         # 法务技能
+│   └── sulfuric-acid-price-prediction/ # 硫酸价格预测技能
+├── data/
+│   ├── user-profile.json             # 用户画像数据
+│   └── memory/                       # 记忆持久化存储
 ├── config/
-│   └── fallback.ts           # 保底机制配置加载器
-├── context/
-│   └── dynamic-context.ts    # 动态上下文构建器
-├── hooks/                    # 🆕 P2-2: Hooks 生命周期系统
-│   ├── types.ts              # HookEvent 枚举 + HookContext 接口
-│   └── hook-manager.ts       # Hook 管理器（注册/触发/隔离）
-├── llm/
-│   ├── index.ts              # LLM 客户端（多 provider + 并行工具执行）
-│   ├── error-recovery.ts     # 🆕 P0-4: 错误恢复管理器
-│   └── vision-client.ts      # 视觉模型客户端（GLM-4V）
-├── memory/
-│   ├── memory-service.ts     # 统一记忆服务
-│   ├── conversation-memory.ts # 对话历史持久化
-│   ├── session-context.ts    # 短期会话上下文（内存）
-│   ├── auto-compact.ts       # 四层上下文压缩 + 🆕 P1-4: 压缩后上下文重注入
-│   ├── token-counter.ts      # 🆕 P1-3: Token 精确计算（tiktoken + 估算回退）
-│   └── types.ts              # 记忆类型定义
-├── mcp/                      # 🆕 P3-3: MCP 协议集成
-│   └── mcp-client.ts         # MCP 客户端（stdio + SSE 传输）
-├── observability/            # 🆕 P2-1: 可观测性
-│   ├── logger.ts             # 结构化 JSON 日志（级别控制 + 子 Logger）
-│   └── metrics.ts            # 指标采集（counter/histogram/gauge + Prometheus）
-├── orchestrator/             # 🆕 P3-5: 分层编排器
-│   └── index.ts              # Orchestrator（任务编排 + 智能重规划）
-├── planners/
-│   └── unified-planner.ts    # 统一规划器（合并分析+匹配+规划）
-├── prompts/
-│   ├── main-agent.ts         # 主智能体/匹配器/规划器/重规划器 Prompt
-│   ├── sub-agent.ts          # 子智能体 Prompt
-│   ├── prompt-builder.ts     # 🆕 P1-5: Prompt 缓存构建器（静态/动态段落分离）
-│   └── index.ts              # Prompt 导出
-├── routers/
-│   └── intent-router.ts      # 意图路由器（快速路径 + LLM 判断）
-├── security/                 # 🆕 P0-2/P3-1: 安全模块
-│   ├── path-guard.ts         # 路径安全检查 + 危险命令拦截
-│   └── sandbox.ts            # 沙箱隔离（bubblewrap）
-├── skill-registry/
-│   └── index.ts              # 技能注册表（渐进式披露 + 🆕 P2-3: 热重载）
-├── task-queue/
-│   ├── index.ts              # 任务队列（DAG + 并发 + 🆕 P1-1: 事件驱动 + P3-4: 弱依赖）
-│   └── storage.ts            # 🆕 P0-3: 任务持久化存储（防抖 + 原子写入）
-├── tools/
-│   ├── interfaces.ts         # 工具接口定义
-│   ├── base-tool.ts          # 工具抽象基类
-│   ├── tool-registry.ts      # 工具注册表（+ 🆕 P1-2: isConcurrencySafe）
-│   ├── file-read-tool.ts     # 文件读取工具（+ 🆕 P0-2: 路径安全检查）
-│   ├── bash-tool.ts          # Shell 命令工具（+ 🆕 P0-2: 命令安全检查）
-│   ├── glob-tool.ts          # 文件模式匹配工具
-│   ├── grep-tool.ts          # 文件内容搜索工具
-│   ├── write-tool.ts         # 文件写入工具（+ 🆕 P0-2: 路径安全检查）
-│   ├── edit-tool.ts          # 文件编辑工具（+ 🆕 P0-2: 路径安全检查）
-│   ├── context-tool.ts       # 上下文管理工具
-│   └── vision-analyze-tool.ts # 视觉分析工具
-├── types/
-│   └── index.ts              # 核心类型（+ 🆕 P0-4: LLMErrorType 扩展 + P3-4: weakDependencies）
-└── user-profile/
-    └── index.ts              # 用户画像服务
+│   └── fallback.md                   # 保底处理配置
+├── __tests__/                        # 25 个测试文件
+├── .env /.env.example                # 多 Provider 环境配置
+├── package.json                      # 依赖与脚本
+├── tsconfig.json                     # TypeScript 严格模式配置
+├── Dockerfile / docker-compose.yml   # 容器化部署
+└── DEPLOY.md                         # 部署指南
 ```
 
 ### 核心设计原则
 
-| 原则 | 说明 |
-|------|------|
-| **规划-执行分离** | MainAgent 只规划不执行，SubAgent 只执行不规划 |
-| **渐进式披露** | SkillRegistry 启动时只加载元数据，执行时才加载完整内容 |
-| **保守默认策略** | BaseTool 的 isConcurrencySafe / isReadOnly 默认 false |
-| **事件驱动** | LLMEventEmitter 实时推送推理过程；TaskQueue 事件驱动替代轮询 |
-| **熔断器** | AutoCompactService 连续失败 3 次停止压缩 |
-| **DAG 调度** | TaskQueue 基于依赖关系的任务调度 + 循环检测 + 弱依赖支持 |
-| **策略模式** | IntentRouter 快速路径（正则） vs LLM 路径 |
-| **依赖注入** | LLMClient、SkillRegistry、TaskQueue 通过构造函数注入 |
-| **安全纵深防御** | PathGuard 路径检查 + allowedTools 权限过滤 + 沙箱隔离 |
+1. **主从协作**: MainAgent 负责任务分解与调度，SubAgent 负责按技能执行，两者通过 TaskQueue 解耦
+2. **DAG 任务图**: 任务之间通过有向无环图建模依赖关系，支持分层并发执行
+3. **技能驱动**: 每个 SKILL.md 定义一项技能，SubAgent 严格基于技能文档执行，不编造不扩展
+4. **渐进式技能披露**: 先解析 SKILL.md 的 YAML 元数据(轻量)，按需加载完整 body
+5. **记忆分层**: Working(工作) → Episodic(情景) → Semantic(语义) → Procedural(程序) 四层递进
+6. **多层防御**: 路径白名单 + 系统黑名单 + 敏感文件检查 + bubblewrap 沙箱 + 命令验证
+7. **容错设计**: LLM 调用重试 → 错误分类恢复 → 上下文压缩 → 退避重试 → 保底 Fallback
+8. **渐进式上下文压缩**: MICRO(5分钟清理) → AUTO(167K tokens触发LLM压缩) → SESSION → REACTIVE
+9. **多信号意图路由**: 信号优先级链路：用户明确系统名 > session上下文 > 关键词 > 历史技能 > 用户画像
 
 ---
 
 ## 主智能体 (MainAgent)
 
-主智能体是整个系统的 **规划与调度中枢**，不执行具体任务。
+**文件**: `src/agents/main-agent.ts`
 
 ### 核心职责
 
-1. **需求接收与预处理** — 接收用户输入，处理图片附件（调用 VisionLLMClient 分析）
-2. **上下文加载与注入** — 加载用户画像、对话历史、动态上下文
-3. **意图路由** — 通过 IntentRouter 分类用户意图
-4. **任务规划** — 单任务直接创建计划，多任务调用 UnifiedPlanner
-5. **任务调度与监控** — 提交任务到 TaskQueue，轮询等待完成
-6. **失败重规划** — 最多 3 次重规划（replan），仅对 RETRYABLE 错误重试
-7. **结果汇总与持久化** — 合并子任务结果，保存交互记录
+1. **请求处理**: 接收用户输入（文本 + 图片附件），编排整个处理流水线
+2. **上下文加载**: 并行加载用户画像、记忆、会话、动态上下文
+3. **记忆召回**: 语义检索相关记忆（情景/语义/程序三层）
+4. **共享记忆检索**: 跨智能体共享记忆池查询
+5. **意图路由**: 多信号综合决策，区分 small_talk / skill_task / confirm_system / unclear
+6. **任务规划**: 单任务直接执行，多任务通过 UnifiedPlanner 统一规划
+7. **分层执行**: 构建 TaskGraph 实现 DAG 分层并发执行
+8. **结果汇总**: 单任务直接返回，多任务 LLM 汇总
+9. **断点续传**: 用户问答后从断点层恢复任务图执行
+10. **持久化**: 保存对话历史、更新用户画像、提取语义知识
 
-### processRequirement 主流程
+### processRequirement 请求处理主流程
 
 ```
-用户请求
+processRequirement(requirement, imageAttachment?, userId, sessionId, options?)
   │
-  ├─ [步骤1] 图片分析（如有附件）→ VisionLLMClient.analyzeImage()
+  ├── Step 0: 恢复会话上下文 (服务重启后从持久化恢复)
+  │     └── sessionContextService.restoreFromSession()
   │
-  ├─ [步骤2] 上下文加载
-  │   ├─ 加载用户画像 (UserProfileService)
-  │   ├─ 加载对话历史 (MemoryService)
-  │   ├─ 微压缩 (microCompact) → 清除 >5min 的工具结果
-  │   ├─ 自动压缩 (checkAndCompact) → tokens > 167K 时 LLM 摘要
-  │   ├─ 加载 SessionContext（当前会话状态）
-  │   └─ 构建动态上下文 (DynamicContextBuilder)
+  ├── Step 1: 图片分析 (如有附件)
+  │     └── VisionLLMClient.analyzeImage() → 分析结果追加到 requirement
   │
-  ├─ [步骤3] 意图路由 (IntentRouter.classify)
-  │   ├─ small_talk → 直接返回闲聊回复
-  │   ├─ confirm_system → 返回确认问题
-  │   ├─ unclear → 返回转人工消息
-  │   └─ skill_task → 继续处理
+  ├── Step 2: AskAgent 处理用户输入
+  │     ├── handleResult.type === 'continue'
+  │     │     └── continueRequest() → 断点恢复 / 重新派发
+  │     └── handleResult.type === 'new_request'
+  │           └── processNormalRequirement() → 正常流程
   │
-  ├─ [步骤4] 任务规划
-  │   ├─ 单任务 → 直接构建 TaskPlan
-  │   └─ 多任务 → UnifiedPlanner.plan()（一次 LLM 调用）
-  │
-  ├─ [步骤5] 任务执行 (monitorAndReplan)
-  │   ├─ submitPlanTasks() → 提交到 TaskQueue
-  │   ├─ waitForCompletion() → 轮询等待（指数退避 100ms→1s）
-  │   └─ 失败时 replan() → 最多 3 次
-  │
-  └─ [步骤6] 结果汇总
-      ├─ 合并所有子任务响应
-      ├─ 更新用户画像
-      ├─ 保存交互记录
-      └─ 返回最终结果
+  └── 整体异常捕获 → error 返回
 ```
+
+### processNormalRequirement 正常处理流程
+
+```
+processNormalRequirement(requirement, userId, sessionId, request, ...)
+  │
+  ├── 递归深度检查 (max: 3)
+  │
+  ├── 并行上下文加载
+  │     ├── userProfileService.loadProfile(userId)
+  │     ├── memoryService.loadUserMemory(userId)
+  │     ├── sessionStore.loadSession(userId, sessionId)
+  │     └── dynamicContextBuilder.build(requirement, userId)
+  │
+  ├── 记忆召回 (并行)
+  │     ├── memoryService.recall() → 语义检索相关记忆
+  │     └── memoryService.retrieveShared() → 共享记忆池
+  │
+  ├── 检查活跃任务 (防止重复分派)
+  │
+  ├── 上下文压缩
+  │     ├── microCompact() → 清除 5 分钟前的工具结果
+  │     └── checkAndCompact() → 167K tokens 触发 LLM 压缩
+  │
+  ├── 上下文组装 (按优先级排序)
+  │     ├── 会话上下文 (Session Prompt)
+  │     ├── 动态上下文 (用户画像 + 对话历史)
+  │     ├── 对话历史
+  │     ├── 召回记忆 + 共享记忆
+  │     └── 原始需求
+  │
+  ├── 意图路由
+  │     ├── 收集辅助信号 (session/keyword/history/profile/procedural)
+  │     ├── HOOK: before:intent_classify
+  │     ├── IntentRouter.classify() → 多路径决策
+  │     ├── HOOK: after:intent_classify
+  │     └── 非 skill_task → handleNonSkillIntent()
+  │
+  ├── 任务规划
+  │     ├── 单任务 → 直接构建 TaskPlan
+  │     ├── 多任务 → UnifiedPlanner.plan() → LLM 统一规划
+  │     └── PlanMode → 返回计划预览等待确认
+  │
+  ├── 任务注册 (SessionStore + WorkingMemory)
+  │
+  ├── HOOK: before:task_execute
+  │
+  ├── 分层执行
+  │     ├── buildTaskGraph(plan) → DAG 分层
+  │     ├── executeTaskGraph() → 逐层并发执行
+  │     └── 检测等待用户输入 → 保存进度 → 返回 question
+  │
+  ├── HOOK: after:task_execute
+  │
+  ├── 结果汇总
+  │     ├── 单任务 → 直接使用子智能体结果
+  │     └── 多任务 → LLM summarizeResults() 汇总
+  │
+  ├── 更新用户画像 (conversationCount++)
+  │
+  └── 后处理
+        ├── 保存助手回复 → Episodic Memory
+        ├── 语义提取 (SemanticExtractor)
+        └── 完成请求 (SessionStore.completeRequest)
+```
+
+### 断点续传机制
+
+当任务执行过程中 SubAgent 调用 `ask_user` 工具需要用户输入时，MainAgent 会:
+
+1. 检测 `waitingTaskId` 和 `waiting_user_input` 状态
+2. 保存 QAEntry 到 SessionStore（任务级 questions）
+3. 保存 `executionProgress`（当前 layer 索引 + 已完成结果）
+4. 返回 `type: 'question'` 给前端等待用户回答
+5. 用户回答后 `continueRequest()` 恢复执行:
+   - 有 `executionProgress` → `resumeFromBreakpoint()` 从断点层继续
+   - 无 progress 但 task.questionHistory 存在 → 继续当前任务
+   - 仅主智能体询问 → 重新 `processNormalRequirement()`
 
 ### 关键设计决策
 
-- **规划与执行分离**: MainAgent 绝不直接调用工具，所有具体操作通过 SubAgent 执行
-- **指数退避轮询**: `waitForCompletion` 使用 100ms 起步、最大 1s 的指数退避轮询机制
-- **重规划机制**: `monitorAndReplan` 实现了最多 3 次的自动重规划循环，仅对 RETRYABLE 错误重试
-- **复合需求处理**: 支持一个用户请求中包含多个技能任务（如"帮我查报销和请假"）
-- **转人工与技能任务并行**: 检测到转人工请求时，仍会执行已匹配的技能任务，结果中合并转人工提示
+1. **递归深度限制**: 最大 3 层，防止无限递归
+2. **单任务直接返回**: 避免不必要的 LLM 汇总调用
+3. **TaskGraph 分层**: 根据依赖关系将任务分为多层，同层并行执行
+4. **参数依赖解析**: `resolveParams()` 从前驱任务结果中提取参数
+5. **任务去重**: 检查活跃任务列表防止重复派发
+6. **并发安全**: 同一技能的任务串行执行，不同技能的任务可并行
 
 ---
 
 ## 子智能体 (SubAgent)
 
-子智能体是 **纯执行层**，负责加载技能、构建 Prompt、通过 LLM function calling 驱动工具调用。
+**文件**: `src/agents/sub-agent.ts`
 
 ### 核心职责
 
-1. 从 SkillRegistry 加载技能的完整定义（SKILL.md body）
-2. 构建子智能体 System Prompt（注入技能说明 + 已获取参数 + 保底规则）
-3. 注册可用工具列表，通过 LLM function calling 驱动工具调用
-4. 执行工具调用循环（最多 5 轮工具调用迭代）
-5. 返回最终文本响应
+1. 加载技能说明 (SKILL.md)
+2. 构建执行 Prompt（技能说明 + 参数 + 询问历史 + 断点上下文）
+3. LLM 驱动的工具调用循环（思考 → 观察 → 行动）
+4. `ask_user` 工具拦截 → 挂起任务等待用户输入
+5. 断点恢复时提供完整对话上下文（conversation resume）
+6. 安全工具白名单控制
 
 ### 执行流程
 
 ```
 SubAgent.execute(task)
   │
-  ├─ 加载技能 (skillRegistry.loadFullSkill)
+  ├── 加载技能 → skillRegistry.loadFullSkill(task.skillName)
   │
-  ├─ 构建 System Prompt
-  │   ├─ SUB_AGENT_BASE_PROMPT（基础指令）
-  │   ├─ 技能说明 body（从 SKILL.md 加载）
-  │   ├─ 技能根目录路径
-  │   ├─ 已获取参数（从 task.params 传入）
-  │   └─ 保底规则（从 config/fallback.md 加载）
+  ├── 构建 SubAgent Prompt
+  │     ├── SUB_AGENT_BASE_PROMPT (角色定义 + 工具说明 + 规则)
+  │     ├── 技能 body (SKILL.md 内容)
+  │     ├── 技能根目录路径
+  │     ├── 已获取参数 (task.params)
+  │     ├── 询问历史 (task.questionHistory)
+  │     ├── 断点上下文 (conversationContext + completedToolCalls)
+  │     └── 用户信息
   │
-  ├─ 注册工具列表（10 个工具）
-  │   ├─ context-get / context-set / context-get-all
-  │   ├─ conversation-get
-  │   ├─ bash / read / write / edit / glob / grep
-  │   └─ vision-analyze
+  ├── LLM 执行循环
+  │     ├── HOOK: before:tool_call
+  │     ├── LLM generateWithTools() → response + toolCalls
+  │     ├── 工具调用处理
+  │     │     ├── ask_user 拦截 → 返回 waiting_user_input
+  │     │     ├── read/write/edit/bash/glob/grep → ToolRegistry.execute()
+  │     │     └── conversation-get → SessionStore 查询对话历史
+  │     ├── HOOK: after:tool_call
+  │     ├── 保存对话上下文 (主动保存 + 触发保存)
+  │     └── 循环直到完成或 ask_user
   │
-  └─ LLM 工具调用循环 (generateWithTools, maxIterations=5)
-      ├─ LLM 返回 content → 直接返回
-      └─ LLM 返回 tool_calls → 执行工具 → 将结果回传 LLM → 继续循环
+  └── 返回 SkillExecutionResult
+        ├── response: 最终回复
+        ├── status: completed / waiting_user_input / failed
+        ├── question: 询问信息 (ask_user 时)
+        ├── conversationContext: 对话历史 (断点恢复用)
+        └── completedToolCalls: 已调用的工具记录
 ```
 
 ### 参数获取优先级
 
-子智能体 Prompt 中定义了严格的参数获取优先级，避免重复询问用户：
+SubAgent Prompt 明确要求按以下顺序获取参数:
 
-```
-1. 检查「已获取参数」(task.params) → 主智能体已提取的参数
-2. 调用 context-get → 会话上下文中缓存的参数
-3. 调用 conversation-get → 从对话历史中提取
-4. 最后才询问用户
-```
+1. **「已获取参数」部分**: 主智能体已传递到 task.params 中的参数
+2. **「询问历史」部分**: 历史问答中的用户回复
+3. **最后才询问用户**: 使用 `ask_user` 工具
+
+`conversation-get` 工具仅在需要查看技能说明之外的对话上下文时使用，且每次调用消耗一轮执行机会。
+
+### ask_user 工具与检测逻辑
+
+**ask_user 工具** (`src/tools/ask-user-tool.ts`):
+- 支持类型: text / choice / confirm / number / date
+- 支持 paramName 自动填充
+- 工具返回 `__ask_user__: true` 标记，SubAgent 拦截并返回 `waiting_user_input`
+
+**文本询问检测** (`detectQuestion()`):
+- 排除结论性语句模式（已完成、成功、结果如下）
+- 正则匹配提问模式（请问、请选择、请提供等）
+- 上下文判断: 如果最后工具调用是查询工具且内容含结果指示词，判定为结果展示而非提问
+
+### 断点恢复 (Conversation Resume)
+
+当用户回答后 SubAgent 继续执行时:
+1. `conversationContext` 保存之前的完整 LLM 对话轮次
+2. `completedToolCalls` 保存已成功的工具调用记录
+3. `_executionProgress` 记录执行进度描述
+4. 新轮次注入完整的对话上下文 + 最新回复，让 LLM 从断点继续
 
 ---
 
 ## 任务调度 (TaskQueue)
 
-TaskQueue 是系统的 **调度引擎**，实现 DAG 依赖管理与并发控制。
+**文件**: `src/task-queue/index.ts`
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **DAG 依赖管理** | 支持任务间的依赖关系，使用 DFS 检测循环依赖 |
-| **并发控制** | 最大 5 个并发子智能体（`MAX_CONCURRENT_SUBAGENTS = 5`） |
-| **任务状态机** | `pending → running → completed / failed` |
-| **超时处理** | 每个任务有独立超时（默认 400s），使用 AbortController 中止 |
-| **失败传播** | 父任务失败时，级联标记所有依赖任务为失败 |
-| **自动清理** | 每 5 分钟清理已完成/失败超过 1 小时的任务 |
-| **结果大小限制** | 单个任务结果最大 1MB，超出则截断 |
+| 特性 | 配置 | 说明 |
+|------|------|------|
+| DAG 依赖管理 | 自动检测环 | 任务间依赖关系建模 |
+| 并发限制 | MAX_CONCURRENT_SUBAGENTS=5 | 最多同时执行5个任务 |
+| 任务超时 | TASK_TIMEOUT_MS=30000ms | 单任务超时断开 |
+| 自动清理 | 定期 cleanup | 完成/失败的任务超过保留时间后清理 |
+| EventEmitter | task-completed / task-failed | 事件驱动轮询 |
+| 参数依赖解析 | data.params | 从前驱任务结果中提取参数 |
+| 结果大小限制 | 1MB | 单个任务结果上限 |
 
 ### 调度流程
 
 ```
-addTask(task)
+addTask(task) → triggerProcess() → processQueue()
   │
-  ├─ 校验：队列未满（max 100）、无循环依赖
-  │
-  ├─ 记录依赖关系（dependencies / dependents 双向关联）
-  │
-  └─ processQueue()
-      │
-      ├─ findReadyTasks() — 找出所有依赖已完成的 pending 任务
-      │   └─ 跳过无 skillName 的任务（仅跟踪任务）
-      │
-      ├─ 按创建时间排序（FIFO）
-      │
-      └─ 对每个就绪任务（不超过并发上限）
-          └─ executeTask(task)
-              ├─ 设置 AbortController 超时
-              ├─ 调用 executor（即 SubAgent.execute）
-              ├─ 成功 → completeTask → notifyDependents
-              └─ 失败 → failTask → failDependents（级联失败）
+  ├── 检查并发限制 (running.size < MAX_CONCURRENT)
+  ├── 筛选可执行任务 (pending + 依赖全部 completed)
+  ├── 注册超时定时器
+  ├── 执行 executor(task, signal) → SubAgent.execute(task)
+  │     ├── 成功 → 标记 completed, emit task-completed
+  │     ├── 失败 → 检查重试次数
+  │     │     ├── 可重试 → 重置 pending
+  │     │     └── 不可重试 → 标记 failed, emit task-failed
+  │     └── 超时 → 标记 failed, emit task-failed
+  └── 检查继续 → triggerProcess() 继续下一批
 ```
 
-### 与 MainAgent 的交互模式
+### 指标采集
 
-采用 **推-拉结合** 模式：
-
-- **推**: MainAgent 将任务推入 TaskQueue（`submitPlanTasks`）
-- **拉**: MainAgent 轮询 TaskQueue 中任务状态（`waitForCompletion`，指数退避 100ms→1s）
+内部维护: `tasksCompleted`, `tasksFailed`, `tasksTimedOut`, `averageExecutionTime`, `totalExecutionTime`
 
 ---
 
 ## 意图路由 (IntentRouter)
 
-IntentRouter 负责对用户输入进行意图分类，采用 **快速路径 + LLM 综合判断** 的双层策略。
+**文件**: `src/routers/intent-router.ts`
 
-### 多层信号收集
+多信号融合决策系统，将传统的关键词匹配和 LLM 智能判断相结合。
 
-在分类前收集多个辅助信号，辅助 LLM 做出更准确的判断：
-
-| 优先级 | 信号 | 置信度范围 | 说明 |
-|--------|------|-----------|------|
-| 0 | 用户输入的系统名 | 0.90-1.00 | 直接匹配 systemName |
-| 1 | Session Context 当前技能 | 0.70-0.90 | 当前会话激活的技能（随轮次衰减） |
-| 2 | 关键词命中 | 0.70-0.88 | 从技能 metadata.keywords 匹配 |
-| 3 | 历史技能 | 0.60-0.75 | 上一个会话使用的技能 |
-| 4 | 用户画像 | 0.50-0.65 | 统计信息，参考价值低 |
-
-### 快速路径 vs LLM 路径
+### 多层信号收集 AuxiliarySignals
 
 ```
-classify(userInput)
-  │
-  ├─ 收集所有信号 (collectSignals)
-  │
-  ├─ 决策引擎 (decide)
-  │   ├─ 快速闲聊匹配 → 正则匹配 7 种闲聊模式 → 直接返回（无 LLM 调用）
-  │   └─ 超出范围匹配 → 正则匹配 30+ 种超出范围模式 → 直接返回
-  │
-  └─ LLM 综合判断 (llmMatchSkillWithSignals)
-      ├─ 构建 Prompt（包含对话历史 + 辅助信号 + 技能列表 + 保底规则）
-      ├─ 调用 LLM（generateStructured，Zod Schema 校验）
-      └─ 返回 IntentResult（intent + tasks + confidence）
+AuxiliarySignals {
+  sessionContext: { skill, confidence: 0.70-0.90, turnCount } | null
+  keywordMatch:   { skill, confidence: 0.70-0.88, matchedKeywords[] } | null
+  historicalSkill:{ skill, confidence: 0.60-0.75, turnsAgo } | null
+  userProfile:    { department?, commonSystems[], confidence: 0.50-0.65 }
+  proceduralExperience?: { skill, usageCount, lastSuccess, confidence }
+}
 ```
 
-**意图类型**: `skill_task` | `small_talk` | `confirm_system` | `out_of_scope` | `unclear`
+### 决策路径
 
-**闲聊快速应答**: 预定义 7 种闲聊模式正则匹配（问候、同理心、身份、感谢、告别、帮助、能力查询），匹配后直接返回模板化回复，无需 LLM 调用，大幅降低延迟。
+```
+classify(requirement, userProfile, recentHistory, sessionId, proceduralExperience)
+  │
+  ├── 1. Fast SmallTalk: 正则匹配问候/致谢/告别等 7 种闲聊模式
+  ├── 2. Fast Followup: 简短输入 + 活跃 session 技能
+  ├── 3. Fast Session: session 技能置信度 > 0.7
+  ├── 4. Fast Keyword: 关键词命中置信度 > 0.8
+  ├── 5. Multi-Signal Agree: 多信号指向同一技能
+  └── 6. LLM Decision: 综合所有信号调用 LLM 判断
+```
+
+### 闲聊模式 SmallTalk
+
+7 种内置响应模板，不调用 LLM:
+- greeting / empathy / identity / thanks / goodbye / help / capability
 
 ---
 
 ## 统一规划器 (UnifiedPlanner)
 
-UnifiedPlanner 是性能优化的产物，将原来的 3-4 次 LLM 调用合并为 **1 次**：
+**文件**: `src/planners/unified-planner.ts`
+
+将需求分析 + 技能匹配 + 任务规划合并为一次 LLM 调用（优化前 3-4 次 → 优化后 2 次）:
 
 ```
-优化前: IntentRouter.classify() + analyzeRequirement() + discoverSkills() + createPlan()
-优化后: IntentRouter.classify() + UnifiedPlanner.plan()  （仅 2 次 LLM 调用）
+UnifiedPlanner.plan(requirement)
+  ├── 获取所有可用技能元数据
+  ├── 构建 TaskPlannerPrompt (含技能列表)
+  ├── LLM generateStructured() → UnifiedPlanSchema
+  └── 返回 PlanResult (success / needsClarification / TaskPlan)
 ```
-
-**输出 Schema** (Zod 校验):
-
-```typescript
-const UnifiedPlanSchema = z.object({
-  analysis: z.object({ summary, entities, intent }).optional(),
-  skillSelection: z.any(),  // 支持数组或对象两种格式
-  plan: z.object({
-    needsClarification: z.boolean().optional(),
-    clarificationPrompt: z.string().optional(),
-    tasks: z.array(z.any()),
-  }),
-});
-```
-
-规划器会验证选中的技能是否存在，处理多种字段名格式（`skillName`/`skill`、`requirement`/`description`），确保健壮性。
 
 ---
 
@@ -435,37 +573,41 @@ const UnifiedPlanSchema = z.object({
 
 ### 工具接口设计
 
-所有工具实现 `Tool` 接口，继承自 `BaseTool` 抽象类：
-
 ```typescript
 interface Tool {
-  name: string;
-  description: string;
-  parameters?: ToolParameters;
-  required?: string[];
-  execute(input: unknown, context: ToolContext): Promise<ToolResult>;
-  isConcurrencySafe(input: unknown): boolean;  // 默认 false（保守策略）
-  isReadOnly(): boolean;                       // 默认 false（保守策略）
+  name: string;                     // 唯一名称
+  description: string;              // 人类可读描述
+  parameters?: ToolParameters;      // JSON Schema 参数
+  required?: string[];              // 必需参数
+  execute(input, context): Promise<ToolResult>;
+  isConcurrencySafe(input): boolean;
+  isReadOnly(): boolean;
 }
 ```
 
-**关键设计**: `BaseTool` 采用 **保守默认策略** — `isConcurrencySafe()` 和 `isReadOnly()` 默认都返回 `false`，子类必须显式声明为安全才允许并发。
-
 ### 已注册工具一览
 
-| 工具名 | 类型 | 并发安全 | 只读 | 用途 |
-|--------|------|:--------:|:----:|------|
-| `context-get` | 上下文 | ✅ | ✅ | 获取会话参数 |
-| `context-get-all` | 上下文 | ✅ | ✅ | 获取所有会话参数 |
-| `context-set` | 上下文 | ✅ | ❌ | 保存会话参数 |
-| `conversation-get` | 上下文 | ✅ | ✅ | 获取对话历史 |
-| `bash` | 文件/命令 | ❌ | ❌ | 执行 Shell 命令 |
-| `read` | 文件 | ✅ | ✅ | 读取文件 |
-| `write` | 文件 | ❌ | ❌ | 写入文件 |
-| `edit` | 文件 | ❌ | ❌ | 编辑文件 |
-| `glob` | 文件 | ✅ | ✅ | 文件模式匹配 |
-| `grep` | 文件 | ✅ | ✅ | 文件内容搜索 |
-| `vision-analyze` | 视觉 | ✅ | ✅ | 图片分析 |
+| 工具名 | 并发安全 | 只读 | 用途 |
+|--------|----------|------|------|
+| `read` | ✅ | ✅ | 读取文件内容 |
+| `write` | ❌ | ❌ | 创建/写入文件 |
+| `edit` | ❌ | ❌ | 精确字符串替换编辑 |
+| `bash` | ❌ | ❌ | shell 命令 (沙箱隔离) |
+| `glob` | ✅ | ✅ | 文件模式匹配 |
+| `grep` | ✅ | ✅ | 文件内容搜索 |
+| `ask_user` | ❌ | ✅ | 向用户提问 |
+| `conversation-get` | ❌ | ✅ | 获取对话历史 |
+
+### 安全机制
+
+```
+工具调用 → PathGuard 路径检查 → Sandbox 沙箱执行
+              │                        │
+              ├── 白名单: 工作目录内    ├── bubblewrap 隔离
+              ├── 系统黑名单           ├── 无 bwrap 时降级
+              ├── 项目敏感文件黑名单    │    并记录日志
+              └── bash 命令验证        │
+```
 
 ---
 
@@ -473,459 +615,336 @@ interface Tool {
 
 ### 四层记忆架构
 
-| 层级 | 组件 | 存储 | 生命周期 | 用途 |
-|------|------|------|---------|------|
-| L1 | SessionContextService | 内存 (Map) | 会话级（30分钟过期） | 当前对话窗口状态、临时变量 |
-| L2 | ConversationMemoryService | 文件系统 (JSON) | 持久化（滑动窗口） | 对话历史记录 |
-| L3 | UserProfileService | 文件系统 (JSON) | 永久 | 用户画像（部门、常用系统、标签） |
-| L4 | LayeredMemoryService | 文件系统 (JSON) | 按类型TTL | Working/Episodic/Semantic/Procedural 分层记忆 |
+| 层级 | 存储 | 特点 | 内容 |
+|------|------|------|------|
+| **Working** | JSON + 内存 | 当前请求上下文，任务完成自动清除 | 任务状态、请求ID |
+| **Episodic** | JSON 文件 | 对话历史，按时间排序持久化 | 用户/助手消息、重要性 |
+| **Semantic** | JSON 文件 | 用户知识偏好，LLM 提取 | 偏好/事实/知识/规则 |
+| **Procedural** | JSON 文件 | 技能执行经验 | 技能名、参数、结果、成功率 |
 
-LayeredMemoryService 实现 4 层记忆（Working → Episodic → Semantic → Procedural），语义检索基于 3D 评分（recency/semantic/importance），共享记忆池支持多智能体协作。Round 2 深度优化新增：记忆去重（阈值 0.98）与合并（0.85）、LLM 重要性推理（含启发式降级）、自适应检索深度（置信度阈值 0.8/0.5）、TTL 过期淘汰、命中统计（hitCount/lastHitAt）、嵌入缓存、中文实体校验，以及 `scripts/migrate-memory.ts` 迁移 CLI。
+**存储路径**: `data/memory/{userId}.json`
 
 ### 四层上下文压缩
 
-AutoCompactService 实现了递进式压缩策略，根据上下文压力自动选择最轻量的方案：
+| 策略 | 触发条件 | 行为 |
+|------|----------|------|
+| MICRO | 每轮调用 | 清除 >5 分钟前的工具结果内容 |
+| AUTO | >167K tokens (83.5%) | LLM 总结历史，熔断于 3 次失败 |
+| SESSION | 预留 | 会话级别维护 |
+| REACTIVE | 预留 | 上下文压力响应 |
 
-| 层级 | 触发条件 | 操作 | 成本 |
-|------|---------|------|------|
-| **MICRO** | 工具结果 > 5 分钟 | 替换为占位符 | 零 |
-| **AUTO** | tokens > 167K | LLM 摘要压缩 | 高 |
-| **SESSION** | 会话结束 | 会话级压缩 | 中 |
-| **REACTIVE** | 上下文压力 | 响应式压缩 | 可变 |
+### 语义检索与嵌入
 
-**熔断器**: 连续失败 3 次后停止压缩，防止级联故障。
+- **评分公式**: `keyword(0.5) + recency(0.3) + importance(0.2)`
+- **时间衰减**: 半衰期 24 小时
+- **自适应检索**: 置信度低于 0.5 时用 LLM 展开查询
 
-**Token 估算**: `字符数 / 4`，准确率约 85%。
+### 共享记忆池 SharedMemoryPool
 
-### 动态上下文构建
+跨智能体记忆共享: `publish()` / `retrieve()` / `subscribe()`，写锁串行化
 
-DynamicContextBuilder 将用户画像和对话历史格式化为 Markdown 注入到 Prompt 中：
+### 记忆去重与重要性推断
 
-```markdown
-## 用户上下文
+- **MemoryDedupService**: 余弦相似度去重(阈值 0.85) + 合并(阈值 0.7)
+- **ImportanceInferencer**: LLM 推断重要性/范围/类别，无 LLM 时启发式回退
 
-### 用户画像
-- **用户ID**: user123
-- **部门**: 研发部
-- **常用系统**: EES, GEAM
-- **对话次数**: 15
+### 上下文预算管理 ContextBudget
 
-### 对话历史
-[最近对话摘要...]
-```
+- 总预算: 4000 tokens
+- 分层分配: Working 10% / Episodic 40% / Semantic 30% / Procedural 10% / System 10%
+
+### 工作记忆生命周期
+
+`pending → running → waiting → completed/failed → evict`
 
 ---
 
 ## 技能注册表 (SkillRegistry)
 
-### 渐进式披露设计
+**文件**: `src/skill-registry/index.ts`
 
-- **扫描阶段**: 只解析 YAML frontmatter（metadata），不加载 body
-- **执行阶段**: 按需加载完整 SKILL.md 内容（`loadFullSkill`）
+### 渐进式披露
 
-这避免了启动时加载大量技能文档的内存开销。
+1. 扫描阶段: 读取 SKILL.md 的 YAML frontmatter (metadata)
+2. 执行阶段: 按需调用 `loadFullSkill()` 读取完整 body
+
+### 技能热重载
+
+- `startWatch()`: `fs.watch` 监听技能目录
+- 200ms 防抖
+- 重扫时自动清除 Prompt 缓存
 
 ### 技能文件结构
 
 ```
-skills/
-├── {skill-name}/
-│   ├── SKILL.md           # 技能定义（YAML frontmatter + Markdown body）
-│   ├── references/        # 知识库文档
-│   │   ├── permission.md
-│   │   └── login.md
-│   └── scripts/           # 执行脚本（可选）
+skills/{name}/
+├── SKILL.md                  # YAML frontmatter + Markdown 主体
+├── references/               # 参考文档
+│   ├── api-spec.md
+│   └── fields.md
+└── scripts/                  # 可执行脚本
+    └── predict.js
 ```
 
-### 技能元数据
-
-```typescript
-interface SkillMetadata {
-  name: string;           // 技能名称
-  description: string;    // 技能描述
-  metadata?: {
-    systemName: string;   // 系统名（精确匹配用）
-    keywords: string[];   // 关键词（模糊匹配用）
-    trigger: string;      // 触发场景
-    exclude: string;      // 排除条件
-  };
-  allowedTools?: string[];    // 允许使用的工具
-  requiredFields?: string[];  // 需要从用户对话中提取的参数
-  hidden?: boolean;           // 是否隐藏
-}
-```
+**当前技能**: geam-qa / ees-qa / time-management-qa / travel-expense-apply / fawu / sulfuric-acid-price-prediction (含 5 个模板)
 
 ---
 
 ## LLM 客户端
 
+**文件**: `src/llm/index.ts`
+
 ### 多 Provider 支持
 
-| Provider | 默认模型 | 特性 |
-|----------|---------|------|
-| OpenRouter | qwen/qwen3.6-plus-preview:free | 推理 + 流式 |
-| NVIDIA | minimax-m2.5 | 流式 |
-| Zhipu (智谱) | glm-4.7-flash | 推理 + 流式 |
-| SiliconFlow | MiniMax-M2.5 | 流式 |
+| Provider | 环境变量 | 默认模型 |
+|----------|----------|----------|
+| OpenRouter | `OPENROUTER_API_KEY` | qwen/qwen3.6-plus-preview:free |
+| NVIDIA | `NVIDIA_API_KEY` | minimax-m2.5 |
+| Zhipu AI | `ZHIPU_API_KEY` | glm-4v-flash (视觉) |
+| SiliconFlow | `SILICONFLOW_API_KEY` | Pro/MiniMaxAI/MiniMax-M2.5 |
 
-### 核心方法
+当前默认: siliconflow, Pro/MiniMaxAI/MiniMax-M2.5
 
-| 方法 | 用途 | 使用者 |
-|------|------|--------|
-| `generateText()` | 纯文本生成 | AutoCompactService |
-| `generateStructured()` | 结构化输出（Zod Schema 校验） | IntentRouter, UnifiedPlanner, MainAgent.replan |
-| `generateWithTools()` | 工具调用循环（最多 5 轮） | SubAgent |
+### 结构化输出
+
+`generateStructured(prompt, zodSchema, system?)`: 在 system prompt 中注入 Zod Schema JSON 约束
 
 ### 可靠性机制
 
-- **指数退避重试**: 最多 3 次，基础延迟 2s/4s/8s + 随机抖动
-- **超时控制**: 默认 120s，通过 AbortController 实现
-- **错误分类**: RATE_LIMIT / TIMEOUT / INVALID_KEY / API_ERROR / NETWORK_ERROR
-- **推理内容捕获**: 通过 `llmEvents` 实时发射 `reasoning_content` 供前端展示
+| 机制 | 说明 |
+|------|------|
+| 重试 | 最多 3 次，指数退避 |
+| 错误分类 | 8 种类型 (RATE_LIMIT / TIMEOUT / API_ERROR 等) |
+| 退避重试 | RATE_LIMIT: 10s → 30s → 60s |
+| 上下文压缩 | CONTEXT_TOO_LONG → autoCompact |
+| 超时控制 | 可配置 |
+
+### 错误恢复增强
+
+ErrorRecoveryManager 按错误类型生成恢复策略: 退避重试 / 增大超时 / 压缩上下文 / Provider 切换
 
 ---
 
-## 通信协议与数据流
+## 询问系统 (AskAgent)
 
-### MainAgent ↔ SubAgent 通信
+**文件**: `src/agents/ask-agent.ts`
 
-通信是 **间接的**，通过 TaskQueue 解耦。MainAgent 和 SubAgent 在同一进程内运行，通过 TaskQueue 的内存数据结构（Map）共享任务状态。
+### 询问系统-核心职责
 
-```
-MainAgent                          TaskQueue                          SubAgent
-   │                                  │                                  │
-   ├─ submitPlanTasks(tasks) ────────>│                                  │
-   │                                  ├─ executeTask(task) ────────────>│
-   │                                  │                                  ├─ loadSkill()
-   │                                  │                                  ├─ buildPrompt()
-   │                                  │                                  ├─ LLM + Tools
-   │                                  │<───────── result ───────────────┤
-   │<───── poll (getTask status) ────│                                  │
-```
+判断用户输入是对问题的回答还是新请求，管理询问生命周期。
 
-### SubAgent ↔ 工具通信
-
-SubAgent 通过 LLM function calling 机制与工具交互：
+### 延续判断机制
 
 ```
-SubAgent → LLM API (带 tools 定义)
-LLM API → 返回 tool_calls
-SubAgent → ToolRegistry.execute(toolName, arguments, context)
-ToolRegistry → 具体工具.execute(input, context)
-结果 → 回传 LLM → 继续循环（最多 5 轮）
+handleUserInput() → 检查等待请求 → 有等待问题 → LLM judgeContinuation()
+  ├── 是回答 → answerQuestion() → return {type: 'continue'}
+  └── 新请求 → suspendRequest() + createRequest() → return {type: 'new_request'}
 ```
 
-### 前端 ↔ API 通信 (SSE)
+### 挂起与召回
 
-主要使用 **SSE (Server-Sent Events)** 流式接口：
-
-```
-POST /tasks/stream
-  ├─ event: start     → 开始处理
-  ├─ event: step      → 处理步骤（捕获 MainAgent/SubAgent/IntentRouter 日志）
-  ├─ event: reasoning → LLM 思考过程（通过 llmEvents 事件系统）
-  ├─ event: complete  → 最终结果
-  └─ event: error     → 错误信息
-```
-
-### LLM 事件系统
-
-`LLMEventEmitter` 是一个全局事件发射器，用于追踪 LLM 的推理过程：
-
-```typescript
-class LLMEventEmitter {
-  setAgent(agent: 'MainAgent' | 'SubAgent'): void;  // 切换当前 Agent 标识
-  emit(event: 'reasoning' | 'response', data: string): void;
-  on(event, callback): void;
-  off(event, callback): void;
-}
-```
-
-SubAgent 在执行前设置 `llmEvents.setAgent('SubAgent')`，执行后恢复，使得 API 层可以区分推理事件来自哪个 Agent。
+- 用户切换话题时自动挂起当前请求，创建新请求
+- `recallRequest()` 可主动召回挂起请求
 
 ---
 
-## 保底机制 (Fallback)
+## 请求上下文 (RequestContext)
 
-保底规则通过 Markdown 配置文件管理，注入到 IntentRouter 和 SubAgent 的 System Prompt 中。
+**文件**: `src/context/request-context.ts`
 
-**触发条件：**
-- **显式转人工**: 用户说"转人工/转工程师"时直接触发
-- **被动转人工**: 知识库检索 2 次无结果 / 追问超过 2 次
-- **反问约束**: 最多追问 2 次，禁止跨域提问，禁止猜测
-- **技能匹配规则**: 精确匹配优先，用户否定后终止猜测
-- **复合场景**: 当前有技能任务时，"转人工XXX"需返回 2 个任务（转人工 + 新技能）
-
-可通过环境变量 `FALLBACK_CONFIG` 切换不同业务的保底规则：
-
-```bash
-FALLBACK_CONFIG=fallback.md    # 运维业务（默认）
-FALLBACK_CONFIG=ecommerce.md   # 电商业务
+```
+API 层: RequestContext.run({ accessToken }, handler)
+  → MainAgent → TaskQueue → SubAgent → BashTool
+  → 技能脚本环境变量 SKILL_ACCESS_TOKEN
 ```
 
----
-
-## API 接口
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| GET | /health | 健康检查 |
-| GET | /skills | 列出所有技能 |
-| GET | /metrics | 🆕 Prometheus 指标端点 |
-| POST | /tasks/stream | SSE 流式任务提交 |
-| POST | /tasks/execute | 🆕 Plan Mode 执行确认 |
-| GET | /tasks/:id | 任务状态 |
-| GET | /tasks/:id/result | 任务结果 |
-| DELETE | /tasks/:id | 取消任务 |
-
-### 请求格式
-
-```json
-{
-  "userId": "user-xxx",
-  "sessionId": "session-xxx",
-  "requirement": "用户需求描述"
-}
-```
-
-### 响应格式
-
-**技能任务：**
-```json
-{
-  "results": [
-    {
-      "taskId": "plan-xxx-task-1",
-      "skillName": "geam-qa",
-      "requirement": "申请GEAM权限",
-      "response": "您好！请问您要登录系统操作什么？...",
-      "status": "completed"
-    }
-  ],
-  "type": "skill_task"
-}
-```
-
-**转人工：**
-```json
-{
-  "message": "您好，我帮您转到人工这边...",
-  "type": "unclear"
-}
-```
-
-**确认系统：**
-```json
-{
-  "message": "您提到的'BCC系统'，请问具体是哪个系统？",
-  "type": "confirm_system"
-}
-```
+使用 Node.js AsyncLocalStorage 实现请求级数据传递。
 
 ---
 
 ## 会话管理
 
-每个浏览器窗口独立：
-- `userId`: `user-{时间戳}-{随机6位}`
-- `sessionId`: `session-{时间戳}`
+### SessionContext 短期会话
 
-| 层级 | 组件 | 存储 | 生命周期 |
-|------|------|------|---------|
-| L1 | SessionContextService | 内存 (Map) | 会话级（30分钟过期） |
-| L2 | ConversationMemoryService | 文件系统 (JSON) | 持久化（滑动窗口） |
-| L3 | UserProfileService | 文件系统 (JSON) | 永久 |
+内存存储，重启即消失。跟踪: currentSkill / currentSystem / turnCount / tempVariables / conversation.
+
+### SessionStore 持久化会话
+
+`data/memory/{userId}/{sessionId}/session.json`，100ms 防抖写入磁盘。
+
+结构: `Session → Request[] → QAEntry[] + RequestTask[] + executionProgress`
 
 ---
 
-## 配置
+## 视觉分析 (VisionClient)
 
-### 环境变量
+**文件**: `src/agents/vision-client.ts`
 
-| 环境变量 | 说明 | 默认值 |
-|----------|------|--------|
-| ZHIPU_API_KEY | 智谱 API Key | - |
-| NVIDIA_API_KEY | NVIDIA API Key | - |
-| OPENROUTER_API_KEY | OpenRouter API Key | - |
-| LLM_PROVIDER | LLM 提供商 | siliconflow |
-| LLM_MODEL | 模型名称 | Pro/MiniMaxAI/MiniMax-M2.5 |
-| FALLBACK_CONFIG | 保底机制配置文件 | fallback.md |
+- 模型: GLM-4V-Flash (智谱)
+- 重试: 最多 3 次，指数退避
+- 超时: 120s
+- 输出: `{ system, errorType, description, suggestedAction }`
+- 结果自动追加到 requirement
 
-### 系统常量
+---
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| MAX_CONCURRENT_SUBAGENTS | 5 | 最大并发子智能体数 |
-| MAX_QUEUE_SIZE | 100 | 任务队列最大容量 |
-| MAX_REPLAN_ATTEMPTS | 3 | 最大重规划次数 |
-| TASK_TIMEOUT_MS | 400,000 (400s) | 单任务超时 |
-| TOTAL_TIMEOUT_MS | 600,000 (600s) | 总工作流超时 |
-| LLM_TIMEOUT_MS | 120,000 (120s) | LLM API 超时 |
-| SCRIPT_TIMEOUT_MS | 180,000 (180s) | 脚本执行超时 |
-| LLM_TEMPERATURE | 0.7 | 生成温度 |
-| SKILL_DIRECTORY | ./skills/ | 技能目录 |
+## Hooks 生命周期系统
+
+8 个生命周期钩子: `before/after:intent_classify`, `before/after:task_execute`, `before/after:tool_call`, `on:error`, `on:fallback`
+
+异步并行执行，单 handler 失败不影响其他。
 
 ---
 
 ## 可观测性
 
-### 结构化日志
+结构化 JSON 日志 (`src/observability/logger.ts`):
 
-使用 `Logger` 替代 `console.log`，输出 JSON 格式日志，支持日志级别和上下文注入：
-
-```typescript
-import { createLogger } from './observability/logger';
-
-const log = createLogger({ module: 'SubAgent', taskId: 'xxx' });
-log.info('任务开始执行');
-log.error('任务执行失败', { code: 500, skill: 'geam-qa' });
-```
-
-日志级别通过 `LOG_LEVEL` 环境变量配置（默认 `info`）。
-
-### 指标采集
-
-`MetricsCollector` 提供 counter、histogram、gauge 三种指标类型，通过 `GET /metrics` 端点输出 Prometheus 格式：
-
-```typescript
-import { metrics } from './observability/metrics';
-
-metrics.incrementCounter('tasks_total');
-metrics.recordHistogram('task_latency_ms', 150);
-```
-
-### Hooks 生命周期
-
-`HookManager` 在关键节点触发事件，支持自定义回调：
-
-```typescript
-import { hookManager } from './hooks/hook-manager';
-import { HookEvent } from './hooks/types';
-
-hookManager.on(HookEvent.BEFORE_TASK_EXECUTE, async (ctx) => {
-  console.log(`任务 ${ctx.taskId} 即将执行`);
-});
-
-hookManager.on(HookEvent.AFTER_TOOL_CALL, async (ctx) => {
-  // 审计日志
-});
-```
-
-**可用事件**: `BEFORE_INTENT_CLASSIFY` | `AFTER_INTENT_CLASSIFY` | `BEFORE_TASK_EXECUTE` | `AFTER_TASK_EXECUTE` | `BEFORE_TOOL_CALL` | `AFTER_TOOL_CALL` | `ON_ERROR` | `ON_FALLBACK`
+- 级别: DEBUG / INFO / WARN / ERROR
+- 上下文继承: `createLogger({ module })` → `logger.child({ submodule })`
+- 环境变量: `LOG_LEVEL` 控制级别
 
 ---
 
-## 扩展能力
+## 保底机制 (Fallback)
 
-### Plan Mode
+配置文件: `config/fallback.md`（路径可被 `FALLBACK_CONFIG` 环境变量覆盖）
+业务自定义内容注入 MainAgent system prompt。
 
-通过 `planMode` 选项启用规划预览，用户确认后再执行：
+---
 
-```typescript
-const result = await mainAgent.processRequirement(requirement, undefined, userId, sessionId, {
-  planMode: true  // 返回计划详情，不执行
-});
-// 确认后通过 POST /tasks/execute 提交执行
-```
+## 安全体系
 
-### 沙箱隔离
+### 路径安全检查 PathGuard
 
-`Sandbox` 基于 bubblewrap 提供文件系统和网络隔离，自动回退：
+- **白名单**: 工作目录范围内
+- **系统黑名单**: `.ssh`, `/etc/shadow`, `/proc`, `.kube` 等
+- **项目黑名单**: `.env`, `credentials`, `secret`, `*.pem`, `*.key` 等
 
-```typescript
-import { Sandbox } from './security/sandbox';
+### 沙箱执行 Sandbox
 
-const result = Sandbox.execute('cat /etc/passwd', '/workspace', {
-  allowedDirs: ['/workspace'],
-  network: false,  // 禁止网络访问
-});
-// bwrap 不可用时自动回退到直接执行并发出警告
-```
+- bubblewrap 文件系统/网络隔离
+- 自动检测, Alpine 兼容 (`/bin/sh` 回退)
+- 无 bwrap 时降级为直接执行（记录日志）
 
-### 分层编排器
+### 命令安全检查
 
-`Orchestrator` 将调度、监控、重规划逻辑从 MainAgent 中分离：
+阻止: `rm -rf /`, `mkfs`, `dd if=/dev/zero`, fork bomb 等危险命令
 
-```typescript
-import { Orchestrator } from './orchestrator';
+---
 
-const orchestrator = new Orchestrator(taskQueue, llm, skillRegistry, planner);
-const result = await orchestrator.orchestrate(plan);
-// 包含事件驱动等待、超时保护、智能重规划
-```
+## Prompt 构建与缓存
+
+- **静态段落**: 会话内不变内容 → 缓存
+- **动态段落**: 每轮变化 → 不缓存
+- **缓存边界**: `<!-- DYNAMIC_CONTEXT_START -->` 分隔
+- **清除**: 技能热重载时调用 `clearCache()`
+
+---
+
+## API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/tasks/stream` | SSE 流式提交 (事件: start/step/reasoning/complete/error) |
+| POST | `/tasks` | 同步提交 |
+| GET | `/tasks/:id` | 查询状态 |
+| GET | `/tasks/:id/result` | 查询结果 |
+| GET | `/skills` | 技能列表 |
+| GET | `/history` | 会话历史恢复 |
+| GET | `/health` | 健康检查 |
+
+---
+
+## 技能示例
+
+| 技能 | 类型 | 说明 |
+|------|------|------|
+| geam-qa | knowledge-qa | GEAM 系统问答 |
+| ees-qa | knowledge-qa | EES 系统问答 |
+| time-management-qa | knowledge-qa | 考勤管理 |
+| travel-expense-apply | system-operation | 差旅报销 |
+| fawu | knowledge-qa | 法务咨询 |
+| sulfuric-acid-price-prediction | tool-execution | 硫酸价格预测 |
+| templates/* (5个) | 模板 | 技能模板 |
+
+---
+
+## 配置
+
+主要环境变量: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, API Keys, `PORT`(默认3000), `SKILL_DIR`, `FALLBACK_CONFIG`, `LOG_LEVEL`
 
 ---
 
 ## 测试
 
-使用 bun:test 运行测试：
+25 个测试文件覆盖:
 
-```bash
-# 运行全部测试
-bun test
+| 测试 | 覆盖 |
+|------|------|
+| `api.test.ts` | API + SSE |
+| `main-agent.test.ts` | 主智能体 (10 用例) |
+| `sub-agent.test.ts` | 子智能体 |
+| `ask-agent.test.ts` | 询问系统 |
+| `session-store.test.ts` | 会话持久化 |
+| `task-graph.test.ts` | DAG 任务图 |
+| `path-guard.test.ts` | 路径安全 |
+| `sandbox.test.ts` | 沙箱执行 |
+| `memory-*.test.ts` (14 个) | 全部记忆模块 |
 
-# TypeScript 编译检查
-npx tsc --noEmit
-```
+运行: `bun test`
 
 ---
 
 ## 快速开始
 
 ```bash
-# 安装
+# 1. 安装依赖
 bun install
 
-# 配置环境变量
+# 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env 添加 API Key
+# 编辑 .env: 至少配置一个 LLM Provider 的 API Key
 
-# 启动
-bun run src/index.ts
+# 3. 启动
+bun run dev    # 开发模式 (watch)
+# 或
+bun run build && bun start  # 生产模式
+
+# 4. 测试
+curl -X POST http://localhost:3000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"requirement": "你好"}'
+
+# 5. 运行测试
+bun test
 ```
 
 ---
 
 ## 架构优化记录
 
-基于 [Claude Code 源码深度解读](https://github.com/Wechat-ggGitHub/claude-code-deep-dive) 的对比分析，已完成 18 项架构优化。
+### P0: 基础架构
+- P0-1: 默认安全工具白名单
+- P0-2: 敏感文件保护 (PathGuard 双层防护)
+- P0-3: 端口优先级配置
+- P0-4: 错误恢复增强 (ErrorRecoveryManager)
 
-### P0 — 紧急（安全加固与可靠性）
+### P1: 性能 & 可靠性
+- P1-1: 渐进式记忆上下文 (四层记忆架构)
+- P1-2: 智能并发控制 (并发安全检测 + 串行写)
+- P1-3: 断点续传 (conversationContext + completedToolCalls)
+- P1-4: 单技能任务直达 (跳过 LLM 汇总)
+- P1-5: Prompt Cache 优化 (静态段落缓存)
 
-| 编号 | 优化项 | 新增文件 | 修改文件 |
-|------|--------|---------|---------|
-| P0-1 | allowedTools 权限过滤 | — | sub-agent.ts |
-| P0-2 | 敏感文件/命令保护 | security/path-guard.ts | bash-tool.ts, file-read-tool.ts, write-tool.ts, edit-tool.ts |
-| P0-3 | 任务状态持久化 | task-queue/storage.ts | task-queue/index.ts |
-| P0-4 | 错误恢复增强 | llm/error-recovery.ts | types/index.ts (LLMErrorType 扩展) |
+### P2: 扩展性 & 可观测性
+- P2-1: 结构化日志与指标
+- P2-2: Hooks 生命周期 (8 个 HookEvent)
+- P2-3: 技能热重载 (fs.watch + 200ms 防抖)
+- P2-4: 统一规划器 (3→2 次 LLM 调用)
 
-### P1 — 重要（性能优化）
-
-| 编号 | 优化项 | 新增文件 | 修改文件 |
-|------|--------|---------|---------|
-| P1-1 | 事件驱动替代轮询 | — | task-queue/index.ts, main-agent.ts |
-| P1-2 | 并行工具执行 | — | llm/index.ts, tool-registry.ts |
-| P1-3 | Token 精确计算 | memory/token-counter.ts | memory/auto-compact.ts |
-| P1-4 | 压缩后上下文重注入 | — | memory/auto-compact.ts |
-| P1-5 | Prompt Cache 优化 | prompts/prompt-builder.ts | — |
-
-### P2 — 改进（可观测性与扩展性）
-
-| 编号 | 优化项 | 新增文件 | 修改文件 |
-|------|--------|---------|---------|
-| P2-1 | 结构化日志与指标 | observability/logger.ts, observability/metrics.ts | api/index.ts |
-| P2-2 | Hooks 生命周期系统 | hooks/types.ts, hooks/hook-manager.ts | — |
-| P2-3 | 技能热重载 | — | skill-registry/index.ts, index.ts |
-| P2-4 | Plan Mode | — | main-agent.ts, api/index.ts |
-
-### P3 — 长期（架构演进）
-
-| 编号 | 优化项 | 新增文件 | 修改文件 |
-|------|--------|---------|---------|
-| P3-1 | 沙箱隔离 | security/sandbox.ts | — |
-| P3-2 | 多进程架构 | — | （框架已搭建） |
-| P3-3 | MCP 协议集成 | mcp/mcp-client.ts | — |
-| P3-4 | 弱依赖级联失败 | — | task-queue/index.ts, types/index.ts |
-| P3-5 | 分层编排器 | orchestrator/index.ts | — |
-
-**变更统计**: 新增 12 个文件，修改 14 个文件，测试用例全部通过，TypeScript 编译零错误。
+### P3: 高级特性
+- P3-1: 沙箱隔离 (bubblewrap)
+- P3-2: Plan Mode (任务计划预览 + 用户确认)
+- P3-3: 共享记忆池 (智能体间通信)
+- P3-4: 上下文预算管理 (4000 token 分层分配)
