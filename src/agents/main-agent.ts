@@ -30,6 +30,7 @@ import {
   TaskGraph,
 } from "../types";
 import { EmbeddingService } from "../memory/embedding-service";
+import { SystemSkillLoader, ExecutorRegistry } from "../system-skills";
 
 export class MainAgent {
   private maxReplanAttempts: number;
@@ -41,6 +42,8 @@ export class MainAgent {
   private askAgent: AskAgent;
   private sessionStore: SessionStore;
   private semanticExtractor: SemanticExtractor;
+  private systemSkillLoader: SystemSkillLoader;
+  private executorRegistry: ExecutorRegistry;
 
   constructor(
     private llm: LLMClient,
@@ -64,6 +67,10 @@ export class MainAgent {
     this.sessionStore = new SessionStore();
     this.semanticExtractor = new SemanticExtractor(llm, this.memoryService, 30000);
     this.askAgent = new AskAgent(this.sessionStore, llm);
+
+    this.systemSkillLoader = new SystemSkillLoader();
+    this.systemSkillLoader.loadAll();
+    this.executorRegistry = new ExecutorRegistry();
   }
 
   async processRequirement(
@@ -110,6 +117,44 @@ export class MainAgent {
         } catch (visionError) {
           console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
         }
+      }
+
+      // ========== 步骤 1.5: 系统命令拦截 ==========
+      if (SystemSkillLoader.isSystemCommand(requirement)) {
+        const cmdName = SystemSkillLoader.extractCommandName(requirement);
+        const systemSkill = this.systemSkillLoader.getCommand(cmdName);
+
+        if (!systemSkill) {
+          return {
+            success: false,
+            error: {
+              type: 'FATAL',
+              message: `未知系统命令 /${cmdName}，可用命令: ${this.systemSkillLoader.getAllCommands().join(', ')}`,
+              code: 'UNKNOWN_COMMAND',
+            },
+          };
+        }
+
+        const executor = this.executorRegistry.getExecutor(systemSkill.executor, this.llm);
+        if (!executor) {
+          return {
+            success: false,
+            error: {
+              type: 'FATAL',
+              message: `执行器类型 "${systemSkill.executor}" 未注册`,
+              code: 'EXECUTOR_NOT_FOUND',
+            },
+          };
+        }
+
+        console.log(`[MainAgent] 🛠️ 执行系统命令: /${cmdName} (执行器: ${systemSkill.executor})`);
+        const result = await executor.execute(systemSkill, { requirement });
+
+        return {
+          success: result.success,
+          data: result.success ? { response: result.message || '执行完成', data: result.data } : undefined,
+          error: result.success ? undefined : { type: 'FATAL' as const, message: result.error || '执行失败', code: 'EXECUTION_ERROR' },
+        };
       }
 
       // ========== 步骤 2: AskAgent 处理用户输入 ==========

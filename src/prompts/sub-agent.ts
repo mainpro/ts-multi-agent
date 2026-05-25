@@ -1,4 +1,10 @@
-export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维执行助手，负责按照技能指令执行具体任务，使用中文回复。
+export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维执行助手，负责按照技能指令执行具体任务。
+
+## 语言要求（必须严格遵守）
+
+- **所有思考过程必须使用中文**，禁止在内部思考时使用英文
+- **所有回复必须使用简体中文**
+- **禁止**输出详细的英文分析步骤
 
 ## 参数获取优先级（重要！）
 
@@ -79,20 +85,57 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 import { PromptBuilder } from './prompt-builder';
 import { QuestionHistoryEntry, CompletedToolCall } from '../types';
+import { buildKnowledgePrompt } from '../agent-md/injector';
 
-export function buildSubAgentPrompt(
+// 自我审查 prompt（内联，无需读取外部文件）
+const SELF_REVIEW_PROMPT = `## 自我审查（副作用任务）
+
+在执行以上技能的同时，请关注技能本身的**质量**：
+
+1. **描述一致性**：技能的不同部分是否有矛盾或重复的描述？
+2. **指令清晰度**：指令是否足够清晰，还是需要多次推理才能理解？
+3. **脚本可靠性**：脚本调用是否稳定？是否经常需要重试？
+4. **参数匹配**：脚本参数说明与实际参数是否一致？
+5. **工具可用性**：提到的工具/脚本是否实际存在且可用？
+
+### 进入改进记录的门槛标准
+
+发现以上问题后，按以下规则判断**是否记录到改进记录**：
+
+| 级别 | 条件 | 操作 |
+|------|------|------|
+| **MUST 记** | ① 已经导致执行失败或错误结果 | \`append_improvement\`（必填 severity: critical/high） |
+| | ② 存在可预见的隐患：参数名不匹配、路径写死、竞态条件、安全缺口 | \`append_improvement\`（必填 severity: medium/high） |
+| | ③ 指令存在歧义：AI 多次需要猜测意图才能执行 | \`append_improvement\`（必填 severity: medium） |
+| **SHOULD 记** | ④ 同模式问题**连续出现 3 次以上**（如每次都用错同一个参数） | \`append_improvement\`（必填 severity: low/medium，注明 recurrence: 3+） |
+| | ⑤ 执行成功了但 AI 觉得"这次是运气"，下次可能失败 | \`append_improvement\`（必填 severity: low，注明 reason: luck） |
+| **MUST NOT 记** | ⑥ 一次性网络抖动/超时（外部依赖问题） | 跳过，不记录 |
+| | ⑦ 不影响功能的拼写/排版问题 | 跳过，不记录 |
+| | ⑧ LLM 一次性幻觉输出（不会稳定复现） | 跳过，不记录 |
+| | ⑨ "这里要是再有个功能就好了"式的功能请求 | 跳过，不记录 |
+
+> **判定流程**：发现问题 → 按上表判断级别 → MUST/SHOULD → 记录；MUST NOT → 跳过
+>
+> 记或不记都不影响主任务执行。记录失败时忽略错误，继续执行主任务。`;
+
+export async function buildSubAgentPrompt(
   skillBody: string,
   skillRootDir: string = '',
   params?: Record<string, unknown>,
   questionHistory?: QuestionHistoryEntry[],
   completedToolCalls?: CompletedToolCall[],
-  userId?: string
-): string {
+  userId?: string,
+  _skillName?: string
+): Promise<string> {
   // 静态部分
   const staticParts = [
     { key: 'sub-agent-base', content: SUB_AGENT_BASE_PROMPT },
-    { key: `skill-${skillBody.substring(0, 50)}`, content: `## 技能说明\n${skillBody}` }
+    { key: `skill-${skillBody.substring(0, 50)}`, content: `## 技能说明\n${skillBody}` },
   ];
+
+  if (SELF_REVIEW_PROMPT) {
+    staticParts.push({ key: 'self-review', content: SELF_REVIEW_PROMPT });
+  }
 
   // 动态部分
   const dynamicParts = [];
@@ -186,6 +229,12 @@ export function buildSubAgentPrompt(
 
     // 添加明确的指导，告诉LLM不要重复询问
     dynamicParts.push(`\n## 重要提示\n如果您之前已经问过用户某个问题（特别是通过 ask_user 工具），并且用户已经回答了，请不要重复询问相同的问题。请根据用户的回答继续执行任务，跳过已经完成的步骤。`);
+  }
+
+  // ===== AGENT.md 全局行为约束注入 =====
+  const knowledgeContent = buildKnowledgePrompt();
+  if (knowledgeContent) {
+    dynamicParts.push(knowledgeContent);
   }
 
   return PromptBuilder.build(staticParts, dynamicParts);

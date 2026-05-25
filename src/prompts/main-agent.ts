@@ -1,6 +1,5 @@
 import { SkillMetadata } from '../types';
 import { PromptBuilder } from './prompt-builder';
-import { getFallbackContent } from '../config/fallback';
 
 /**
  * 主智能体 SystemPrompt
@@ -51,6 +50,12 @@ export const MAIN_AGENT_SYSTEM_PROMPT = `你是一名专业且可靠的中文运
  * 结合辅助信号做决策
  */
 export const SKILL_MATCHER_SYSTEM_PROMPT = `你是一个运维智能助手，职责是根据用户输入判断意图并匹配合适的技能。
+
+## 语言要求（必须严格遵守）
+
+- **所有输出必须使用简体中文**，包括 reasoning 字段
+- **禁止**在思考过程中使用英文
+- **禁止**输出详细的思考步骤，只保留简洁的结论性 reasoning
 
 ## 置信度校准标准（必须严格遵守）
 
@@ -253,10 +258,7 @@ export function buildSkillMatcherPrompt(skills: SkillMetadata[]): string {
     })
     .join('; ');
   
-  const fallbackContent = getFallbackContent() || '## 决策规则\n请根据辅助信息判断用户意图并匹配技能';
-  
   const dynamicParts = [
-    fallbackContent,
     `## 可用技能
 ${skillsBlock || '暂无可用技能'}`
   ];

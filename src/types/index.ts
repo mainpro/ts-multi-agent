@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import * as dotenv from 'dotenv';
 
 // ============================================================================
 // Tool System Types (re-exported for convenience)
@@ -434,6 +435,7 @@ export interface ExecutionProgress {
 /**
  * System configuration constants
  */
+dotenv.config();
 export const CONFIG = {
   /** Maximum concurrent subagents */
   MAX_CONCURRENT_SUBAGENTS: 5,
@@ -451,7 +453,7 @@ export const CONFIG = {
   SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
   SKILL_DIRECTORY: './skills/',
-  /** LLM Provider: nvidia | openrouter */
+  /** LLM Provider: nvidia | openrouter | zhipu | siliconflow | haier */
   LLM_PROVIDER: process.env.LLM_PROVIDER || 'openrouter',
   /** LLM model name */
   LLM_MODEL: process.env.LLM_MODEL || 'minimax/minimax-m2.5:free',

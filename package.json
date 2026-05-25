@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "tsup src/index.ts --out-dir dist --clean --target node20 && cp AGENT.md dist/ && cp .env.example dist/.env && cp -r skills dist/ && cp -r public dist/ && cp -r system-skills dist/",
     "dev": "bun run --watch src/index.ts",
     "start": "node dist/index.js",
     "test": "bun test",
@@ -24,10 +24,8 @@
     "dotenv": "^17.2.4",
     "express": "^5.1.0",
     "express-rate-limit": "^8.5.1",
-    "js-tiktoken": "^1.0.21",
     "multer": "^2.1.1",
     "typescript": "5.3.3",
-    "undici": "^8.2.0",
     "yaml": "^2.9.0",
     "zod": "3.22.4"
   },
@@ -37,7 +35,8 @@
     "@types/multer": "^2.1.0",
     "@types/node": "20.10.0",
     "@types/supertest": "^7.2.0",
-    "supertest": "^7.2.2"
+    "supertest": "^7.2.2",
+    "tsup": "^8.5.1"
   },
   "engines": {
     "node": ">=18.0.0"

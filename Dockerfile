@@ -3,7 +3,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* bun.lock* ./
+COPY package.json package-lock.json* ./
 RUN npm install
 
 COPY tsconfig.json ./
@@ -20,12 +20,8 @@ WORKDIR /app
 RUN apk add --no-cache bubblewrap bash && \
     chmod u+s /usr/bin/bwrap
 
-# 仅复制运行时所需文件
-COPY package.json package-lock.json* bun.lock* ./
-RUN npm install --omit=dev
-
+# 仅复制构建产物（tsup 已将依赖打包进 dist/index.js）
 COPY --from=builder /app/dist ./dist
-COPY config/ ./config/
 
 # 创建非 root 用户运行服务
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup

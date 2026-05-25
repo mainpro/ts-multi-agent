@@ -2,7 +2,16 @@ import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import { ErrorRecoveryManager } from './error-recovery';
 import { AutoCompactService } from '../memory/auto-compact';
-import { Agent } from 'undici';
+
+/**
+ * 安全地拼接 base URL 和路径，处理末尾斜杠问题
+ */
+function buildApiUrl(baseUrl: string, path: string): string {
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
 
 export type LLMEventType = 'reasoning' | 'response';
 
@@ -138,7 +147,7 @@ interface GLMResponse {
   };
 }
 
-type LLMProvider = 'openrouter' | 'nvidia' | 'zhipu';
+type LLMProvider = 'openrouter' | 'nvidia' | 'zhipu' | 'siliconflow' | 'haier';
 
 interface ProviderCapabilities {
   supportsReasoning: boolean;
@@ -162,6 +171,16 @@ const PROVIDER_CONFIGS: Record<LLMProvider, ProviderCapabilities> = {
     supportsStreaming: true,
     reasoningField: 'reasoning_content',
   },
+  siliconflow: {
+    supportsReasoning: true,
+    supportsStreaming: true,
+    reasoningField: 'reasoning_content',
+  },
+  haier: {
+    supportsReasoning: true,
+    supportsStreaming: true,
+    reasoningField: 'reasoning_content',
+  },
 };
 
 /**
@@ -178,8 +197,6 @@ export class LLMClient {
   private capabilities: ProviderCapabilities;
   private errorRecoveryManager: ErrorRecoveryManager;
   
-  // HTTP connection pool for reuse
-  private agent: Agent;
   
   // Semaphore for limiting concurrent LLM requests
   private static semaphore = {
@@ -206,10 +223,13 @@ export class LLMClient {
       this.apiKey = process.env.ZHIPU_API_KEY || '';
     } else if (this.provider === 'siliconflow') {
       this.apiKey = process.env.SILICONFLOW_API_KEY || '';
+    } else if (this.provider === 'haier') {
+      this.apiKey = process.env.HAIER_API_KEY || '';
     } else {
       this.apiKey = '';
     }
-    this.baseUrl = CONFIG.LLM_BASE_URL;
+    // 移除 baseUrl 末尾的斜杠，避免拼接时出现双斜杠
+    this.baseUrl = CONFIG.LLM_BASE_URL.replace(/\/$/, '');
     this.model = CONFIG.LLM_MODEL;
     this.temperature = CONFIG.LLM_TEMPERATURE;
     this.timeoutMs = CONFIG.LLM_TIMEOUT_MS;
@@ -226,14 +246,7 @@ export class LLMClient {
     const autoCompactService = new AutoCompactService(this);
     this.errorRecoveryManager = new ErrorRecoveryManager(autoCompactService);
     
-    // 初始化 HTTP 连接池
-    this.agent = new Agent({
-      connect: {
-        keepAlive: true,
-        keepAliveInitialDelay: CONFIG.LLM_CONNECTION_KEEP_ALIVE_MS,
-      },
-      connections: CONFIG.LLM_CONNECTION_POOL_SIZE,
-    });
+
   }
   
   /**
@@ -470,24 +483,41 @@ export class LLMClient {
 
         const requestBody = this.buildRequestBody(messages, { responseFormat });
 
-        console.log('Sending LLM request to:', `${this.baseUrl}/chat/completions`);
+        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
+        console.log('Sending LLM request to:', apiUrl);
         console.log('Request body:', JSON.stringify(requestBody, null, 2));
 
         // Acquire slot for concurrent request limiting
         await this.acquireSlot();
-        
+
+        // 构建请求 headers
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+
+        // 根据 provider 设置认证方式
+        if (this.provider === 'haier') {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+          // 海尔 API 可能需要的额外 headers
+          if (process.env.HAIER_EXTRA_HEADERS) {
+            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
+            extraHeaders.forEach(h => {
+              const [key, value] = h.split(':');
+              if (key && value) headers[key.trim()] = value.trim();
+            });
+          }
+        } else {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+        }
+
         const response = await fetch(
-          `${this.baseUrl}/chat/completions`,
+          apiUrl,
           {
             method: 'POST',
-            headers: {
-              Authorization: `Bearer ${this.apiKey}`,
-              'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify(requestBody),
             signal: controller.signal,
-            // @ts-expect-error undici dispatcher
-            dispatcher: this.agent,
+
           }
         );
 
@@ -719,16 +749,32 @@ export class LLMClient {
         // Acquire slot for concurrent request limiting
         await this.acquireSlot();
 
-        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        // 构建请求 headers
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+
+        // 根据 provider 设置认证方式
+        if (this.provider === 'haier') {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+          // 海尔 API 可能需要的额外 headers
+          if (process.env.HAIER_EXTRA_HEADERS) {
+            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
+            extraHeaders.forEach(h => {
+              const [key, value] = h.split(':');
+              if (key && value) headers[key.trim()] = value.trim();
+            });
+          }
+        } else {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+        }
+
+        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
+        const response = await fetch(apiUrl, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify(requestBody),
           signal: controller.signal,
-          // @ts-expect-error undici dispatcher
-          dispatcher: this.agent,
         });
 
         // 清除初始连接超时，改为每次 read 独立超时
@@ -1111,16 +1157,32 @@ export class LLMClient {
         // Acquire slot for concurrent request limiting
         await this.acquireSlot();
 
-        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        // 构建请求 headers
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+
+        // 根据 provider 设置认证方式
+        if (this.provider === 'haier') {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+          // 海尔 API 可能需要的额外 headers
+          if (process.env.HAIER_EXTRA_HEADERS) {
+            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
+            extraHeaders.forEach(h => {
+              const [key, value] = h.split(':');
+              if (key && value) headers[key.trim()] = value.trim();
+            });
+          }
+        } else {
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
+        }
+
+        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
+        const response = await fetch(apiUrl, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify(requestBody),
           signal: controller.signal,
-          // @ts-expect-error undici dispatcher
-          dispatcher: this.agent,
         });
 
         if (timeoutId) clearTimeout(timeoutId);

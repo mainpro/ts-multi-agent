@@ -8,7 +8,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./config:/app/config:ro
       - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]

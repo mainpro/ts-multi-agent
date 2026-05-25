@@ -10,3 +10,5 @@ export { FileReadTool } from './file-read-tool';
 export { ToolRegistry } from './tool-registry';
 export { AskUserTool } from './ask-user-tool';
 export type { AskUserArgs } from './ask-user-tool';
+export { AppendImprovementTool } from './append-improvement-tool';
+export type { AppendImprovementArgs } from './append-improvement-tool';

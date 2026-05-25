@@ -1,6 +1,15 @@
 import { LLMError } from '../llm/index';
 
 /**
+ * 安全地拼接 base URL 和路径，处理末尾斜杠问题
+ */
+function buildApiUrl(baseUrl: string, path: string): string {
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+/**
  * Zod schema for VisionAnalysisResult validation
  */
 import { z } from 'zod';
@@ -143,9 +152,10 @@ export class VisionLLMClient {
           response_format: { type: 'json_object' },
         };
 
-        console.log('Sending Vision LLM request to:', `${this.baseUrl}/chat/completions`);
+        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
+        console.log('Sending Vision LLM request to:', apiUrl);
 
-        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        const response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

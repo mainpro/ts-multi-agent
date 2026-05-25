@@ -19,6 +19,7 @@ const DEFAULT_SAFE_TOOLS = new Set([
   'glob',
   'grep',
   'ask_user',  // 新增：ask_user 工具为只读工具
+  'append_improvement',  // SubAgent 自我审查：记录技能执行中发现的质量问题
 ]);
 
 /** 子智能体执行结果（内部使用，包含断点续执行所需的上下文） */
@@ -245,13 +246,14 @@ export class SubAgent {
     const absoluteSkillRootDir = path.resolve(skillRootDir);
 
     // ===== v2: 构建增强的 system prompt =====
-    const systemPrompt = buildSubAgentPrompt(
+    const systemPrompt = await buildSubAgentPrompt(
       skill.body,
       absoluteSkillRootDir,
       params,
       questionHistory,
       completedToolCalls,
-      userId
+      userId,
+      skill.name
     );
 
     const allTools = this.toolRegistry.list();
@@ -290,13 +292,14 @@ export class SubAgent {
 
     if (conversationContext && conversationContext.length > 0) {
       // ===== 断点续执行：重新构建 system prompt（包含最新的 questionHistory） =====
-      const refreshedSystemPrompt = buildSubAgentPrompt(
+      const refreshedSystemPrompt = await buildSubAgentPrompt(
         skill.body,
         absoluteSkillRootDir,
         params,
         questionHistory,     // 使用最新的 questionHistory（包含刚添加的回答）
         completedToolCalls,
-        userId
+        userId,
+        skill.name
       );
 
       console.log(`[SubAgent] 🔄 断点续执行模式启动`);

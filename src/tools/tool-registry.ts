@@ -7,6 +7,7 @@ import { WriteTool } from './write-tool';
 import { EditTool } from './edit-tool';
 import { ConversationGetTool } from './context-tool';
 import { AskUserTool } from './ask-user-tool';
+import { AppendImprovementTool } from './append-improvement-tool';
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
@@ -25,6 +26,7 @@ export class ToolRegistry {
       new EditTool(),
       new ConversationGetTool(),
       new AskUserTool(),
+      new AppendImprovementTool(),
     ];
 
     for (const tool of defaultTools) {

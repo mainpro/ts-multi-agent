@@ -130,7 +130,7 @@ export class IntentRouter {
       tasks: z.array(z.object({
         requirement: z.string().describe('任务描述'),
         skillName: z.string().optional().describe('匹配的技能名，无技能时省略'),
-        intent: z.enum(['skill_task', 'unclear']).describe('任务意图'),
+        intent: z.enum(['skill_task', 'unclear']).optional().default('skill_task').describe('任务意图'),
         params: z.record(z.unknown()).optional()
           .describe('从对话上下文中提取的参数'),
       })).optional().default([])
