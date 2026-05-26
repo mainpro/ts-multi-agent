@@ -9,6 +9,9 @@
 
 import { Session } from '../types';
 
+/** 会话活跃判定阈值（分钟），与 cleanupExpiredSessions 的默认值保持一致 */
+const SESSION_ACTIVE_THRESHOLD_MINUTES = 30;
+
 export interface SessionMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -125,8 +128,8 @@ export class SessionContextService {
     const context = this.contexts.get(sessionId);
     if (!context) return false;
 
-    const thirtyMinutes = 30 * 60 * 1000;
-    return Date.now() - context.lastInteractionAt < thirtyMinutes;
+    const thresholdMs = SESSION_ACTIVE_THRESHOLD_MINUTES * 60 * 1000;
+    return Date.now() - context.lastInteractionAt < thresholdMs;
   }
 
   /**
@@ -199,8 +202,9 @@ export class SessionContextService {
         }
       }
 
-      // 任务级问答历史
+      // 任务级问答历史（包括 currentQuestion）
       for (const task of req.tasks || []) {
+        // 恢复已完成的问答历史
         for (const qa of task.questions || []) {
           if (qa.content) {
             context.conversation.push({
@@ -214,6 +218,22 @@ export class SessionContextService {
               role: 'user',
               content: qa.answer,
               timestamp: qa.answeredAt ? new Date(qa.answeredAt).getTime() : Date.now(),
+            });
+          }
+        }
+        // 恢复当前等待中的问题（如果有）
+        if (task.currentQuestion && task.currentQuestion.content) {
+          context.conversation.push({
+            role: 'assistant',
+            content: task.currentQuestion.content,
+            timestamp: new Date(task.currentQuestion.createdAt).getTime(),
+          });
+          // 如果已经有回答，也恢复回答
+          if (task.currentQuestion.answer) {
+            context.conversation.push({
+              role: 'user',
+              content: task.currentQuestion.answer,
+              timestamp: task.currentQuestion.answeredAt ? new Date(task.currentQuestion.answeredAt).getTime() : Date.now(),
             });
           }
         }

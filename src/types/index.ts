@@ -459,9 +459,10 @@ export const CONFIG = {
   LLM_MODEL: process.env.LLM_MODEL || 'minimax/minimax-m2.5:free',
   /** LLM API base URL */
   LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
-  /** LLM temperature */
-  LLM_TEMPERATURE: 0.7,
-  LLM_MAX_TOKENS: 4096,
+  /** LLM temperature (0-1, lower = more deterministic) */
+  LLM_TEMPERATURE: parseFloat(process.env.LLM_TEMPERATURE || '0.7'),
+  /** LLM max output tokens */
+  LLM_MAX_TOKENS: parseInt(process.env.LLM_MAX_TOKENS || '4096', 10),
   /** Task cleanup interval (5 minutes) */
   TASK_CLEANUP_INTERVAL_MS: 300000,
   /** Task retention time (1 hour) */

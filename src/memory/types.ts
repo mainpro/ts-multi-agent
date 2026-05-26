@@ -21,6 +21,22 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   storagePath: 'data/memory',
 };
 
+// ── Recall Configuration ──────────────────────────────────────────
+
+/**
+ * 记忆召回的默认配置
+ */
+export const DEFAULT_RECALL_CONFIG = {
+  /** 主智能体通用召回数量 */
+  MAIN_AGENT_RECALL_TOP_K: 5,
+  /** 主智能体共享记忆召回数量 */
+  MAIN_AGENT_SHARED_TOP_K: 3,
+  /** 主智能体程序记忆召回数量 */
+  MAIN_AGENT_PROCEDURAL_TOP_K: 5,
+  /** 子智能体语义记忆召回数量 */
+  SUB_AGENT_SEMANTIC_TOP_K: 5,
+} as const;
+
 // ── Memory Layer Architecture ────────────────────────────────────
 
 /** Memory layer classification */

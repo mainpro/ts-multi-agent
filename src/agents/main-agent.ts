@@ -4,7 +4,7 @@ import { TaskQueue } from "../task-queue";
 import { IntentRouter } from "../routers";
 import { UnifiedPlanner } from "../planners";
 import { UserProfileService } from "../user-profile";
-import { MemoryService, sessionContextService, MemoryLayer, SemanticExtractor } from "../memory";
+import { MemoryService, sessionContextService, MemoryLayer, SemanticExtractor, DEFAULT_RECALL_CONFIG } from "../memory";
 import { DynamicContextBuilder } from "../context/dynamic-context";
 import { AutoCompactService } from "../memory/auto-compact";
 import { buildReplanPrompt } from "../prompts";
@@ -473,6 +473,7 @@ export class MainAgent {
           retryCount: 0,
           sessionId,
           userId,
+          questionHistory: [],  // 初始化询问历史
         };
 
         this.taskQueue.addTask(task);
@@ -625,14 +626,14 @@ export class MainAgent {
         this.sessionStore.loadSession(userId, sessionId),
         this.dynamicContextBuilder.build(requirement, userId),
       ]);
-      console.log(`[MainAgent] 👤 用户画像: 部门=${userProfile.department}, 常用系统=${userProfile.commonSystems.join(", ")}`);
+      console.log(`[MainAgent] 👤 用户画像: ${JSON.stringify(Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)))}`);
 
       // ========== 召回相关记忆 ==========
       let recalledContext = '';
       try {
         const recalledResults = await this.memoryService.recall(userId, requirement, {
           namespace: userId,
-          topK: 5,
+          topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_RECALL_TOP_K,
           layers: [MemoryLayer.EPISODIC, MemoryLayer.SEMANTIC, MemoryLayer.PROCEDURAL],
         });
         if (recalledResults.length > 0) {
@@ -647,7 +648,7 @@ export class MainAgent {
 
       let sharedContext = '';
       try {
-        const sharedResults = await this.memoryService.retrieveShared('main-agent', requirement, { topK: 3 });
+        const sharedResults = await this.memoryService.retrieveShared('main-agent', requirement, { topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_SHARED_TOP_K });
         if (sharedResults.length > 0) {
           sharedContext = '\n[共享记忆]\n' + sharedResults.map(r =>
             `[${r.entry.metadata?.skillName || '未知技能'}] ${r.entry.content}`
@@ -706,7 +707,7 @@ export class MainAgent {
       let proceduralExperience: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }> | undefined;
       try {
         const proceduralResults = await this.memoryService.recall(userId, requirement, {
-          layers: [MemoryLayer.PROCEDURAL], topK: 5, namespace: userId,
+          layers: [MemoryLayer.PROCEDURAL], topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_PROCEDURAL_TOP_K, namespace: userId,
         });
         proceduralExperience = proceduralResults
           .filter(r => r.entry.metadata?.skillName)
@@ -956,6 +957,18 @@ export class MainAgent {
         await this.memoryService.saveAssistantMessage(userId, assistantResponse, { skill: taskList[0]?.skillName || undefined });
       } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
       this.semanticExtractor.extract(userId, requirement, assistantResponse, taskList[0]?.skillName || undefined).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+
+      // ===== v3: 从已完成任务的 questionHistory 中提取语义知识 =====
+      const allTasks = await this.taskQueue.getAllTasks();
+      for (const t of allTasks) {
+        if (t.questionHistory && t.questionHistory.length > 0 && t.status === 'completed') {
+          for (const qh of t.questionHistory) {
+            if (qh.answer && qh.answer.trim().length > 0) {
+              this.semanticExtractor.extract(userId, qh.question.content, qh.answer, t.skillName).catch(e => console.error('[MainAgent] QuestionHistory semantic extraction failed:', e));
+            }
+          }
+        }
+      }
 
       return {
         success: result.success,
@@ -1251,6 +1264,20 @@ ${resultsContext}
         );
       } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
       this.semanticExtractor.extract(userId, task.requirement || '', typeof skillData?.response === 'string' ? skillData.response : JSON.stringify(skillData), task.skillName).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+
+      // ===== v3: 从 questionHistory 中提取语义知识（如用户属性、偏好等事实信息） =====
+      if (task.questionHistory && task.questionHistory.length > 0) {
+        for (const qh of task.questionHistory) {
+          if (qh.answer && qh.answer.trim().length > 0) {
+            this.semanticExtractor.extract(
+              userId,
+              qh.question.content,   // 问题作为用户输入
+              qh.answer,             // 回答作为助手上下文
+              task.skillName
+            ).catch(e => console.error('[MainAgent] QuestionHistory semantic extraction failed:', e));
+          }
+        }
+      }
     }
 
     // 检查是否所有任务都已完成，如果是则完成请求
@@ -1431,6 +1458,7 @@ ${resultsContext}
           retryCount: 0,
           sessionId,
           userId,
+          questionHistory: [],  // 初始化询问历史
         };
 
         this.taskQueue.addTask(task);
@@ -1633,6 +1661,7 @@ ${resultsContext}
         retryCount: 0,
         sessionId,
         userId,
+        questionHistory: [],  // 初始化询问历史
       };
 
       this.taskQueue.addTask(task);

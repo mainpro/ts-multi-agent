@@ -187,8 +187,12 @@ export class SemanticRetrievalEngine {
   private async expandQuery(originalQuery: string): Promise<string[]> {
     if (!this.llmClient) return [];
 
+    // 跳过过短或无意义的查询，避免浪费 LLM 调用
+    const trimmed = originalQuery.trim();
+    if (trimmed.length < 4) return [];
+
     try {
-      const prompt = `Generate ${this.adaptiveConfig.explorationBudget} alternative search queries for the following question. Each query should approach the topic from a different angle or use different terminology. Return only the queries, one per line, without numbering or bullets.\n\nQuestion: ${originalQuery}`;
+      const prompt = `为以下问题生成${this.adaptiveConfig.explorationBudget}个不同的搜索查询变体。每个查询应从不同角度或使用不同术语来接近主题。只返回查询内容，每行一个，不要编号或项目符号。\n\n问题：${originalQuery}`;
 
       const response = await this.llmClient.generateText(prompt);
       const queries = response

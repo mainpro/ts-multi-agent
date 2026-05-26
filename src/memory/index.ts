@@ -28,6 +28,16 @@ export { ContextBudgetManager } from './context-budget';
 
 // Round 2 - Extended types
 export type { MemoryEntry, MemoryLayer as MemoryLayerType, MemoryBackend, RetrievalResult, SearchOptions, MemoryQuery } from './types';
-export { MemoryLayer, DEFAULT_TTL } from './types';
+export { MemoryLayer, DEFAULT_TTL, DEFAULT_RECALL_CONFIG } from './types';
 export { SemanticExtractor } from './semantic-extractor';
 export type { ExtractedKnowledge } from './semantic-extractor';
+
+// Conversation Context Helper - 解决断点续执行时的上下文同步问题
+export {
+  checkQuestionHistoryConsistency,
+  buildQuestionAnswerPairs,
+  syncQuestionHistoryToContext,
+  buildResumedContext,
+  validateResumedContext,
+} from './conversation-context-helper';
+export type { ConsistencyCheckResult, ContextBuildOptions } from './conversation-context-helper';

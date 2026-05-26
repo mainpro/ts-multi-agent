@@ -23,7 +23,7 @@ export class UserProfileService {
     const now = new Date().toISOString();
     return {
       userId,
-      department: '市场部',
+      department: '财务部',
       commonSystems: [],
       tags: [],
       conversationCount: 0,
@@ -70,7 +70,7 @@ export class UserProfileService {
     const now = new Date().toISOString();
     const profile: UserProfile = {
       userId,
-      department: initialData?.department || '市场部',
+      department: initialData?.department || '财务部',
       commonSystems: initialData?.commonSystems || [],
       tags: initialData?.tags || [],
       conversationCount: 0,

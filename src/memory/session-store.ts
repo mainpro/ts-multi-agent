@@ -396,16 +396,25 @@ export class SessionStore {
     const request = session.requests.find(r => r.requestId === requestId);
     if (!request) return;
 
-    request.status = 'failed';
     request.result = result;
     request.updatedAt = new Date().toISOString();
 
-    if (session.activeRequestId === requestId) {
-      session.activeRequestId = null;
+    // 如果有等待中的问题，保持 waiting 状态，让用户刷新后仍可回答
+    const hasWaitingQuestion = request.currentQuestion ||
+      request.tasks.some(t => t.status === 'waiting' && t.currentQuestion);
+
+    if (hasWaitingQuestion) {
+      // 保留 waiting 状态和 activeRequestId，仅记录错误信息
+      console.log(`[SessionStore] ⚠️ 请求出错但保留等待状态: ${requestId} (原因: ${result.substring(0, 80)})`);
+    } else {
+      request.status = 'failed';
+      if (session.activeRequestId === requestId) {
+        session.activeRequestId = null;
+      }
+      console.log(`[SessionStore] ❌ 请求失败: ${requestId}`);
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ❌ 请求失败: ${requestId}`);
   }
 
   /**

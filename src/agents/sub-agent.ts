@@ -7,10 +7,16 @@ import {
 } from '../types';
 import { ToolRegistry, ToolContext, Tool } from '../tools';
 import type { AskUserArgs } from '../tools/ask-user-tool';
-import { buildSubAgentPrompt } from '../prompts';
+import { buildSubAgentPrompt, SubAgentPromptOptions } from '../prompts';
 import { hookManager } from '../hooks/hook-manager';
 import { HookEvent } from '../hooks/types';
 import { MemoryService } from '../memory/memory-service';
+import { MemoryLayer, DEFAULT_RECALL_CONFIG } from '../memory/types';
+import {
+  syncQuestionHistoryToContext,
+  buildResumedContext,
+  validateResumedContext,
+} from '../memory/conversation-context-helper';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -245,6 +251,58 @@ export class SubAgent {
     const skillRootDir = './skills/' + skill.name;
     const absoluteSkillRootDir = path.resolve(skillRootDir);
 
+    // ===== v3: 记忆召回 - 通用上下文组装（不依赖特定业务字段） =====
+    let promptOptions: SubAgentPromptOptions | undefined;
+    try {
+      if (this.memoryService && userId) {
+        const contextParts: string[] = [];
+
+        // 1. 加载用户画像，通用序列化为 key-value（不硬编码字段名）
+        const userMemory = await this.memoryService.loadMemory(userId);
+        if (userMemory?.profile) {
+          const profile = userMemory.profile;
+          const profileEntries: string[] = [];
+          // 通用遍历：只取有值的字段，不关心具体字段名
+          for (const [key, value] of Object.entries(profile)) {
+            if (value !== undefined && value !== null && key !== 'userId' && key !== 'conversationCount') {
+              if (Array.isArray(value) && value.length > 0) {
+                profileEntries.push(`- **${key}**: ${value.join(', ')}`);
+              } else if (typeof value === 'string' && value.trim()) {
+                profileEntries.push(`- **${key}**: ${value}`);
+              }
+            }
+          }
+          if (profileEntries.length > 0) {
+            contextParts.push('### 用户画像\n' + profileEntries.join('\n'));
+            console.log(`[SubAgent] 👤 已加载用户画像 (${profileEntries.length} 个字段)`);
+          }
+        }
+
+        // 2. 召回相关语义记忆（通用：任何被提取的语义知识都会被召回）
+        try {
+          const recalledResults = await this.memoryService.recall(userId, requirement, {
+            namespace: userId,
+            topK: DEFAULT_RECALL_CONFIG.SUB_AGENT_SEMANTIC_TOP_K,
+            layers: [MemoryLayer.SEMANTIC],
+          });
+          if (recalledResults.length > 0) {
+            const memoryLines = recalledResults.map(r => `- ${r.entry.content}`);
+            contextParts.push('### 相关记忆\n' + memoryLines.join('\n'));
+            console.log(`[SubAgent] 🧠 已召回 ${recalledResults.length} 条相关记忆`);
+          }
+        } catch (recallErr) {
+          console.warn('[SubAgent] ⚠️ 记忆召回失败，继续执行:', (recallErr as Error).message);
+        }
+
+        // 3. 组装为统一的上下文文本
+        if (contextParts.length > 0) {
+          promptOptions = { recalledContext: contextParts.join('\n\n') };
+        }
+      }
+    } catch (err) {
+      console.warn('[SubAgent] ⚠️ 上下文加载失败，继续执行:', (err as Error).message);
+    }
+
     // ===== v2: 构建增强的 system prompt =====
     const systemPrompt = await buildSubAgentPrompt(
       skill.body,
@@ -253,7 +311,8 @@ export class SubAgent {
       questionHistory,
       completedToolCalls,
       userId,
-      skill.name
+      skill.name,
+      promptOptions
     );
 
     const allTools = this.toolRegistry.list();
@@ -287,7 +346,7 @@ export class SubAgent {
       return safeTools.has(toolName);
     };
 
-    // ===== v2: 初始化或恢复对话上下文 =====
+    // ===== v2.1: 初始化或恢复对话上下文（优化版）=====
     let messages: Message[];
 
     if (conversationContext && conversationContext.length > 0) {
@@ -313,33 +372,23 @@ export class SubAgent {
       console.log(`[SubAgent] 📋 恢复对话上下文数: ${conversationContext.length}`);
       console.log(`[SubAgent] 📋 latestUserAnswer: "${params?.latestUserAnswer || '(无)'}"`);
 
-      // 恢复对话上下文，但替换 system prompt 为最新版本
-      messages = conversationContext.map(msg => ({
-        role: msg.role as 'system' | 'user' | 'assistant' | 'tool',
-        content: msg.content,
-        tool_call_id: msg.tool_call_id,
-        tool_calls: msg.tool_calls,
-      }));
-
-      // 替换第一条 system 消息为最新的 system prompt（包含最新的 questionHistory）
-      if (messages.length > 0 && messages[0].role === 'system') {
-        console.log(`[SubAgent] 🔄 替换 system prompt（原长度: ${messages[0].content.length} → 新长度: ${refreshedSystemPrompt.length}）`);
-        messages[0] = { role: 'system', content: refreshedSystemPrompt };
-      } else {
-        console.log(`[SubAgent] 🔄 插入新的 system prompt（长度: ${refreshedSystemPrompt.length}）`);
-        messages.unshift({ role: 'system', content: refreshedSystemPrompt });
-      }
-
-      // 纯对话技能的 conversationContext 可能只有 [system, user] 而缺少 assistant 提问，
-      // 仅靠 system prompt 中的询问历史文本不足以让 LLM 遵循"不重复提问"，
-      // 必须将问答对注入到消息流中，LLM 才会在正确的上下文中继续
-      const hasAssistantMessage = messages.some(m => m.role === 'assistant');
-      if (!hasAssistantMessage && questionHistory && questionHistory.length > 0) {
-        console.log(`[SubAgent] 🔧 conversationContext 缺少 assistant 消息，注入 ${questionHistory.length} 条问答对到对话历史`);
-        for (const qh of questionHistory) {
-          messages.push({ role: 'assistant', content: qh.question.content });
-          messages.push({ role: 'user', content: qh.answer });
+      // 使用优化后的上下文构建函数
+      messages = buildResumedContext(
+        conversationContext,
+        questionHistory || [],
+        refreshedSystemPrompt,
+        {
+          maxToolMessages: 10,
+          addContinuationPrompt: false,  // 我们在下面手动添加
         }
+      );
+
+      // 验证上下文完整性
+      const validation = validateResumedContext(messages, questionHistory || []);
+      if (!validation.valid) {
+        console.warn(`[SubAgent] ⚠️ 上下文验证警告:`, validation.issues);
+        // 尝试修复：同步 questionHistory
+        messages = syncQuestionHistoryToContext(messages, questionHistory || []);
       }
 
       // 追加用户最新回复（从 params 中获取）

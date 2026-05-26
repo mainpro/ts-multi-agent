@@ -13,6 +13,10 @@ export {
   buildSubAgentPrompt,
 } from './sub-agent';
 
+export type {
+  SubAgentPromptOptions,
+} from './sub-agent';
+
 export {
   buildSessionPrompt,
 } from './session-context-prompt';

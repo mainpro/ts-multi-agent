@@ -53,9 +53,9 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
      - context: 问题背景说明
 
     **使用示例**：
-    - 需要确认：{ "question": "确定要删除吗？", "expectedType": "confirm", "paramName": "confirmed" }
-    - 需要选择：{ "question": "请选择系统", "expectedType": "choice", "options": ["OA", "ERP"], "paramName": "system" }
-    - 需要文本：{ "question": "请提供工号", "expectedType": "text", "paramName": "employeeId" }
+    - 需要确认：{ "question": "确定要执行此操作吗？", "expectedType": "confirm", "paramName": "confirmed" }
+    - 需要选择：{ "question": "请选择处理方式", "expectedType": "choice", "options": ["方式A", "方式B"], "paramName": "method" }
+    - 需要文本：{ "question": "请提供相关标识", "expectedType": "text", "paramName": "identifier" }
 
 **工具使用原则**：
 - **已获取参数和询问历史已在下方直接展示，无需调用工具查看**
@@ -118,6 +118,11 @@ const SELF_REVIEW_PROMPT = `## 自我审查（副作用任务）
 >
 > 记或不记都不影响主任务执行。记录失败时忽略错误，继续执行主任务。`;
 
+export interface SubAgentPromptOptions {
+  /** 从记忆系统召回的相关上下文（已格式化的文本） */
+  recalledContext?: string | null;
+}
+
 export async function buildSubAgentPrompt(
   skillBody: string,
   skillRootDir: string = '',
@@ -125,7 +130,8 @@ export async function buildSubAgentPrompt(
   questionHistory?: QuestionHistoryEntry[],
   completedToolCalls?: CompletedToolCall[],
   userId?: string,
-  _skillName?: string
+  _skillName?: string,
+  options?: SubAgentPromptOptions
 ): Promise<string> {
   // 静态部分
   const staticParts = [
@@ -139,6 +145,11 @@ export async function buildSubAgentPrompt(
 
   // 动态部分
   const dynamicParts = [];
+
+  // ===== 已知上下文（从记忆系统召回的用户画像 + 语义记忆，通用格式） =====
+  if (options?.recalledContext) {
+    dynamicParts.push(`## 已知上下文\n${options.recalledContext}`);
+  }
 
   if (skillRootDir) {
     dynamicParts.push(`## 技能根目录\n${skillRootDir}`);
@@ -195,9 +206,30 @@ export async function buildSubAgentPrompt(
       })
       .join('\n');
 
-    dynamicParts.push(
-      `## 已发起的询问（等待回复）\n${askUserSummary}\n\n**注意**：以上询问已发送给用户，请等待用户回复后继续执行，不要重复询问。`
+    // 检查这些 ask_user 调用是否已经在 questionHistory 中有回答
+    const answeredQuestions = new Set(
+      questionHistory
+        ?.filter(qh => qh.question.metadata?.source === 'tool_call')
+        ?.map(qh => qh.question.content.substring(0, 50)) || []
     );
+
+    const unansweredCalls = askUserCalls.filter(tc => {
+      const args = tc.arguments as { question?: string };
+      const questionPrefix = args.question?.substring(0, 50) || '';
+      return !answeredQuestions.has(questionPrefix);
+    });
+
+    if (unansweredCalls.length > 0) {
+      // 有未回答的 ask_user 调用 - 这是断点续执行状态，等待用户回复
+      dynamicParts.push(
+        `## ⏳ 已发起的询问（等待用户回复）\n${askUserSummary}\n\n**重要提示**：以上询问已通过 ask_user 工具发送给用户，正在等待用户回复。当前是断点续执行状态，请直接继续执行后续步骤，绝对不要重复询问相同的问题。`
+      );
+    } else {
+      // 所有 ask_user 调用都已回答
+      dynamicParts.push(
+        `## ✅ 已完成的 ask_user 询问\n${askUserSummary}\n\n以上询问已通过 ask_user 工具完成，用户的回复已在「询问历史」或「已获取参数」中提供。`
+      );
+    }
   }
 
   // ===== 展示通过 ask_user 获取的参数 =====

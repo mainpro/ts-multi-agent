@@ -15,12 +15,12 @@ const InferenceSchema = z.object({
   category: z.enum(['preference', 'fact', 'procedure', 'event', 'question']),
 });
 
-const SYSTEM_PROMPT = `You are a memory importance analyzer. Analyze the given memory content and return a JSON object with exactly these fields:
-- "importance": a number between 0 and 1 indicating how important this memory is (0 = trivial, 1 = critical)
-- "scope": one of "personal", "team", "organization" indicating the scope of relevance
-- "category": one of "preference", "fact", "procedure", "event", "question" indicating the type of content
+const SYSTEM_PROMPT = `你是记忆重要性分析器。分析给定的记忆内容，返回一个 JSON 对象，包含以下字段：
+- "importance": 0 到 1 之间的数字，表示记忆的重要性（0 = 不重要，1 = 非常重要）
+- "scope": "personal"（个人）、"team"（团队）或 "organization"（组织），表示适用范围
+- "category": "preference"（偏好）、"fact"（事实）、"procedure"（流程）、"event"（事件）或 "question"（问题），表示内容类型
 
-Return ONLY valid JSON, no additional text.`;
+只返回有效的 JSON，不要包含其他文本。`;
 
 /**
  * ImportanceInferencer uses LLM to analyze memory content and infer
@@ -60,12 +60,12 @@ export class ImportanceInferencer {
   }
 
   private async inferWithLLM(entry: MemoryEntry): Promise<InferenceResult> {
-    const prompt = `Analyze this memory content and return JSON with importance (0-1), scope (personal/team/organization), category (preference/fact/procedure/event/question):
+    const prompt = `分析以下记忆内容，返回包含 importance (0-1)、scope (personal/team/organization)、category (preference/fact/procedure/event/question) 的 JSON：
 
-Content: ${entry.content}
-Layer: ${entry.layer}
-Namespace: ${entry.namespace}
-Metadata: ${JSON.stringify(entry.metadata)}`;
+内容：${entry.content}
+层级：${entry.layer}
+命名空间：${entry.namespace}
+元数据：${JSON.stringify(entry.metadata)}`;
 
     const result = await this.llmClient!.generateStructured(
       prompt,

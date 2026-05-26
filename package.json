@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/index.ts --out-dir dist --clean --target node20 && cp AGENT.md dist/ && cp .env.example dist/.env && cp -r skills dist/ && cp -r public dist/ && cp -r system-skills dist/",
+    "build": "tsup src/index.ts --out-dir dist --clean --target node20 && cp AGENT.md dist/ && cp .env dist/.env && cp -r skills dist/ && cp -r public dist/ && cp -r system-skills dist/",
     "dev": "bun run --watch src/index.ts",
     "start": "node dist/index.js",
     "test": "bun test",
