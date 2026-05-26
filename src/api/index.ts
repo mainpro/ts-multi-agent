@@ -8,6 +8,7 @@ import { Task, TaskStatus } from '../types';
 import { randomUUID } from 'crypto';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { RequestContext } from '../context/request-context';
+import { resolveResource } from '../utils/app-root';
 
 interface ImageAttachment {
   data: Buffer;
@@ -154,7 +155,7 @@ export function createAPIServer(
   });
 
   // Static files middleware
-  app.use(express.static('public'));
+  app.use(express.static(resolveResource('public')));
 
   // Request logging middleware
   app.use((req: Request, res: Response, next: NextFunction) => {

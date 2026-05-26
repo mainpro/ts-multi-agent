@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as dotenv from 'dotenv';
+import { resolveResource } from '../utils/app-root';
 
 // ============================================================================
 // Tool System Types (re-exported for convenience)
@@ -435,7 +436,7 @@ export interface ExecutionProgress {
 /**
  * System configuration constants
  */
-dotenv.config();
+dotenv.config({ path: resolveResource('.env') });
 export const CONFIG = {
   /** Maximum concurrent subagents */
   MAX_CONCURRENT_SUBAGENTS: 5,
@@ -452,7 +453,7 @@ export const CONFIG = {
   /** Script execution timeout - should be less than TASK_TIMEOUT_MS */
   SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
-  SKILL_DIRECTORY: './skills/',
+  SKILL_DIRECTORY: resolveResource('skills') + '/',
   /** LLM Provider: nvidia | openrouter | zhipu | siliconflow | haier */
   LLM_PROVIDER: process.env.LLM_PROVIDER || 'openrouter',
   /** LLM model name */
@@ -482,7 +483,7 @@ export const CONFIG = {
   /** Connection keep-alive timeout in milliseconds */
   LLM_CONNECTION_KEEP_ALIVE_MS: parseInt(process.env.LLM_CONNECTION_KEEP_ALIVE_MS || '60000', 10),
   /** Intent router config file path */
-  INTENT_ROUTER_CONFIG_PATH: process.env.INTENT_ROUTER_CONFIG || './config/intent-router.json',
+  INTENT_ROUTER_CONFIG_PATH: process.env.INTENT_ROUTER_CONFIG || resolveResource('config', 'intent-router.json'),
 } as const;
 
 // ============================================================================

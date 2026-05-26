@@ -778,7 +778,10 @@ export class MainAgent {
             id: `task-${idx + 1}`,
             requirement: t.requirement,
             skillName: t.skillName!,
-            params: t.params,
+            params: {
+              ...t.params,
+              ...(userProfile.department ? { department: userProfile.department } : {}),
+            },
             dependencies: [],
           })),
         };
@@ -793,6 +796,11 @@ export class MainAgent {
           };
         }
         plan = planResult.plan;
+        for (const task of plan.tasks) {
+          if (userProfile.department) {
+            task.params = { ...task.params, department: userProfile.department };
+          }
+        }
       }
 
       console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);

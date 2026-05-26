@@ -11,6 +11,7 @@ import { buildSubAgentPrompt, SubAgentPromptOptions } from '../prompts';
 import { hookManager } from '../hooks/hook-manager';
 import { HookEvent } from '../hooks/types';
 import { MemoryService } from '../memory/memory-service';
+import { resolveResource } from '../utils/app-root';
 import { MemoryLayer, DEFAULT_RECALL_CONFIG } from '../memory/types';
 import {
   syncQuestionHistoryToContext,
@@ -248,7 +249,7 @@ export class SubAgent {
     completedToolCalls?: CompletedToolCall[], // v2: 已完成的工具调用
     signal?: AbortSignal
   ): Promise<SubAgentInternalResult> {
-    const skillRootDir = './skills/' + skill.name;
+    const skillRootDir = resolveResource('skills', skill.name);
     const absoluteSkillRootDir = path.resolve(skillRootDir);
 
     // ===== v3: 记忆召回 - 通用上下文组装（不依赖特定业务字段） =====
@@ -554,6 +555,20 @@ export class SubAgent {
     const askUserCall = trackedToolCalls.find(tc => tc.name === 'ask_user');
     if (askUserCall) {
       const args = askUserCall.arguments as unknown as AskUserArgs;
+
+      // P0: 预检查 — 如果 ask_user 询问的信息已在 params 中，自动回答
+      if (args.paramName && params && params[args.paramName] !== undefined && params[args.paramName] !== null && params[args.paramName] !== '') {
+        const existingValue = String(params[args.paramName]);
+        console.log(`[SubAgent] 🔄 ask_user 预检查: paramName="${args.paramName}" 已在 params 中 (value="${existingValue}")，跳过询问`);
+
+        return {
+          response: `[系统自动填充] 根据已知信息，${args.paramName} = ${existingValue}`,
+          status: 'completed',
+          _conversationContext: result.messages,
+          _completedToolCalls: trackedToolCalls,
+        };
+      }
+
       console.log(`[SubAgent] 🔄 检测到 ask_user 工具调用，返回 waiting_user_input 状态`);
 
       return {

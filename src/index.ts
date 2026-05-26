@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv';
-dotenv.config();
+import { resolveResource } from './utils/app-root';
+dotenv.config({ path: resolveResource('.env') });
 
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
@@ -25,7 +26,7 @@ function getPort(): number {
 }
 
 const PORT = getPort();
-const SKILL_DIR = process.env.SKILL_DIR || './skills';
+const SKILL_DIR = process.env.SKILL_DIR || resolveResource('skills');
 
 let skillRegistry: SkillRegistry;
 

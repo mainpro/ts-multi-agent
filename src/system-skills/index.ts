@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { SystemSkill } from './types';
+import { resolveResource } from '../utils/app-root';
 
 export type { SystemSkill, SystemSkillExecutor, SystemSkillResult } from './types';
 export { ExecutorRegistry } from './executor-registry';
@@ -10,7 +11,7 @@ export class SystemSkillLoader {
   private systemSkillsDir: string;
 
   constructor(systemSkillsDir?: string) {
-    this.systemSkillsDir = systemSkillsDir || join(process.cwd(), 'system-skills');
+    this.systemSkillsDir = systemSkillsDir || resolveResource('system-skills');
   }
 
   loadAll(): Map<string, SystemSkill> {
