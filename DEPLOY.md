@@ -19,7 +19,7 @@ npm install
 npm run build
 
 # 4. 启动
-npm start --port 3000
+npm start --port=3000
 ```
 
 ## 部署 dist/
