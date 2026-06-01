@@ -35,7 +35,7 @@ node dist/index.js
 dist/
 ├── index.js          ← 单文件，含 express/zod 等所有依赖
 ├── .env              ← 部署时编辑
-├── AGENT.md
+├── AGENTS.md
 ├── improvement.md
 ├── skills/
 ├── system-skills/

@@ -1,10 +1,10 @@
 import { readFileSync } from 'fs';
 
 /**
- * 从 AGENT.md 读取 Knowledge Base 和 Behavioral Rules 内容
- * @param filePath AGENT.md 路径
+ * 从 AGENTS.md 读取 Knowledge Base 和 Behavioral Rules 内容
+ * @param filePath AGENTS.md 路径
  */
-export function buildKnowledgePrompt(filePath: string = 'AGENT.md'): string {
+export function buildKnowledgePrompt(filePath: string = 'AGENTS.md'): string {
   try {
     const content = readFileSync(filePath, 'utf-8');
 
@@ -20,7 +20,7 @@ export function buildKnowledgePrompt(filePath: string = 'AGENT.md'): string {
 
     return `## 全局行为约束
 
-以下规则来自 AGENT.md，是所有 AI Agent 必须遵守的规范：
+以下规则来自 AGENTS.md，是所有 AI Agent 必须遵守的规范：
 
 ${parts.join('\n\n---\n\n')}`;
   } catch {

@@ -10,7 +10,7 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 以下规则按优先级从高到低排列。**高优先级规则覆盖低优先级规则**：
 
-1. 🔴 **系统级规则**（本 prompt + AGENT.md 全局行为约束）— 最高优先级
+1. 🔴 **系统级规则**（本 prompt + AGENTS.md 全局行为约束）— 最高优先级
 2. 🟡 **技能文档**（SKILL.md 中的流程和对话示例）
 3. 🟢 **通用 AI 行为准则**（合理推断、避免重复工作）
 
@@ -97,7 +97,7 @@ export const SUB_AGENT_BASE_PROMPT = `你是一名专业且可靠的中文运维
 
 import { PromptBuilder } from './prompt-builder';
 import { QuestionHistoryEntry, CompletedToolCall } from '../types';
-import { buildKnowledgePrompt } from '../agent-md/injector';
+import { buildKnowledgePrompt } from '../agents-md/injector';
 
 // 自我审查 prompt（内联，无需读取外部文件）
 const SELF_REVIEW_PROMPT = `## 自我审查（副作用任务）
@@ -275,7 +275,7 @@ export async function buildSubAgentPrompt(
     dynamicParts.push(`\n## 重要提示\n如果您之前已经问过用户某个问题（特别是通过 ask_user 工具），并且用户已经回答了，请不要重复询问相同的问题。请根据用户的回答继续执行任务，跳过已经完成的步骤。`);
   }
 
-  // ===== AGENT.md 全局行为约束注入 =====
+  // ===== AGENTS.md 全局行为约束注入 =====
   const knowledgeContent = buildKnowledgePrompt();
   if (knowledgeContent) {
     dynamicParts.push(knowledgeContent);

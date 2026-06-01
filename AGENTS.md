@@ -1,4 +1,4 @@
-# AGENT.md - Project Knowledge Base & Behavioral Rules
+# AGENTS.md - Project Knowledge Base & Behavioral Rules
 
 > This file defines project-wide conventions, behavioral rules, and safety constraints for all AI agents in the system.
 > It serves as the source of truth for how agents should behave, what they must not do, and how the project is organized.
