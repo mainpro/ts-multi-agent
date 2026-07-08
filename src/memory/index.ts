@@ -18,7 +18,7 @@ export { MemoryDedupService, DEFAULT_DEDUP_THRESHOLD, DEFAULT_CONSOLIDATION_THRE
 export { ImportanceInferencer } from './importance-inferencer';
 export type { InferenceResult } from './importance-inferencer';
 export { SemanticRetrievalEngine } from './semantic-retrieval';
-export type { RetrievalWeights, AdaptiveRetrievalConfig } from './semantic-retrieval';
+export type { RetrievalWeights } from './semantic-retrieval';
 export { EmbeddingService } from './embedding-service';
 export type { EmbeddingConfig } from './embedding-service';
 export { SharedMemoryPool } from './shared-memory-pool';

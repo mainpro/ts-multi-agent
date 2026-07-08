@@ -484,6 +484,16 @@ export const CONFIG = {
   LLM_CONNECTION_KEEP_ALIVE_MS: parseInt(process.env.LLM_CONNECTION_KEEP_ALIVE_MS || '60000', 10),
   /** Intent router config file path */
   INTENT_ROUTER_CONFIG_PATH: process.env.INTENT_ROUTER_CONFIG || resolveResource('config', 'intent-router.json'),
+  /** Embedding API base URL (e.g. https://api.siliconflow.cn/v1) */
+  EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || '',
+  /** Embedding API key (defaults to SILICONFLOW_API_KEY if not set) */
+  EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY || process.env.SILICONFLOW_API_KEY || '',
+  /** Embedding model name */
+  EMBEDDING_MODEL: process.env.EMBEDDING_MODEL || 'BAAI/bge-large-zh-v1.5',
+  /** Embedding vector dimension */
+  EMBEDDING_DIMENSION: parseInt(process.env.EMBEDDING_DIMENSION || '1024', 10),
+  /** Embedding cache size */
+  EMBEDDING_CACHE_SIZE: parseInt(process.env.EMBEDDING_CACHE_SIZE || '1000', 10),
 } as const;
 
 // ============================================================================

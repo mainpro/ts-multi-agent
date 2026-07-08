@@ -50,7 +50,7 @@ export class SharedMemoryPool {
         allResults.push({
           entry,
           score,
-          scoreBreakdown: { recency, keyword, importance },
+          scoreBreakdown: { recency, keyword, importance, semantic: 0 },
         });
       }
     }

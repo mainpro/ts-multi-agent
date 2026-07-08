@@ -161,6 +161,7 @@ export interface RetrievalResult {
     recency: number;
     keyword: number;
     importance: number;
+    semantic: number;
   };
 }
 

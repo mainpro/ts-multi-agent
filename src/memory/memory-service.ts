@@ -11,6 +11,7 @@ import { MemoryDedupService } from './memory-dedup';
 import { ImportanceInferencer, InferenceResult } from './importance-inferencer';
 import { evictCompletedWorkingMemory as evictCompleted } from './working-memory-lifecycle';
 import { SharedMemoryPool } from './shared-memory-pool';
+import { CONFIG } from '../types';
 
 export interface UserMemory {
   profile: UserProfile;
@@ -35,9 +36,15 @@ export class MemoryService {
   ) {
     this.userProfileService = new UserProfileService(dataDir);
     this.autoCompactService = new AutoCompactService(llmClient);
-    this.embeddingService = new EmbeddingService(llmClient);
+    this.embeddingService = new EmbeddingService(undefined, {
+      dimension: CONFIG.EMBEDDING_DIMENSION,
+      apiUrl: CONFIG.EMBEDDING_BASE_URL || undefined,
+      apiKey: CONFIG.EMBEDDING_API_KEY || undefined,
+      model: CONFIG.EMBEDDING_MODEL,
+      cacheSize: CONFIG.EMBEDDING_CACHE_SIZE,
+    });
     this.store = new UserMemoryStore(config.storagePath || 'data/memory');
-    this.semanticRetrieval = new SemanticRetrievalEngine(this.embeddingService, undefined, 24, undefined, llmClient);
+    this.semanticRetrieval = new SemanticRetrievalEngine(this.embeddingService, undefined, 24, undefined);
     this.dedupService = new MemoryDedupService();
     this.importanceInferencer = new ImportanceInferencer(llmClient);
     this.sharedPool = new SharedMemoryPool(this.store);
@@ -102,7 +109,7 @@ export class MemoryService {
       entries.push(...layerEntries);
     }
     if (entries.length === 0) return [];
-    const results = await this.semanticRetrieval.adaptiveRetrieve(query, entries, {
+    const results = await this.semanticRetrieval.retrieve(query, entries, {
       topK: options?.topK,
       minScore: options?.minScore,
       layers,
@@ -181,6 +188,15 @@ export class MemoryService {
 
   async saveSemanticMemory(userId: string, content: string, category: 'preference' | 'fact' | 'knowledge' | 'rule' = 'fact', source: 'inferred' | 'explicit' = 'inferred', confidence: number = 0.7): Promise<void> {
     const now = new Date().toISOString();
+
+    // 生成 embedding（异步，失败不阻塞保存流程）
+    let embedding: number[] | undefined;
+    try {
+      embedding = await this.embeddingService.generateEmbedding(content) ?? undefined;
+    } catch (e) {
+      console.warn('[MemoryService] Embedding 生成失败，继续保存:', (e as Error).message);
+    }
+
     const entry: MemoryEntry = {
       id: `semantic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       layer: MemoryLayer.SEMANTIC,
@@ -191,6 +207,7 @@ export class MemoryService {
       updatedAt: now,
       namespace: userId,
       ttl: DEFAULT_TTL[MemoryLayer.SEMANTIC],
+      embedding,
     };
     await this.store.appendEntry(userId, MemoryLayer.SEMANTIC, entry);
   }
