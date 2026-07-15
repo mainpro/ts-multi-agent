@@ -13,6 +13,7 @@ import { HookEvent } from '../hooks/types';
 import { MemoryService } from '../memory/memory-service';
 import { resolveResource } from '../utils/app-root';
 import { MemoryLayer, DEFAULT_RECALL_CONFIG } from '../memory/types';
+import { fireAndForget } from '../utils/fire-and-forget';
 import {
   syncQuestionHistoryToContext,
   buildResumedContext,
@@ -213,21 +214,24 @@ export class SubAgent {
       // ===== 发布执行结果到共享记忆池 =====
       if (this.memoryService && cleanResult.response) {
         const responseText = cleanResult.response.substring(0, 200);
-        this.memoryService.shareMemory('sub-agent', {
-          id: `shared-${task.id}-${Date.now()}`,
-          layer: 'procedural' as any,
-          content: responseText,
-          metadata: {
-            publishedBy: 'sub-agent',
-            skillName: task.skillName,
-            taskId: task.id,
-            success: true,
-          },
-          importance: 0.7,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          namespace: 'shared/sub-agent',
-        }).catch(e => console.error('[SubAgent] Failed to publish to shared pool:', e));
+        fireAndForget(
+          this.memoryService.shareMemory('sub-agent', {
+            id: `shared-${task.id}-${Date.now()}`,
+            layer: 'procedural' as any,
+            content: responseText,
+            metadata: {
+              publishedBy: 'sub-agent',
+              skillName: task.skillName,
+              taskId: task.id,
+              success: true,
+            },
+            importance: 0.7,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            namespace: 'shared/sub-agent',
+          }),
+          'shareMemory (sub-agent)',
+        );
       }
 
       return { success: true, data: cleanResult };

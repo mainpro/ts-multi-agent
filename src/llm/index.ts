@@ -12,6 +12,61 @@ function buildApiUrl(baseUrl: string, path: string): string {
   return `${normalizedBase}${normalizedPath}`;
 }
 
+/**
+ * 修复 LLM 输出的 JSON 中字符串值内部未转义的双引号
+ *
+ * LLM 常见问题：在字符串值里直接使用 ASCII 双引号（如 "用户输入"你好""），
+ * 导致 JSON.parse 失败。本函数逐字符扫描，识别字符串边界，
+ * 将字符串内部的未转义双引号转义为 \"。
+ */
+function repairUnescapedQuotes(jsonStr: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < jsonStr.length; i++) {
+    const ch = jsonStr[i];
+
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      if (!inString) {
+        // 字符串开始
+        inString = true;
+        result += ch;
+      } else {
+        // 在字符串内，判断这个双引号是字符串结束还是内部未转义引号
+        // 向后看：跳过空白，如果是 , } ] : 说明是字符串结束
+        let j = i + 1;
+        while (j < jsonStr.length && /\s/.test(jsonStr[j])) j++;
+        const nextCh = jsonStr[j];
+        if (nextCh === ',' || nextCh === '}' || nextCh === ']' || nextCh === ':') {
+          // 字符串结束
+          inString = false;
+          result += ch;
+        } else {
+          // 字符串内部的未转义双引号，转义为 \"
+          result += '\\"';
+        }
+      }
+    } else {
+      result += ch;
+    }
+  }
+
+  return result;
+}
+
 
 export type LLMEventType = 'reasoning' | 'response';
 
@@ -685,14 +740,16 @@ export class LLMClient {
     }
 
     let content = response.content.trim();
-    
+
+    // 剥离 markdown 代码块标记
     const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (jsonMatch) {
       content = jsonMatch[1].trim();
     }
-    
+
+    // 始终提取第一个完整 JSON 对象（避免 content 前后有附加文本导致 JSON.parse 失败）
     const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonObjectMatch && !content.startsWith('{')) {
+    if (jsonObjectMatch) {
       content = jsonObjectMatch[0];
     }
 
@@ -700,8 +757,22 @@ export class LLMClient {
       const parsed = JSON.parse(content);
       return schema.parse(parsed);
     } catch (parseError) {
+      // LLM 常见问题：字符串值内部包含未转义的双引号（如 "用户输入"你好""）
+      // 尝试修复：将字段值内部的 ASCII 双引号替换为中文引号
+      try {
+        const repaired = repairUnescapedQuotes(content);
+        const parsed = JSON.parse(repaired);
+        console.warn('[LLM] JSON 修复成功（原内容包含未转义双引号）');
+        return schema.parse(parsed);
+      } catch {
+        // 修复后仍失败，抛出原始错误
+      }
+      const errMsg = parseError instanceof Error
+        ? `${parseError.name}: ${parseError.message}`
+        : String(parseError);
       console.error('[LLM] Schema validation failed. Content:', content.substring(0, 500));
-      throw new LLMError('API_ERROR', 'Schema validation failed: ' + JSON.stringify(parseError));
+      console.error('[LLM] Parse error:', errMsg);
+      throw new LLMError('API_ERROR', 'Schema validation failed: ' + errMsg);
     }
   }
 

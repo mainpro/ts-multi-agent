@@ -31,6 +31,7 @@ import {
 } from "../types";
 import { EmbeddingService } from "../memory/embedding-service";
 import { SystemSkillLoader, ExecutorRegistry } from "../system-skills";
+import { fireAndForget } from "../utils/fire-and-forget";
 
 export class MainAgent {
   private maxReplanAttempts: number;
@@ -310,7 +311,10 @@ export class MainAgent {
           currentQuestion: null,
         });
         this.syncRequestStatusAfterAnswer(userId, sessionId, request);
-        this.semanticExtractor.extract(userId, question.answer || '', `已记录您的回答：${question.answer}`, taskEntry.skillName || undefined).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+        fireAndForget(
+          this.semanticExtractor.extract(userId, question.answer || '', `已记录您的回答：${question.answer}`, taskEntry.skillName || undefined),
+          'semanticExtractor.extract (continueRequest)',
+        );
         return {
           success: true,
           data: {
@@ -964,7 +968,10 @@ export class MainAgent {
       try {
         await this.memoryService.saveAssistantMessage(userId, assistantResponse, { skill: taskList[0]?.skillName || undefined });
       } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
-      this.semanticExtractor.extract(userId, requirement, assistantResponse, taskList[0]?.skillName || undefined).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+      fireAndForget(
+        this.semanticExtractor.extract(userId, requirement, assistantResponse, taskList[0]?.skillName || undefined),
+        'semanticExtractor.extract (processNormalRequirement)',
+      );
 
       // ===== v3: 从已完成任务的 questionHistory 中提取语义知识 =====
       const allTasks = await this.taskQueue.getAllTasks();
@@ -972,7 +979,10 @@ export class MainAgent {
         if (t.questionHistory && t.questionHistory.length > 0 && t.status === 'completed') {
           for (const qh of t.questionHistory) {
             if (qh.answer && qh.answer.trim().length > 0) {
-              this.semanticExtractor.extract(userId, qh.question.content, qh.answer, t.skillName).catch(e => console.error('[MainAgent] QuestionHistory semantic extraction failed:', e));
+              fireAndForget(
+              this.semanticExtractor.extract(userId, qh.question.content, qh.answer, t.skillName),
+              'semanticExtractor.extract (questionHistory loop)',
+            );
             }
           }
         }
@@ -1141,51 +1151,56 @@ ${resultsContext}
     sessionId: string,
     request: Request
   ): Promise<TaskResult> {
-    const maxWaitTime = CONFIG.TASK_TIMEOUT_MS;
-    const pollInterval = 500;
-    const startTime = Date.now();
+    const result = await this.onceTaskEvent(taskId);
+    const task = this.taskQueue.getTask(taskId);
 
-    while (Date.now() - startTime < maxWaitTime) {
-      const task = this.taskQueue.getTask(taskId);
-      if (!task) {
-        return { success: false, error: { type: 'FATAL', message: '任务丢失', code: 'TASK_LOST' } };
-      }
-
-      if (task.status === "completed") {
-        return await this.handleTaskCompletion(task, userId, sessionId, request);
-      }
-
-      if (task.status === "failed") {
-          try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
-          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
-
-          if (task.skillName) {
-            try {
-              const taskResult = task.result;
-              await this.memoryService.saveProceduralMemory(
-                userId,
-                task.skillName,
-                task.requirement,
-                task.params,
-                taskResult && typeof taskResult === 'object' && 'data' in taskResult && typeof (taskResult as any).data?.response === 'string'
-                  ? (taskResult as any).data.response.substring(0, 200)
-                  : undefined,
-                false,
-              );
-            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-          }
-          this.semanticExtractor.extract(userId, task.requirement || '', (task.result && typeof task.result === 'object' && 'data' in task.result && typeof (task.result as any).data?.response === 'string') ? (task.result as any).data.response : JSON.stringify(task.result), task.skillName).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
-        return {
-          success: false,
-          error: task.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' },
-        };
-      }
-
-      await this.sleep(pollInterval);
+    if (!task || result.status === 'lost') {
+      return { success: false, error: { type: 'FATAL', message: '任务丢失', code: 'TASK_LOST' } };
     }
 
-    return { success: false, error: { type: 'FATAL', message: '任务执行超时', code: 'TASK_TIMEOUT' } };
+    if (result.status === 'timeout') {
+      return { success: false, error: { type: 'FATAL', message: '任务执行超时', code: 'TASK_TIMEOUT' } };
+    }
+
+    if (task.status === 'completed') {
+      return this.handleTaskCompletion(task, userId, sessionId, request);
+    }
+
+    // task.status === 'failed'
+    try {
+      await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
+    } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
+
+    if (task.skillName) {
+      try {
+        const taskResult = task.result;
+        await this.memoryService.saveProceduralMemory(
+          userId,
+          task.skillName,
+          task.requirement,
+          task.params,
+          taskResult && typeof taskResult === 'object' && 'data' in taskResult && typeof (taskResult as any).data?.response === 'string'
+            ? (taskResult as any).data.response.substring(0, 200)
+            : undefined,
+          false,
+        );
+      } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
+    }
+    fireAndForget(
+      this.semanticExtractor.extract(
+        userId,
+        task.requirement || '',
+        (task.result && typeof task.result === 'object' && 'data' in task.result && typeof (task.result as any).data?.response === 'string')
+          ? (task.result as any).data.response
+          : JSON.stringify(task.result),
+        task.skillName,
+      ),
+      'semanticExtractor.extract (pollTaskCompletion/failed)',
+    );
+    return {
+      success: false,
+      error: task.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' },
+    };
   }
 
   /**
@@ -1271,18 +1286,24 @@ ${resultsContext}
           true,
         );
       } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-      this.semanticExtractor.extract(userId, task.requirement || '', typeof skillData?.response === 'string' ? skillData.response : JSON.stringify(skillData), task.skillName).catch(e => console.error('[MainAgent] Semantic extraction failed:', e));
+      fireAndForget(
+        this.semanticExtractor.extract(userId, task.requirement || '', typeof skillData?.response === 'string' ? skillData.response : JSON.stringify(skillData), task.skillName),
+        'semanticExtractor.extract (handleTaskCompletion)',
+      );
 
       // ===== v3: 从 questionHistory 中提取语义知识（如用户属性、偏好等事实信息） =====
       if (task.questionHistory && task.questionHistory.length > 0) {
         for (const qh of task.questionHistory) {
           if (qh.answer && qh.answer.trim().length > 0) {
-            this.semanticExtractor.extract(
-              userId,
-              qh.question.content,   // 问题作为用户输入
-              qh.answer,             // 回答作为助手上下文
-              task.skillName
-            ).catch(e => console.error('[MainAgent] QuestionHistory semantic extraction failed:', e));
+            fireAndForget(
+              this.semanticExtractor.extract(
+                userId,
+                qh.question.content,
+                qh.answer,
+                task.skillName,
+              ),
+              'semanticExtractor.extract (handleTaskCompletion/questionHistory)',
+            );
           }
         }
       }
@@ -1471,55 +1492,8 @@ ${resultsContext}
 
         this.taskQueue.addTask(task);
 
-        // 等待任务完成
-        return new Promise<{ taskId: string; result: any; status: string }>((resolve) => {
-          const checkTask = () => {
-            const t = this.taskQueue.getTask(taskId);
-            if (!t) {
-              resolve({ taskId, result: null, status: 'lost' });
-              return;
-            }
-            if (t.status === 'completed' || t.status === 'failed') {
-              resolve({ taskId, result: t.result, status: t.status });
-              return;
-            }
-          };
-
-          this.taskQueue.on('task-completed', checkTask);
-          this.taskQueue.on('task-failed', checkTask);
-
-          const timeout = setTimeout(() => {
-            this.taskQueue.off('task-completed', checkTask);
-            this.taskQueue.off('task-failed', checkTask);
-            resolve({ taskId, result: null, status: 'timeout' });
-          }, CONFIG.TASK_TIMEOUT_MS);
-
-          // 立即检查一次（可能已完成）
-          checkTask();
-
-          // 包装 resolve 以清理监听
-          const origResolve = resolve;
-          const wrappedResolve = (value: { taskId: string; result: any; status: string }) => {
-            clearTimeout(timeout);
-            this.taskQueue.off('task-completed', checkTask);
-            this.taskQueue.off('task-failed', checkTask);
-            origResolve(value);
-          };
-
-          // 重新绑定
-          this.taskQueue.off('task-completed', checkTask);
-          this.taskQueue.off('task-failed', checkTask);
-          const wrappedCheck = () => {
-            const t = this.taskQueue.getTask(taskId);
-            if (!t) { wrappedResolve({ taskId, result: null, status: 'lost' }); return; }
-            if (t.status === 'completed' || t.status === 'failed') {
-              wrappedResolve({ taskId, result: t.result, status: t.status });
-            }
-          };
-          this.taskQueue.on('task-completed', wrappedCheck);
-          this.taskQueue.on('task-failed', wrappedCheck);
-          wrappedCheck();
-        });
+        // 等待任务完成 — 使用一次性事件监听替代混乱的 Promise 包装
+        return this.onceTaskEvent(taskId);
       });
 
       const layerResults = await Promise.all(layerPromises);
@@ -1678,77 +1652,48 @@ ${resultsContext}
 
   private async waitForCompletion(planId: string): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve) => {
-      const checkCompletion = () => {
-        const allTasks = this.taskQueue.getAllTasks();
-        const planTasks = allTasks.filter((t) => t.id.startsWith(planId) && t.skillName);
+      const handler = () => {
+        const planTasks = this.taskQueue.getAllTasks()
+          .filter((t) => t.id.startsWith(planId) && t.skillName);
 
         if (planTasks.length === 0) {
+          cleanup();
           resolve({ success: true, data: { planId, results: [] } });
           return;
         }
 
-        const allCompleted = planTasks.every((t) => t.status === "completed" || t.status === "failed");
+        const allCompleted = planTasks.every((t) => t.status === 'completed' || t.status === 'failed');
+        if (!allCompleted) return;
 
-        if (allCompleted) {
-          const failedTasks = planTasks.filter((t) => t.status === "failed");
-          if (failedTasks.length === 0) {
-            const results = planTasks.filter((t) => t.status === "completed").map((t) => ({
-              taskId: t.id, skillName: t.skillName, requirement: t.requirement, result: t.result,
-            }));
-            console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`);
-            resolve({ success: true, data: { planId, results } });
-          } else {
-            resolve({ success: false, error: failedTasks[0].error });
-          }
+        cleanup();
+        const failed = planTasks.filter((t) => t.status === 'failed');
+        if (failed.length > 0) {
+          resolve({ success: false, error: failed[0].error });
+        } else {
+          const results = planTasks.filter((t) => t.status === 'completed').map((t) => ({
+            taskId: t.id, skillName: t.skillName, requirement: t.requirement, result: t.result,
+          }));
+          console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`);
+          resolve({ success: true, data: { planId, results } });
         }
       };
 
-      const onDone = () => checkCompletion();
-      this.taskQueue.on('task-completed', onDone);
-      this.taskQueue.on('task-failed', onDone);
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        this.taskQueue.off('task-completed', handler);
+        this.taskQueue.off('task-failed', handler);
+      };
+
+      this.taskQueue.on('task-completed', handler);
+      this.taskQueue.on('task-failed', handler);
 
       const timeoutHandle = setTimeout(() => {
-        this.taskQueue.off('task-completed', onDone);
-        this.taskQueue.off('task-failed', onDone);
+        cleanup();
         resolve({ success: false, error: { type: 'RETRYABLE', message: 'timeout', code: 'TIMEOUT' } });
       }, CONFIG.TOTAL_TIMEOUT_MS);
 
-      const originalResolve = resolve;
-      const wrappedResolve = (value: TaskResult) => {
-        clearTimeout(timeoutHandle);
-        this.taskQueue.off('task-completed', onDone);
-        this.taskQueue.off('task-failed', onDone);
-        originalResolve(value);
-      };
-
-      const wrappedCheck = () => {
-        const allTasks = this.taskQueue.getAllTasks();
-        const planTasks = allTasks.filter((t) => t.id.startsWith(planId) && t.skillName);
-        if (planTasks.length === 0) {
-          wrappedResolve({ success: true, data: { planId, results: [] } });
-          return;
-        }
-        const allCompleted = planTasks.every((t) => t.status === "completed" || t.status === "failed");
-        if (allCompleted) {
-          const failedTasks = planTasks.filter((t) => t.status === "failed");
-          if (failedTasks.length === 0) {
-            const results = planTasks.filter((t) => t.status === "completed").map((t) => ({
-              taskId: t.id, skillName: t.skillName, requirement: t.requirement, result: t.result,
-            }));
-            console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`);
-            wrappedResolve({ success: true, data: { planId, results } });
-          } else {
-            wrappedResolve({ success: false, error: failedTasks[0].error });
-          }
-        }
-      };
-
-      this.taskQueue.off('task-completed', onDone);
-      this.taskQueue.off('task-failed', onDone);
-      const wrappedOnDone = () => wrappedCheck();
-      this.taskQueue.on('task-completed', wrappedOnDone);
-      this.taskQueue.on('task-failed', wrappedOnDone);
-      wrappedCheck();
+      // 立即检查一次
+      handler();
     });
   }
 
@@ -1785,8 +1730,42 @@ ${resultsContext}
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * 一次性监听单个任务完成/失败事件
+   * 替代 executeTaskGraph/pollTaskCompletion 中混乱的 Promise + 事件 + 轮询模式
+   */
+  private onceTaskEvent(taskId: string): Promise<{ taskId: string; result: any; status: string }> {
+    return new Promise((resolve) => {
+      const handler = (event: { taskId: string; result?: any }) => {
+        if (event.taskId !== taskId) return;
+        const t = this.taskQueue.getTask(taskId);
+        if (!t) {
+          resolve({ taskId, result: null, status: 'lost' });
+          return;
+        }
+        if (t.status === 'completed' || t.status === 'failed') {
+          cleanup();
+          resolve({ taskId, result: t.result, status: t.status });
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        this.taskQueue.off('task-completed', handler);
+        this.taskQueue.off('task-failed', handler);
+      };
+
+      this.taskQueue.on('task-completed', handler);
+      this.taskQueue.on('task-failed', handler);
+
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        resolve({ taskId, result: null, status: 'timeout' });
+      }, CONFIG.TASK_TIMEOUT_MS);
+
+      // 同步检查：任务可能已经完成
+      handler({ taskId });
+    });
   }
 
   private async updateProfileAfterRequest(

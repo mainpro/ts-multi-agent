@@ -43,5 +43,6 @@ data/logs/
 # data
 data
 
-# CodeGraph
-.codegraph
+
+.claude
+.omo
