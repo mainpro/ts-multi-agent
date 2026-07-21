@@ -1,6 +1,7 @@
-import { LLMClient } from '../llm';
+import { ILLMClient } from '../llm';
 import { SessionStore } from '../memory/session-store';
 import { QAEntry, ContinuationResult, HandleResult, Request } from '../types';
+import { createLogger } from '../observability/logger';
 
 /**
  * AskAgent — 询问系统智能体
@@ -28,9 +29,10 @@ const CONTINUATION_JUDGE_PROMPT = `你是一个意图判断助手。你的唯一
 {"isContinuation": boolean, "confidence": 0.0到1.0, "reason": "简要理由"}`;
 
 export class AskAgent {
+  private static readonly log = createLogger({ module: 'AskAgent' });
   constructor(
     private sessionStore: SessionStore,
-    private llm: LLMClient
+    private llm: ILLMClient
   ) {}
 
   /**
@@ -92,7 +94,22 @@ export class AskAgent {
 
     // 内部判断逻辑（测试阶段保留完整 reasoning 日志）
     try {
+      const traceId = `ask-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      AskAgent.log.info('llm.request', {
+        traceId,
+        type: 'judgeContinuation',
+        questionId: question.questionId,
+        questionLength: question.content.length,
+        answerLength: userInput.length,
+      });
+
       const response = await this.llm.generateText(prompt);
+
+      AskAgent.log.info('llm.response', {
+        traceId,
+        responseLength: response?.length || 0,
+      });
+
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);

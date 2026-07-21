@@ -1,5 +1,5 @@
 import { existsSync, copyFileSync } from 'fs';
-import { LLMClient } from '../llm';
+import { ILLMClient } from '../llm';
 import { ImprovementStore } from '../improvements';
 import type { ImprovementEntry } from '../improvements';
 
@@ -27,10 +27,10 @@ export interface ProcessResult {
 }
 
 export class ImprovementAgent {
-  private llm: LLMClient;
+  private llm: ILLMClient;
   private store: ImprovementStore;
 
-  constructor(llm: LLMClient, store?: ImprovementStore) {
+  constructor(llm: ILLMClient, store?: ImprovementStore) {
     this.llm = llm;
     this.store = store || new ImprovementStore();
   }

@@ -1,5 +1,5 @@
 import { Tool, ToolContext, ToolResult } from './interfaces';
-import { sessionContextService } from '../memory/session-context';
+import { sessionContextService } from '../memory';
 
 export class ConversationGetTool implements Tool {
   name = 'conversation-get';

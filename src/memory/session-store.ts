@@ -72,7 +72,11 @@ export class SessionStore {
 
     this.writeTimers.set(cacheKey, setTimeout(async () => {
       this.writeTimers.delete(cacheKey);
-      await this.flushToDisk(userId, sessionId, session);
+      // 从缓存读取最新数据，避免防抖期间被覆盖的旧数据被写入
+      const latest = this.cache.get(cacheKey);
+      if (latest) {
+        await this.flushToDisk(userId, sessionId, latest);
+      }
     }, this.debounceMs));
   }
 
@@ -225,39 +229,30 @@ export class SessionStore {
     const request = session.requests.find(r => r.requestId === requestId);
     if (!request) return null;
 
-    // 先在请求级查找
-    const question = request.questions.find(q => q.questionId === questionId);
-
-    if (question) {
-      // 主智能体问题：更新请求级
-      question.answer = answer;
-      question.answeredAt = new Date().toISOString();
+    // 先在请求级查找（主智能体问题）
+    let foundQuestion = request.questions.find(q => q.questionId === questionId);
+    if (foundQuestion) {
+      foundQuestion.answer = answer;
+      foundQuestion.answeredAt = new Date().toISOString();
       request.currentQuestion = null;
       request.status = 'processing';
     } else {
       // 子智能体问题：在任务级查找
-      let found = false;
-      for (const task of request.tasks) {
-        const taskQuestion = task.questions.find(q => q.questionId === questionId);
-        if (taskQuestion) {
-          taskQuestion.answer = answer;
-          taskQuestion.answeredAt = new Date().toISOString();
-          task.currentQuestion = null;
-          task.status = 'pending';
-          found = true;
-          break; // 只会有一个匹配
-        }
-      }
-      if (!found) {
-        // 问题不存在，静默返回
+      const targetTask = request.tasks.find(t => t.questions.some(q => q.questionId === questionId));
+      if (!targetTask) {
+        console.warn(`[SessionStore] ⚠️ 问题 ${questionId} 不存在，跳过`);
         return request;
       }
-      // 通过 syncRequestStatus 重新计算请求状态
+
+      const taskQuestion = targetTask.questions.find(q => q.questionId === questionId)!;
+      taskQuestion.answer = answer;
+      taskQuestion.answeredAt = new Date().toISOString();
+      targetTask.currentQuestion = null;
+      targetTask.status = 'pending';
       this.syncRequestStatus(request);
     }
 
     request.updatedAt = new Date().toISOString();
-
     await this.saveSession(userId, sessionId, session);
     console.log(`[SessionStore] 💬 回答问题: ${questionId} "${answer}"`);
     return request;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LLMClient } from '../llm';
+import { ILLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
 import { SkillMetadata, TaskPlan } from '../types';
 import { buildTaskPlannerPrompt } from '../prompts';
@@ -60,7 +60,7 @@ export interface PlanResult {
  */
 export class UnifiedPlanner {
   constructor(
-    private llm: LLMClient,
+    private llm: ILLMClient,
     private skillRegistry: SkillRegistry
   ) {}
 

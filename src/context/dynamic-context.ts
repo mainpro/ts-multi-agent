@@ -14,13 +14,14 @@ export class DynamicContextBuilder {
 
   /**
    * Build dynamic context from user memory
-   * 
+   *
    * @param userInput - User's input for context awareness
    * @param userId - User identifier for memory lookup (default: 'default')
+   * @param sessionId - Session identifier for conversation history lookup(可选)
    * @returns Formatted context string with user profile and conversation history
    */
-  async build(userInput: string, userId: string = 'default'): Promise<string> {
-    const userMemory = await this.loadMemory(userId);
+  async build(userInput: string, userId: string = 'default', sessionId?: string): Promise<string> {
+    const userMemory = await this.loadMemory(userId, sessionId);
 
     if (!userMemory) {
       return '';
@@ -32,9 +33,9 @@ export class DynamicContextBuilder {
   /**
    * Load user memory (profile + conversation history)
    */
-  private async loadMemory(userId: string): Promise<UserMemory | null> {
+  private async loadMemory(userId: string, sessionId?: string): Promise<UserMemory | null> {
     try {
-      return await this.memoryService.loadMemory(userId);
+      return await this.memoryService.loadUserMemory(userId, sessionId);
     } catch (error) {
       console.error('Error loading memory:', error);
       return null;

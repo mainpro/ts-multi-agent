@@ -1,8 +1,12 @@
 import { z } from 'zod';
-import { LLMClient } from '../llm';
+import { ILLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
 import { UserProfile } from '../types';
 import { buildSkillMatcherPrompt } from '../prompts';
+import { sessionContextService } from '../memory';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'IntentRouter' });
 
 /**
  * 意图类型
@@ -52,7 +56,7 @@ export interface IntentResult {
  */
 export class IntentRouter {
   constructor(
-    private llm: LLMClient,
+    private llm: ILLMClient,
     private skillRegistry: SkillRegistry,
   ) {
     const skills = this.skillRegistry.getAllMetadata();
@@ -76,34 +80,18 @@ export class IntentRouter {
   ): Promise<IntentResult> {
     const startTime = Date.now();
 
-    try {
-      // LLM 判断（所有输入统一走 LLM）
-      const result = await this.llmClassify(
-        userInput,
-        userProfile,
-        recentHistory,
-        sessionId
-      );
+    // LLM 判断（所有输入统一走 LLM）
+    const result = await this.llmClassify(
+      userInput,
+      userProfile,
+      recentHistory,
+      sessionId
+    );
 
-      const elapsed = Date.now() - startTime;
-      console.log(`[IntentRouter] 🤖 LLM 判断: ${result.intent} (${elapsed}ms, confidence=${result.confidence})`);
+    const elapsed = Date.now() - startTime;
+    console.log(`[IntentRouter] 🤖 LLM 判断: ${result.intent} (${elapsed}ms, confidence=${result.confidence})`);
 
-      return result;
-
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[IntentRouter] ❌ 分类失败: ${errorMsg}`);
-
-      return {
-        intent: 'unclear',
-        confidence: 0.5,
-        tasks: [],
-        question: {
-          type: 'skill_confirm',
-          content: '抱歉，服务遇到问题，请稍后重试或联系人工客服。',
-        },
-      };
-    }
+    return result;
   }
 
   /**
@@ -181,11 +169,26 @@ export class IntentRouter {
     prompt += `【用户当前输入】\n${userInput}`;
 
     // 调用 LLM
+    const traceId = `intent-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    log.info('llm.request', {
+      traceId,
+      type: 'intentClassify',
+      sessionId,
+      promptLength: prompt.length,
+    });
+
     const result = await this.llm.generateStructured(
       prompt,
       IntentSchema,
       systemPrompt
     );
+
+    log.info('llm.response', {
+      traceId,
+      intent: result.intent,
+      confidence: result.confidence,
+      tasks: result.tasks?.length || 0,
+    });
 
     // 处理 LLM 返回结果
     return this.processLLMResult(result);
@@ -303,6 +306,5 @@ export class IntentRouter {
 }
 
 // 引用 sessionContextService（需要确保在调用前已初始化）
-import { sessionContextService } from '../memory';
 
 export default IntentRouter;

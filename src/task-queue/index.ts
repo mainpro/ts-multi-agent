@@ -153,6 +153,69 @@ export class TaskQueue {
     return { success: true, taskId: task.id };
   }
 
+  /**
+   * 从持久化状态重建 Task 对象并加入队列
+   *
+   * 用于服务器重启后，从 SessionStore 中的 RequestTask 信息重建任务。
+   * 服务器重启后 TaskQueue 为空，但 SessionStore 中仍有任务状态，
+   * 此时需要重建 Task 对象并恢复执行。
+   *
+   * @param taskEntry SessionStore 中持久化的任务信息
+   * @param answers 已回答的问题历史（从 taskEntry.questions 构建）
+   * @param latestAnswer 最新用户回答
+   * @returns 重建的 Task 对象
+   */
+  reconstructTask(
+    taskEntry: { taskId: string; content: string; skillName: string | null },
+    answers: Array<{
+      question: { type: string; content: string; taskId?: string; metadata?: Record<string, unknown> };
+      answer: string;
+      timestamp: Date;
+    }>,
+    latestAnswer: string,
+  ): Task {
+    // 构建 questionHistory（格式化为 Task 所需的结构）
+    const questionHistory = answers.map(a => ({
+      question: {
+        type: a.question.type || 'skill_question',
+        content: a.question.content,
+        taskId: a.question.taskId || taskEntry.taskId,
+        metadata: a.question.metadata,
+      },
+      answer: a.answer,
+      timestamp: a.timestamp,
+    }));
+
+    // 构建 Task 对象
+    const task: Task = {
+      id: taskEntry.taskId,
+      requirement: taskEntry.content,
+      skillName: taskEntry.skillName || undefined,
+      status: 'pending',
+      params: {
+        latestUserAnswer: latestAnswer,
+      },
+      dependencies: [],
+      dependents: [],
+      createdAt: new Date(),
+      questionHistory,
+    };
+
+    const result = this.addTask(task);
+    if (!result.success) {
+      // 任务 ID 可能已存在（如重启后队列未完全清空），使用新 ID
+      const newId = `${taskEntry.taskId}-resume-${Date.now()}`;
+      task.id = newId;
+      const retryResult = this.addTask(task);
+      if (!retryResult.success) {
+        throw new Error(`[TaskQueue] reconstructTask failed: ${retryResult.error}`);
+      }
+    }
+
+    console.log(`[TaskQueue] ✅ 重建任务 ${task.id} 并加入队列 (questionHistory: ${questionHistory.length}条)`);
+    return task;
+  }
+
   getTask(taskId: string): Task | undefined {
     return this.tasks.get(taskId);
   }

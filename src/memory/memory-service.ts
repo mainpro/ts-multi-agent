@@ -1,285 +1,370 @@
-import { UserProfileService } from '../user-profile';
-import { DEFAULT_TTL, MemoryConfig, MemoryEntry, MemoryLayer, RecallOptions, RetrievalResult, SearchOptions } from './types';
-import { EpisodicStore } from './episodic-store';
-import { UserProfile } from '../types';
-import { AutoCompactService, Message } from './auto-compact';
-import { LLMClient } from '../llm';
-import { UserMemoryStore } from './user-memory-store';
-import { SemanticRetrievalEngine } from './semantic-retrieval';
+/**
+ * MemoryService - 4 层架构 facade
+ *
+ * 收窄为「4 层编排」:
+ * - L1: 内存 Map(会话元数据,30min TTL)
+ * - L2: JSON 单文件(用户档案,永久)
+ * - L3: JSON + embedding(会话摘要,30d TTL)
+ * - L4: JSON 单会话(完整历史,永久预留归档)
+ *
+ * 核心 API:
+ * - saveUserMessage/saveAssistantMessage(userId, sessionId, content, opts?) — L1+L4 同步
+ * - summarizeRequest(args) — 请求级摘要(异步,失败不阻塞)
+ * - closeSession(userId, sessionId) — 触发 L3 聚合 + L1 清理
+ * - recall(userId, query, opts?) — L3 语义召回
+ * - loadUserMemory(userId, sessionId?) — profile(L2) + 对话历史(L1/L4)
+ * - buildContextPrompt(memory) — slice(-50)
+ */
+
+import * as path from 'path';
+import { ILLMClient } from '../llm/interfaces';
+import { L2ProfileService } from './l2-profile-service';
+import { L3SummaryStore } from './l3-summary-store';
+import { L3SummaryGenerator, GenerateRequestSummaryArgs, GenerateSessionSummaryArgs } from './l3-summary-generator';
+import { L4HistoryStore } from './l4-history-store';
+import { l1SessionMetadata } from './l1-session-metadata';
 import { EmbeddingService } from './embedding-service';
-import { MemoryDedupService } from './memory-dedup';
-import { ImportanceInferencer, InferenceResult } from './importance-inferencer';
-import { evictCompletedWorkingMemory as evictCompleted } from './working-memory-lifecycle';
-import { SharedMemoryPool } from './shared-memory-pool';
-import { CONFIG } from '../types';
+import { createLogger } from '../observability/logger';
+import type {
+  L4HistoryEntry,
+  RecallResult,
+  SaveMessageOptions,
+  SummarizeRequestArgs,
+} from './types';
+import type { UserProfile } from '../types';
+
+const log = createLogger({ module: 'MemoryService' });
+
+// ── Legacy Types(向后兼容) ────────────────────────────────────
+
+export interface EpisodicEntry {
+  id: string;
+  content: string;
+  role: 'user' | 'assistant';
+  timestamp: string;
+  skill?: string;
+  metadata?: Record<string, unknown>;
+}
 
 export interface UserMemory {
   profile: UserProfile;
-  episodicEntries: MemoryEntry[];
+  episodicEntries: EpisodicEntry[];
 }
 
+// ── MemoryService ─────────────────────────────────────────────
+
 export class MemoryService {
-  private userProfileService: UserProfileService;
-  private autoCompactService: AutoCompactService;
-  private store: UserMemoryStore;
-  private semanticRetrieval: SemanticRetrievalEngine;
-  private embeddingService: EmbeddingService;
-  private dedupService: MemoryDedupService;
-  private importanceInferencer: ImportanceInferencer;
-  private sharedPool: SharedMemoryPool;
-  private episodicStore: EpisodicStore;
+  private dataDir: string;
+  private l1: typeof l1SessionMetadata;
+  private l2: L2ProfileService;
+  private l3Store: L3SummaryStore;
+  private l3Generator: L3SummaryGenerator;
+  private l4: L4HistoryStore;
 
   constructor(
     dataDir: string = 'data',
-    config: Partial<MemoryConfig> = {},
-    llmClient?: LLMClient
+    llmClient?: ILLMClient,
   ) {
-    this.userProfileService = new UserProfileService(dataDir);
-    this.autoCompactService = new AutoCompactService(llmClient);
-    this.embeddingService = new EmbeddingService(undefined, {
-      dimension: CONFIG.EMBEDDING_DIMENSION,
-      apiUrl: CONFIG.EMBEDDING_BASE_URL || undefined,
-      apiKey: CONFIG.EMBEDDING_API_KEY || undefined,
-      model: CONFIG.EMBEDDING_MODEL,
-      cacheSize: CONFIG.EMBEDDING_CACHE_SIZE,
+    this.dataDir = dataDir;
+    const storagePath = path.join(dataDir, 'memory');
+
+    // L1: 单例(由 l1-session-metadata.ts 导出)
+    this.l1 = l1SessionMetadata;
+    // 注册会话过期回调 → 触发 L3 聚合(fire-and-forget)
+    this.l1.setOnSessionExpired((userId, sessionId) => {
+      // 不 await,避免阻塞 L1 cleanup 循环
+      this.closeSession(userId, sessionId).catch((e) => {
+        log.error(`[MemoryService] L1 cleanup 触发的 closeSession 失败: ${sessionId}`, { error: e });
+      });
     });
-    this.store = new UserMemoryStore(config.storagePath || 'data/memory');
-    this.semanticRetrieval = new SemanticRetrievalEngine(this.embeddingService, undefined, 24, undefined);
-    this.dedupService = new MemoryDedupService();
-    this.importanceInferencer = new ImportanceInferencer(llmClient);
-    this.sharedPool = new SharedMemoryPool(this.store);
-    this.episodicStore = new EpisodicStore(this.store);
+
+    // L2: 用户档案
+    this.l2 = new L2ProfileService(dataDir);
+
+    // L3: 摘要存储 + 摘要生成器
+    const embeddingService = new EmbeddingService();
+    this.l3Store = new L3SummaryStore(storagePath, embeddingService);
+    this.l3Generator = new L3SummaryGenerator(llmClient!, this.l3Store);
+
+    // L4: 历史存储
+    this.l4 = new L4HistoryStore(dataDir);
   }
 
-  async loadUserMemory(userId: string): Promise<UserMemory> {
-    await this.evictExpired(userId);
-    const [profile, episodicEntries] = await Promise.all([
-      this.userProfileService.loadProfile(userId),
-      this.episodicStore.loadEpisodicEntries(userId),
-    ]);
+  // ── 显式分层访问 ────────────────────────────────────────────
+
+  getL1(): typeof l1SessionMetadata {
+    return this.l1;
+  }
+
+  getL2(): L2ProfileService {
+    return this.l2;
+  }
+
+  getL3Store(): L3SummaryStore {
+    return this.l3Store;
+  }
+
+  getL3Generator(): L3SummaryGenerator {
+    return this.l3Generator;
+  }
+
+  getL4(): L4HistoryStore {
+    return this.l4;
+  }
+
+  /**
+   * 进程退出前的资源清理(flush L4 所有 pending)
+   */
+  async flushAll(): Promise<void> {
+    try {
+      await this.l4.flushAll();
+    } catch (e) {
+      log.error('[MemoryService] flushAll 失败', { error: e });
+    }
+  }
+
+  // ── 新 API:L1+L4 同步写入 ──────────────────────────────────
+
+  /**
+   * 保存用户消息(L1 同步 + L4 防抖 100ms 落盘)
+   */
+  async saveUserMessage(
+    userId: string,
+    sessionId: string,
+    content: string,
+    options?: SaveMessageOptions,
+  ): Promise<void> {
+    // L1 同步
+    this.l1.addUserMessage(sessionId, userId, content, {
+      skillName: options?.skillName,
+      requestId: options?.requestId,
+    });
+
+    // L4 异步落盘
+    const entry: L4HistoryEntry = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'user',
+      content,
+      timestamp: new Date().toISOString(),
+      sessionId,
+      userId,
+      requestId: options?.requestId,
+      skillName: options?.skillName,
+    };
+    await this.l4.append(userId, sessionId, entry);
+  }
+
+  /**
+   * 保存助手消息(L1 同步 + L4 防抖 100ms 落盘)
+   */
+  async saveAssistantMessage(
+    userId: string,
+    sessionId: string,
+    content: string,
+    options?: SaveMessageOptions,
+  ): Promise<void> {
+    // L1 同步
+    this.l1.addAssistantMessage(sessionId, userId, content, {
+      skillName: options?.skillName,
+      requestId: options?.requestId,
+    });
+
+    // L4 异步落盘
+    const entry: L4HistoryEntry = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'assistant',
+      content,
+      timestamp: new Date().toISOString(),
+      sessionId,
+      userId,
+      requestId: options?.requestId,
+      skillName: options?.skillName,
+    };
+    await this.l4.append(userId, sessionId, entry);
+  }
+
+  /**
+   * 弹出最后一条助手消息(回滚场景,用于意图重分类时撤销错误的助手回复)
+   *
+   * 同步清理 L1 内存 + L4 文件中的最后一条。
+   */
+  async popLastAssistantMessage(userId: string, sessionId: string): Promise<void> {
+    this.l1.popLastMessage(sessionId);
+
+    // L4 删除最后一条:读取全部 entries,pop 末尾,重写文件
+    const entries = await this.l4.listEntries(userId, sessionId);
+    if (entries.length === 0) return;
+
+    const lastEntry = entries[entries.length - 1];
+    if (lastEntry.role !== 'assistant') return;
+
+    entries.pop();
+    const { promises: fs } = await import('fs');
+    const pathModule = await import('path');
+    const filePath = pathModule.join(this.dataDir, 'memory', userId, 'history', `${sessionId}.json`);
+    const now = new Date().toISOString();
+    const file = {
+      userId,
+      sessionId,
+      entries,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const dir = pathModule.dirname(filePath);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(file, null, 2), 'utf-8');
+  }
+
+  // ── 新 API:请求级摘要 ──────────────────────────────────────
+
+  /**
+   * 生成请求级摘要(请求完成时调用)
+   *
+   * 失败不阻塞主流程,仅记日志。
+   */
+  async summarizeRequest(args: SummarizeRequestArgs): Promise<void> {
+    try {
+      const summary = await this.l3Generator.generateRequestSummary(args as GenerateRequestSummaryArgs);
+      if (summary) {
+        this.l1.setPendingRequestSummary(args.sessionId, summary.summary);
+        await this.l3Store.addRequestSummary(args.userId, summary);
+      }
+    } catch (e) {
+      log.error(`[MemoryService] summarizeRequest 失败: ${args.requestId}`, { error: e });
+    }
+  }
+
+  // ── 新 API:会话结束闭环 ────────────────────────────────────
+
+  /**
+   * 关闭会话(触发 L3 聚合 + L1 清理)
+   *
+   * 在以下场景触发:
+   * - L1 cleanupExpired 检测到 30min 空闲(fire-and-forget)
+   * - 显式 POST /sessions/:id/close
+   * - 进程退出前(可选)
+   */
+  async closeSession(userId: string, sessionId: string): Promise<void> {
+    try {
+      await this.l3Generator.generateAndStoreSessionSummary({ userId, sessionId } as GenerateSessionSummaryArgs);
+      this.l1.clearContext(sessionId);
+      log.info(`[MemoryService] 会话已关闭: ${sessionId}`);
+    } catch (e) {
+      log.error(`[MemoryService] closeSession 失败: ${sessionId}`, { error: e });
+      // 即使 L3 失败,也清理 L1(避免内存泄漏)
+      this.l1.clearContext(sessionId);
+    }
+  }
+
+  // ── 新 API:语义召回(L3) ───────────────────────────────────
+
+  /**
+   * 语义召回(L3 sessionSummaries)
+   */
+  async recall(userId: string, query: string, options?: { topK?: number }): Promise<RecallResult[]> {
+    const results = await this.l3Store.search(userId, query, options?.topK ?? 5);
+    return results.map(r => ({
+      id: r.summary.id,
+      content: r.summary.content,
+      score: r.score,
+      metadata: {
+        ...r.summary.metadata,
+        sessionId: r.summary.sessionId,
+        createdAt: r.summary.createdAt,
+      },
+    }));
+  }
+
+  // ── 旧 API 兼容层 ──────────────────────────────────────────
+
+  /**
+   * 加载用户记忆(profile + 对话历史)
+   *
+   * - profile 从 L2 加载
+   * - episodicEntries 优先从 L1 内存读取,无则从 L4 文件读取
+   */
+  async loadUserMemory(userId: string, sessionId?: string): Promise<UserMemory> {
+    const profile = await this.l2.loadProfile(userId);
+
+    let episodicEntries: EpisodicEntry[] = [];
+
+    if (sessionId) {
+      // 优先从 L1 内存读取(快)
+      const l1Context = this.l1.getContext(sessionId);
+      if (l1Context.userId === userId && l1Context.conversation.length > 0) {
+        episodicEntries = l1Context.conversation.map(m => ({
+          id: `l1-${m.timestamp}`,
+          content: m.content,
+          role: m.role,
+          timestamp: new Date(m.timestamp).toISOString(),
+          skill: m.skillName,
+          metadata: m.requestId ? { requestId: m.requestId, sessionId } : { sessionId },
+        }));
+      } else {
+        // 从 L4 文件读取
+        const l4Entries = await this.l4.listEntries(userId, sessionId);
+        episodicEntries = l4Entries.map(e => this.l4EntryToEpisodic(e));
+      }
+    }
+
     return { profile, episodicEntries };
   }
 
   /** @deprecated Use loadUserMemory instead */
-  async loadMemory(userId: string): Promise<UserMemory> {
-    return this.loadUserMemory(userId);
+  async loadMemory(userId: string, sessionId?: string): Promise<UserMemory> {
+    return this.loadUserMemory(userId, sessionId);
   }
 
+  /**
+   * 格式化对话历史为 prompt 上下文(最多 50 条)
+   */
   buildContextPrompt(memory: UserMemory): string {
-    return this.episodicStore.buildContextPrompt(memory.episodicEntries);
-  }
+    const entries = memory.episodicEntries.slice(-50);
+    if (entries.length === 0) return '';
 
-  async clearMemory(userId: string): Promise<void> {
-    for (const layer of [MemoryLayer.EPISODIC, MemoryLayer.SEMANTIC, MemoryLayer.WORKING, MemoryLayer.PROCEDURAL]) {
-      const entries = await this.store.getEntries(userId, layer);
-      for (const entry of entries) {
-        await this.store.removeEntry(userId, layer, entry.id);
-      }
-    }
-  }
-
-  async saveUserMessage(userId: string, content: string, options?: { system?: string; skill?: string }): Promise<void> {
-    await this.episodicStore.saveUserMessage(userId, content, options);
-  }
-
-  async saveAssistantMessage(userId: string, content: string, options?: { system?: string; skill?: string }): Promise<void> {
-    await this.episodicStore.saveAssistantMessage(userId, content, options);
-  }
-
-  // ── Core Memory Operations ────────────────────────────────────────
-
-  async remember(entry: MemoryEntry): Promise<void> {
-    if (entry.importance === 0.5) {
-      const inferred = await this.importanceInferencer.infer(entry);
-      entry.importance = inferred.importance;
-    }
-    const existing = await this.store.getEntries(entry.namespace, entry.layer);
-    if (this.dedupService.shouldDedup(entry, existing)) {
-      return;
-    }
-    await this.store.appendEntry(entry.namespace, entry.layer, entry);
-  }
-
-  async recall(userId: string, query: string, options?: RecallOptions): Promise<RetrievalResult[]> {
-    const layers = options?.layers || [MemoryLayer.EPISODIC, MemoryLayer.SEMANTIC, MemoryLayer.PROCEDURAL];
-    const namespace = options?.namespace || userId;
-    let entries: MemoryEntry[] = [];
-    for (const layer of layers) {
-      const layerEntries = await this.store.getEntries(namespace, layer);
-      entries.push(...layerEntries);
-    }
-    if (entries.length === 0) return [];
-    const results = await this.semanticRetrieval.retrieve(query, entries, {
-      topK: options?.topK,
-      minScore: options?.minScore,
-      layers,
+    const lines = entries.map(e => {
+      const prefix = e.role === 'user' ? '用户' : '助手';
+      const skill = e.skill ? `[${e.skill}] ` : '';
+      return `${prefix}: ${skill}${e.content}`;
     });
 
-    for (const result of results) {
-      try {
-        await this.store.updateEntry(
-          result.entry.namespace,
-          result.entry.layer,
-          result.entry.id,
-          (e) => {
-            e.hitCount = result.entry.hitCount;
-            e.lastHitAt = result.entry.lastHitAt;
-          },
-        );
-      } catch (e) { console.error('[MemoryService] Failed to update hit count:', e); }
-    }
-
-    return results;
+    return `【对话历史】\n${lines.join('\n')}`;
   }
 
-  async evictExpired(userId: string): Promise<number> {
-    let total = 0;
-    const layers = [MemoryLayer.EPISODIC, MemoryLayer.WORKING];
-    for (const layer of layers) {
-      const entries = await this.store.getEntries(userId, layer);
-      for (const entry of entries) {
-        if (entry.ttl != null && entry.ttl !== Infinity && Date.now() - new Date(entry.updatedAt).getTime() > entry.ttl) {
-          await this.store.removeEntry(userId, layer, entry.id);
-          total++;
-        }
-      }
-    }
-    return total;
+  /**
+   * 清空所有长期记忆(L3)
+   */
+  async clearLongTerm(userId: string): Promise<void> {
+    await this.l3Store.clear(userId);
   }
 
-  async dedupCheck(entry: MemoryEntry): Promise<boolean> {
-    const existing = await this.store.getEntries(entry.namespace, entry.layer);
-    return this.dedupService.shouldDedup(entry, existing);
+  /**
+   * 获取会话历史(L4)
+   */
+  async getSessionHistory(userId: string, sessionId: string): Promise<Array<{ role: string; content: string; timestamp: number }>> {
+    const entries = await this.l4.listEntries(userId, sessionId);
+    return entries.map(e => ({
+      role: e.role,
+      content: e.content,
+      timestamp: new Date(e.timestamp).getTime(),
+    }));
   }
 
-  async inferImportance(entry: MemoryEntry): Promise<InferenceResult> {
-    return this.importanceInferencer.infer(entry);
-  }
+  // ── 私有工具 ────────────────────────────────────────────────
 
-  // ── Layer-Specific Write Methods ──────────────────────────────────
-
-  async saveWorkingMemory(userId: string, taskId: string, content: string, taskStatus: string = 'pending', requestId?: string): Promise<void> {
-    const now = new Date().toISOString();
-    const entry: MemoryEntry = {
-      id: `working-${taskId}-${Date.now()}`,
-      layer: MemoryLayer.WORKING,
-      content,
-      metadata: { taskId, taskStatus, ...(requestId && { requestId }) },
-      importance: 0.3,
-      createdAt: now,
-      updatedAt: now,
-      namespace: userId,
-      ttl: DEFAULT_TTL[MemoryLayer.WORKING],
+  private l4EntryToEpisodic(e: L4HistoryEntry): EpisodicEntry {
+    return {
+      id: e.id,
+      content: e.content,
+      role: e.role,
+      timestamp: e.timestamp,
+      skill: e.skillName,
+      metadata: {
+        sessionId: e.sessionId,
+        requestId: e.requestId,
+        archiveStatus: e.archiveStatus,
+      },
     };
-    await this.store.appendEntry(userId, MemoryLayer.WORKING, entry);
-  }
-
-  async updateWorkingMemoryStatus(userId: string, taskId: string, taskStatus: string): Promise<void> {
-    const entries = await this.store.getEntries(userId, MemoryLayer.WORKING);
-    for (const entry of entries) {
-      if (entry.metadata?.taskId === taskId) {
-        await this.store.updateEntry(userId, MemoryLayer.WORKING, entry.id, (e) => {
-          e.metadata.taskStatus = taskStatus;
-          e.updatedAt = new Date().toISOString();
-        });
-      }
-    }
-  }
-
-  async saveSemanticMemory(userId: string, content: string, category: 'preference' | 'fact' | 'knowledge' | 'rule' = 'fact', source: 'inferred' | 'explicit' = 'inferred', confidence: number = 0.7): Promise<void> {
-    const now = new Date().toISOString();
-
-    // 生成 embedding（异步，失败不阻塞保存流程）
-    let embedding: number[] | undefined;
-    try {
-      embedding = await this.embeddingService.generateEmbedding(content) ?? undefined;
-    } catch (e) {
-      console.warn('[MemoryService] Embedding 生成失败，继续保存:', (e as Error).message);
-    }
-
-    const entry: MemoryEntry = {
-      id: `semantic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      layer: MemoryLayer.SEMANTIC,
-      content,
-      metadata: { category, source, confidence },
-      importance: confidence,
-      createdAt: now,
-      updatedAt: now,
-      namespace: userId,
-      ttl: DEFAULT_TTL[MemoryLayer.SEMANTIC],
-      embedding,
-    };
-    await this.store.appendEntry(userId, MemoryLayer.SEMANTIC, entry);
-  }
-
-  async saveProceduralMemory(userId: string, skillName: string, content: string, params?: Record<string, unknown>, result?: string, success: boolean = true): Promise<void> {
-    const existing = await this.store.getEntries(userId, MemoryLayer.PROCEDURAL);
-    const existingEntry = existing.find(e => e.metadata?.skillName === skillName);
-
-    if (existingEntry) {
-      await this.store.updateEntry(userId, MemoryLayer.PROCEDURAL, existingEntry.id, (e) => {
-        e.metadata.usageCount = ((e.metadata.usageCount as number) || 0) + 1;
-        e.metadata.lastResult = result;
-        e.metadata.lastSuccess = success;
-        e.updatedAt = new Date().toISOString();
-      });
-    } else {
-      const now = new Date().toISOString();
-      const entry: MemoryEntry = {
-        id: `procedural-${skillName}-${Date.now()}`,
-        layer: MemoryLayer.PROCEDURAL,
-        content,
-        metadata: { skillName, usageCount: 1, lastResult: result, lastSuccess: success, ...(params && { params }) },
-        importance: success ? 0.7 : 0.5,
-        createdAt: now,
-        updatedAt: now,
-        namespace: userId,
-        ttl: DEFAULT_TTL[MemoryLayer.PROCEDURAL],
-      };
-      await this.store.appendEntry(userId, MemoryLayer.PROCEDURAL, entry);
-    }
-  }
-
-  async evictCompletedWorkingMemory(userId: string, completedTaskIds?: string[]): Promise<number> {
-    const entries = await this.store.getEntries(userId, MemoryLayer.WORKING);
-    const remaining = evictCompleted(entries, completedTaskIds);
-    const evicted = entries.filter(e => !remaining.some(r => r.id === e.id));
-    for (const entry of evicted) {
-      await this.store.removeEntry(userId, MemoryLayer.WORKING, entry.id);
-    }
-    return evicted.length;
-  }
-
-  async getActiveTasks(userId: string): Promise<MemoryEntry[]> {
-    const entries = await this.store.getEntries(userId, MemoryLayer.WORKING);
-    return entries.filter(e => {
-      const status = e.metadata?.taskStatus as string;
-      return status === 'pending' || status === 'running' || status === 'waiting';
-    });
-  }
-
-  // ── Utility Methods ───────────────────────────────────────────────
-
-  async compactSession(
-    messages: Message[],
-    context?: {
-      currentSkill?: string;
-      userProfile?: { department: string; commonSystems: string[] };
-    }
-  ): Promise<Message[]> {
-    return this.autoCompactService.sessionCompact(messages, context);
-  }
-
-  getStore(): UserMemoryStore {
-    return this.store;
-  }
-
-  async shareMemory(agentId: string, entry: MemoryEntry): Promise<void> {
-    await this.sharedPool.publish(agentId, entry);
-  }
-
-  async retrieveShared(agentId: string, query: string, options?: SearchOptions): Promise<RetrievalResult[]> {
-    return this.sharedPool.retrieve(agentId, query, options);
   }
 }
 

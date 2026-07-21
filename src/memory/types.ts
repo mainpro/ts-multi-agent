@@ -1,31 +1,130 @@
 /**
- * Memory Types
- * Type definitions for layered memory architecture
+ * Memory 4-Layer Architecture Types
+ *
+ * L1: 会话元数据 - 内存 Map, 30min TTL, 不持久化
+ * L2: 用户档案   - JSON 单文件, 永久, 精确检索
+ * L3: 历史摘要   - JSON + embedding, 30d TTL, 语义检索
+ * L4: 会话历史   - JSON 单会话, 永久(预留归档), 完整还原
+ *
+ * L1~L4 类型 + RecallConfig
  */
 
-/**
- * Memory configuration options
- */
-export interface MemoryConfig {
-  /** Maximum number of conversation rounds to retain (default: 10) */
-  maxRounds: number;
-  /** Path for memory storage (default: 'data/memory') */
-  storagePath: string;
+import type { UserProfile } from '../types';
+
+// ── L1: 会话元数据(内存) ──────────────────────────────────────────
+
+export interface L1Message {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  skillName?: string;
+  requestId?: string;
 }
 
+export interface L1SessionMetadata {
+  sessionId: string;
+  userId: string;
+  currentSkill?: string;
+  currentSystem?: string;
+  currentTopic?: string;
+  turnCount: number;
+  sessionStartAt: number;
+  lastInteractionAt: number;
+  /** L4 历史的内存缓存副本,进程重启后从 L4 恢复 */
+  conversation: L1Message[];
+  /** 临时变量(技能之间共享) */
+  tempVariables: Map<string, unknown>;
+  /** 当前请求的摘要草稿,在 closeSession 时聚合到 L3 */
+  pendingRequestSummary?: string;
+}
+
+// ── L2: 用户档案(JSON 单文件,支持扩展) ───────────────────────────
+
 /**
- * Default memory configuration
+ * L2 用户档案 - 继承 UserProfile 向后兼容,新增 extensions 开放 schema
+ *
+ * 核心字段固定(向后兼容),扩展字段通过 extensions 注入,
+ * 例如:用户偏好风格、沟通方式、技术栈、常用 IDE 等。
  */
-export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
-  maxRounds: 10,
-  storagePath: 'data/memory',
-};
+export interface L2UserProfile extends UserProfile {
+  /** 开放扩展(未来偏好/风格等),深度 merge 不覆盖 */
+  extensions?: Record<string, unknown>;
+}
+
+export interface L2BehaviorUpdate {
+  mentionedSystems?: string[];
+  department?: string;
+}
+
+// ── L3: 历史摘要(JSON + embedding) ────────────────────────────────
+
+export interface L3RequestSummary {
+  requestId: string;
+  sessionId: string;
+  summary: string;          // ≤500 字符
+  skillName?: string;
+  system?: string;
+  createdAt: string;
+}
+
+export interface L3SessionSummary {
+  id: string;
+  userId: string;
+  sessionId: string;
+  content: string;          // ≤2000 字符(聚合后)
+  embedding: number[] | null;
+  createdAt: string;
+  updatedAt: string;
+  /** createdAt + 30d,超过后语义检索时跳过 */
+  expiresAt: string;
+  requestSummaries: L3RequestSummary[];
+  metadata: {
+    skillNames: string[];
+    systems: string[];
+    [k: string]: unknown;
+  };
+}
+
+export interface L3SummaryData {
+  sessionSummaries: L3SessionSummary[];
+  requestSummaries: L3RequestSummary[];
+  updatedAt: string;
+}
+
+// ── L4: 会话历史(JSON 单会话) ─────────────────────────────────────
+
+export interface L4HistoryEntry {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;        // ISO 8601
+  sessionId: string;
+  userId: string;
+  requestId?: string;
+  skillName?: string;
+  /** 归档状态:active(本地可读) / archived(已迁移到外部存储) */
+  archiveStatus?: 'active' | 'archived';
+  /** 归档外部引用(预留,后续接 DB/S3 时填入) */
+  archiveRef?: string;
+}
+
+export interface L4HistoryFile {
+  userId: string;
+  sessionId: string;
+  entries: L4HistoryEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** L4 归档适配器接口,本地默认实现为 noop */
+export interface L4ArchiveAdapter {
+  archive(entries: L4HistoryEntry[]): Promise<{ archivedIds: string[]; archiveRefs: string[] }>;
+  retrieve(refs: string[]): Promise<L4HistoryEntry[]>;
+}
 
 // ── Recall Configuration ──────────────────────────────────────────
 
-/**
- * 记忆召回的默认配置
- */
+/** 记忆召回的默认配置 */
 export const DEFAULT_RECALL_CONFIG = {
   /** 主智能体通用召回数量 */
   MAIN_AGENT_RECALL_TOP_K: 5,
@@ -37,194 +136,42 @@ export const DEFAULT_RECALL_CONFIG = {
   SUB_AGENT_SEMANTIC_TOP_K: 5,
 } as const;
 
-// ── Memory Layer Architecture ────────────────────────────────────
+// ── L3 Summary Length Constraints ────────────────────────────────
 
-/** Memory layer classification */
-export enum MemoryLayer {
-  WORKING = 'working',
-  EPISODIC = 'episodic',
-  SEMANTIC = 'semantic',
-  PROCEDURAL = 'procedural',
-}
+export const L3_REQUEST_SUMMARY_MAX_CHARS = 500;
+export const L3_SESSION_SUMMARY_MAX_CHARS = 2000;
 
-/** Working memory entry - current request context */
-export interface WorkingMemoryEntry {
+/** L3 摘要 30 天 TTL */
+export const L3_SUMMARY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** L1 会话 30 分钟空闲超时 */
+export const L1_SESSION_IDLE_MS = 30 * 60 * 1000;
+
+/** L1 清理扫描间隔(10 分钟) */
+export const L1_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+
+// ── Recall Result ─────────────────────────────────────────────────
+
+export interface RecallResult {
   id: string;
   content: string;
-  role: 'user' | 'assistant' | 'system';
-  timestamp: string;
-  requestId?: string;
-  taskId: string;
-  taskStatus?: 'pending' | 'running' | 'completed' | 'failed' | 'suspended' | 'waiting';
-  metadata?: Record<string, unknown>;
-}
-
-/** Episodic memory entry - conversation history */
-export interface EpisodicMemoryEntry {
-  id: string;
-  content: string;
-  role: 'user' | 'assistant';
-  timestamp: string;
-  system?: string;
-  skill?: string;
-  references?: string[];
-  importance: number;
-  intent?: string;
-  topic?: string;
-  taskId?: string;
-  embedding?: number[] | null;
-}
-
-/** Semantic memory entry - user knowledge/preferences */
-export interface SemanticMemoryEntry {
-  id: string;
-  content: string;
-  category: 'preference' | 'fact' | 'knowledge' | 'rule';
-  source: 'inferred' | 'explicit';
-  confidence: number;
-  timestamp: string;
-  updatedAt: string;
-  embedding?: number[] | null;
-  metadata?: Record<string, unknown>;
-}
-
-/** Procedural memory entry - skill execution experience */
-export interface ProceduralMemoryEntry {
-  id: string;
-  skillName: string;
-  content: string;
-  params?: Record<string, unknown>;
-  result?: string;
-  success: boolean;
-  timestamp: string;
-  usageCount: number;
-  embedding?: number[] | null;
-}
-
-// ── Unified Memory Entry ─────────────────────────────────────────
-
-/** Unified memory entry - generic container for all layers */
-export interface MemoryEntry {
-  id: string;
-  layer: MemoryLayer;
-  content: string;
-  metadata: Record<string, unknown>;
-  embedding?: number[] | null;
-  importance: number;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt?: string;
-  namespace: string;
-  /** Time-to-live in milliseconds. Entry is considered expired if Date.now() - updatedAt > ttl */
-  ttl?: number;
-  /** Number of times this entry has been retrieved */
-  hitCount?: number;
-  /** ISO timestamp of the last retrieval */
-  lastHitAt?: string;
-}
-
-/** Type-specific payload accessor */
-export type LayeredMemoryEntry =
-  | (MemoryEntry & { layer: MemoryLayer.WORKING; payload: WorkingMemoryEntry })
-  | (MemoryEntry & { layer: MemoryLayer.EPISODIC; payload: EpisodicMemoryEntry })
-  | (MemoryEntry & { layer: MemoryLayer.SEMANTIC; payload: SemanticMemoryEntry })
-  | (MemoryEntry & { layer: MemoryLayer.PROCEDURAL; payload: ProceduralMemoryEntry });
-
-// ── Memory Backend ───────────────────────────────────────────────
-
-/** Query filter for memory search */
-export interface MemoryQuery {
-  layer?: MemoryLayer;
-  namespace?: string;
-  importanceMin?: number;
-  importanceMax?: number;
-  createdAfter?: string;
-  createdBefore?: string;
-  metadata?: Record<string, unknown>;
-  limit?: number;
-  offset?: number;
-}
-
-/** Search options for semantic retrieval */
-export interface SearchOptions {
-  topK?: number;
-  minScore?: number;
-  layers?: MemoryLayer[];
-  useEmbedding?: boolean;
-}
-
-/** Result from semantic retrieval */
-export interface RetrievalResult {
-  entry: MemoryEntry;
   score: number;
-  scoreBreakdown: {
-    recency: number;
-    keyword: number;
-    importance: number;
-    semantic: number;
-  };
+  metadata: Record<string, unknown>;
 }
 
-/** MemoryBackend - pluggable storage interface */
-export interface MemoryBackend {
-  save(namespace: string, entry: MemoryEntry): Promise<void>;
-  load(namespace: string, id: string): Promise<MemoryEntry | null>;
-  query(namespace: string, filter: MemoryQuery): Promise<MemoryEntry[]>;
-  delete(namespace: string, id: string): Promise<void>;
-  search(namespace: string, query: string, options?: SearchOptions): Promise<RetrievalResult[]>;
-  searchVector(namespace: string, queryEmbedding: number[], topK?: number): Promise<RetrievalResult[]>;
-  listNamespaces?(prefix: string): Promise<string[]>;
+// ── Memory Service Facade Types ───────────────────────────────────
+
+export interface SaveMessageOptions {
+  skillName?: string;
+  requestId?: string;
 }
 
-// ── TTL Defaults ─────────────────────────────────────────────────
-
-export const DEFAULT_TTL: Record<MemoryLayer, number> = {
-  [MemoryLayer.WORKING]: 300000,         // 5 min — keep completed entries briefly for getActiveTasks
-  [MemoryLayer.EPISODIC]: 2592000000, // 30 days
-  [MemoryLayer.SEMANTIC]: Infinity,    // Never expire
-  [MemoryLayer.PROCEDURAL]: Infinity,  // Never expire
-};
-
-// ── Context Budget ───────────────────────────────────────────────
-
-/** Budget allocation for a memory layer */
-export interface LayerBudget {
-  layer: MemoryLayer;
-  allocatedTokens: number;
-  usedTokens: number;
-  entries: number;
+export interface SummarizeRequestArgs {
+  userId: string;
+  sessionId: string;
+  requestId: string;
+  userMessage: string;
+  assistantMessage: string;
+  skillName?: string;
+  system?: string;
 }
-
-/** Context budget allocation result */
-export interface BudgetAllocation {
-  totalBudget: number;
-  layers: LayerBudget[];
-  systemPromptTokens: number;
-  remaining: number;
-}
-
-/** Context budget configuration */
-export interface ContextBudgetConfig {
-  totalTokenBudget: number;
-  layerWeights: Record<MemoryLayer, number>;
-  systemPromptReserve: number;
-  minImportanceThreshold: number;
-}
-
-// ── Recall Options ───────────────────────────────────────────────
-
-/** Options for recall operation */
-export interface RecallOptions {
-  layers?: MemoryLayer[];
-  topK?: number;
-  minScore?: number;
-  includeWorking?: boolean;
-  namespace?: string;
-}
-
-/** Default recall options */
-export const DEFAULT_RECALL_OPTIONS: RecallOptions = {
-  topK: 10,
-  minScore: 0.1,
-  includeWorking: false,
-};

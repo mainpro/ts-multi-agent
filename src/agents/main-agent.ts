@@ -1,77 +1,95 @@
-import { LLMClient } from "../llm";
+import { ILLMClient } from "../llm";
 import { SkillRegistry } from "../skill-registry";
 import { TaskQueue } from "../task-queue";
 import { IntentRouter } from "../routers";
 import { UnifiedPlanner } from "../planners";
 import { UserProfileService } from "../user-profile";
-import { MemoryService, sessionContextService, MemoryLayer, SemanticExtractor, DEFAULT_RECALL_CONFIG } from "../memory";
+import { MemoryService, sessionContextService, DEFAULT_RECALL_CONFIG } from "../memory";
 import { DynamicContextBuilder } from "../context/dynamic-context";
-import { AutoCompactService } from "../memory/auto-compact";
-import { buildReplanPrompt } from "../prompts";
 import { hookManager } from "../hooks/hook-manager";
 import { HookEvent } from "../hooks/types";
 import { AskAgent } from "./ask-agent";
 import { SessionStore } from "../memory/session-store";
 import { buildSessionPrompt } from "../prompts/session-context-prompt";
-import { z } from 'zod';
 import {
   Task,
   TaskResult,
-  TaskError,
-  TaskStatus,
   TaskPlan,
-  CONFIG,
-  TaskPlanSchema,
-  SkillExecutionResult,
   QAEntry,
   Request,
   RequestTask,
-  TaskGraphNode,
   TaskGraph,
 } from "../types";
-import { EmbeddingService } from "../memory/embedding-service";
 import { SystemSkillLoader, ExecutorRegistry } from "../system-skills";
 import { fireAndForget } from "../utils/fire-and-forget";
+import { createLogger } from '../observability/logger';
+import { TaskGraphExecutor } from "./task-graph-executor";
+import { ResultAggregator } from "./result-aggregator";
+
+/**
+ * MainAgent 依赖注入接口
+ *
+ * index.ts (bootstrap) 负责创建所有依赖并注入，MainAgent 不再自行 new XXX()。
+ * resultAggregator 和 taskGraphExecutor 必须在 MainAgent 内创建（循环依赖）。
+ */
+export interface MainAgentDependencies {
+  llm: ILLMClient;
+  skillRegistry: SkillRegistry;
+  taskQueue: TaskQueue;
+  intentRouter: IntentRouter;
+  userProfileService: UserProfileService;
+  memoryService: MemoryService;
+  dynamicContextBuilder: DynamicContextBuilder;
+  sessionStore: SessionStore;
+  askAgent: AskAgent;
+  systemSkillLoader: SystemSkillLoader;
+  executorRegistry: ExecutorRegistry;
+}
 
 export class MainAgent {
-  private maxReplanAttempts: number;
+  private static readonly log = createLogger({ module: 'MainAgent' });
+  private llm: ILLMClient;
+  private skillRegistry: SkillRegistry;
+  private taskQueue: TaskQueue;
   private intentRouter: IntentRouter;
   private userProfileService: UserProfileService;
   private memoryService: MemoryService;
   private dynamicContextBuilder: DynamicContextBuilder;
-  private autoCompactService: AutoCompactService;
   private askAgent: AskAgent;
   private sessionStore: SessionStore;
-  private semanticExtractor: SemanticExtractor;
   private systemSkillLoader: SystemSkillLoader;
   private executorRegistry: ExecutorRegistry;
+  private taskGraphExecutor: TaskGraphExecutor;
+  private resultAggregator: ResultAggregator;
 
-  constructor(
-    private llm: LLMClient,
-    private skillRegistry: SkillRegistry,
-    private taskQueue: TaskQueue,
-    maxReplanAttempts: number = CONFIG.MAX_REPLAN_ATTEMPTS,
-    _embeddingService?: EmbeddingService,
-  ) {
-    this.maxReplanAttempts = maxReplanAttempts;
-    
-    // 初始化 IntentRouter
-    this.intentRouter = new IntentRouter(
-      llm,
-      this.skillRegistry
+  constructor(deps: MainAgentDependencies) {
+    const {
+      llm, skillRegistry, taskQueue,
+      intentRouter, userProfileService, memoryService,
+      dynamicContextBuilder,
+      sessionStore, askAgent,
+      systemSkillLoader, executorRegistry,
+    } = deps;
+
+    this.llm = llm;
+    this.skillRegistry = skillRegistry;
+    this.taskQueue = taskQueue;
+    this.intentRouter = intentRouter;
+    this.userProfileService = userProfileService;
+    this.memoryService = memoryService;
+    this.dynamicContextBuilder = dynamicContextBuilder;
+    this.sessionStore = sessionStore;
+    this.askAgent = askAgent;
+    this.systemSkillLoader = systemSkillLoader;
+    this.executorRegistry = executorRegistry;
+
+    // resultAggregator 需要 processNormalRequirement 回调，循环依赖 → MainAgent 内创建
+    this.resultAggregator = new ResultAggregator(
+      llm, memoryService, sessionStore,
+      (request, userId, sessionId) =>
+        this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
     );
-    
-    this.userProfileService = new UserProfileService("data");
-    this.memoryService = new MemoryService("data", {}, this.llm);
-    this.dynamicContextBuilder = new DynamicContextBuilder(this.memoryService);
-    this.autoCompactService = new AutoCompactService(llm);
-    this.sessionStore = new SessionStore();
-    this.semanticExtractor = new SemanticExtractor(llm, this.memoryService, 30000);
-    this.askAgent = new AskAgent(this.sessionStore, llm);
-
-    this.systemSkillLoader = new SystemSkillLoader();
-    this.systemSkillLoader.loadAll();
-    this.executorRegistry = new ExecutorRegistry();
+    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator);
   }
 
   async processRequirement(
@@ -86,21 +104,23 @@ export class MainAgent {
     try {
       console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
 
-      // ========== 步骤 0: 恢复会话上下文（服务重启后从持久化数据恢复） ==========
+      // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
       if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
         try {
-          const session = await this.sessionStore.loadSession(userId, sessionId);
-          if (session.requests.length > 0) {
-            sessionContextService.restoreFromSession(sessionId, session);
+          // 优先从 L4 历史恢复(更纯粹)
+          const l4 = this.memoryService.getL4();
+          const historyEntries = await l4.listEntries(userId, sessionId);
+          if (historyEntries.length > 0) {
+            sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
           }
         } catch (error) {
           console.warn(`[MainAgent] ⚠️ 恢复会话上下文失败:`, error);
         }
       }
 
-      sessionContextService.addUserMessage(effectiveSessionId, requirement);
+      // L1 + L4 同步写入(替代旧的双写)
       try {
-        await this.memoryService.saveUserMessage(userId, requirement);
+        await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
       } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
 
       // ========== 步骤 1: 图片分析 ==========
@@ -299,30 +319,44 @@ export class MainAgent {
       // 子智能体任务需要继续执行
       const task = this.taskQueue.getTask(taskEntry.taskId);
       if (!task) {
-        // TaskQueue 是内存的，任务可能已丢失（如服务重启）
-        // 此时不能走 processNormalRequirement 重新执行（会重复派发任务），
-        // 而是直接将回答作为结果返回
-        console.warn(`[MainAgent] ⚠️ 任务 ${taskEntry.taskId} 在 TaskQueue 中不存在（可能服务重启），直接返回回答`);
-        try {
-          await this.memoryService.saveUserMessage(userId, question.answer || '');
-        } catch (e) { console.error('[MainAgent] Failed to save continued user message to memory:', e); }
-        await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, taskEntry.taskId, {
-          status: 'completed',
-          currentQuestion: null,
-        });
-        this.syncRequestStatusAfterAnswer(userId, sessionId, request);
-        fireAndForget(
-          this.semanticExtractor.extract(userId, question.answer || '', `已记录您的回答：${question.answer}`, taskEntry.skillName || undefined),
-          'semanticExtractor.extract (continueRequest)',
+        // TaskQueue 是内存的，服务器重启后队列为空。
+        // 从 SessionStore 持久化数据重建 Task 对象并恢复执行。
+        console.warn(`[MainAgent] ⚠️ 任务 ${taskEntry.taskId} 在 TaskQueue 中不存在，从持久化数据重建`);
+
+        const answers = (taskEntry.questions || [])
+          .filter((q: QAEntry) => q.answer)
+          .map((q: QAEntry) => ({
+            question: { type: 'skill_question' as const, content: q.content, taskId: q.taskId || undefined, metadata: q.metadata },
+            answer: q.answer || '',
+            timestamp: new Date(q.answeredAt || q.createdAt),
+          }));
+
+        const reconstructed = this.taskQueue.reconstructTask(
+          { taskId: taskEntry.taskId, content: taskEntry.content, skillName: taskEntry.skillName },
+          answers,
+          question.answer || '',
         );
-        return {
-          success: true,
-          data: {
-            type: 'skill_task',
-            message: `已记录您的回答：${question.answer}`,
-            requestId: request.requestId,
-          },
-        };
+
+        // 自动填充参数（如果 question 包含 paramName）
+        const paramName = question.metadata?.paramName as string | undefined;
+        if (paramName && question.answer) {
+          reconstructed.params = reconstructed.params || {};
+          reconstructed.params[paramName] = question.answer;
+          console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+        }
+
+        // 从已回答问题构建 conversationSummary
+        const conversationSummary = (taskEntry.questions || [])
+          .filter((q: QAEntry) => q.answer)
+          .map((q: QAEntry, i: number) => `第${i + 1}轮:\n问: ${q.content.replace(/\n/g, ' ')}\n答: ${q.answer}`)
+          .join('\n\n') || '';
+        reconstructed.params = reconstructed.params || {};
+        if (conversationSummary) {
+          reconstructed.params.conversationSummary = conversationSummary;
+        }
+
+        console.log(`[MainAgent] 📝 任务已重建并继续: ${taskEntry.taskId}`);
+        return this.pollTaskCompletion(reconstructed.id, userId, sessionId, request);
       }
 
       // 自动填充参数（如果 question 包含 paramName）
@@ -382,18 +416,7 @@ export class MainAgent {
   }
 
   /**
-   * 回答问题后重新同步请求状态
-   */
-  private syncRequestStatusAfterAnswer(_userId: string, _sessionId: string, request: Request): void {
-    console.log(`[MainAgent] 📊 请求 ${request.requestId} 状态已同步`);
-  }
-
-  /**
-   * 从断点恢复执行（Phase 3: 断点续传）
-   *
-   * 当任务图执行过程中某个任务等待用户输入时，
-   * 执行进度被保存到 request.executionProgress。
-   * 用户回答后，从断点层继续执行剩余任务。
+   * 从断点恢复执行（委托给 TaskGraphExecutor）
    */
   private async resumeFromBreakpoint(
     userId: string,
@@ -401,199 +424,7 @@ export class MainAgent {
     request: Request,
     question: QAEntry,
   ): Promise<TaskResult> {
-    const progress = request.executionProgress!;
-    const graph = progress.taskGraph;
-    const completedResults = new Map<string, any>(Object.entries(progress.completedResults));
-    const startLayerIdx = progress.currentLayerIndex;
-
-    console.log(`[MainAgent] 📌 从 Layer ${startLayerIdx} 恢复执行，已有 ${completedResults.size} 个任务结果`);
-
-    // 先让等待的任务继续执行（获取结果后放入 completedResults）
-    if (question.taskId) {
-      const task = this.taskQueue.getTask(question.taskId);
-      if (task) {
-        task.questionHistory = task.questionHistory || [];
-        task.questionHistory.push({
-          question: { type: 'skill_question', content: question.content, taskId: question.taskId },
-          answer: question.answer || '',
-          timestamp: new Date(),
-        });
-        task.params = task.params || {};
-        task.params.latestUserAnswer = question.answer || '';
-        task.status = "pending";
-        task.result = undefined;
-        task.error = undefined;
-
-        this.taskQueue.triggerProcess();
-
-        // 等待任务完成
-        const taskResult = await this.pollTaskCompletion(question.taskId, userId, sessionId, request);
-
-        // 如果任务又产生了新的询问，直接返回
-        if (taskResult.success && (taskResult.data as any)?.type === 'question') {
-          return taskResult;
-        }
-
-        // 将结果放入 completedResults
-        if (taskResult.success) {
-          completedResults.set(question.taskId, task.result);
-        } else {
-          return taskResult;
-        }
-      }
-    }
-
-    // 清除执行进度
-    request.executionProgress = undefined;
-
-    // 从断点层继续执行
-    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
-
-    // 将之前已完成的结果也加入
-    for (const [taskId, result] of completedResults) {
-      const node = graph.nodes.find(n => n.taskId === taskId);
-      if (node) {
-        allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
-      }
-    }
-
-    for (let layerIdx = startLayerIdx; layerIdx < graph.layers.length; layerIdx++) {
-      const layer = graph.layers[layerIdx];
-      console.log(`[MainAgent] 🚀 恢复执行 Layer ${layerIdx}: ${layer.length} 个任务`);
-
-      const layerPromises = layer.map(async (taskId) => {
-        const node = graph.nodes.find(n => n.taskId === taskId)!;
-        const resolvedParams = this.resolveParams(node.params, completedResults);
-
-        const task: Task = {
-          id: taskId,
-          requirement: node.content,
-          status: 'pending',
-          skillName: node.skillName,
-          params: { ...node.params, ...resolvedParams },
-          dependencies: node.dependencies,
-          dependents: [],
-          createdAt: new Date(),
-          retryCount: 0,
-          sessionId,
-          userId,
-          questionHistory: [],  // 初始化询问历史
-        };
-
-        this.taskQueue.addTask(task);
-
-        return new Promise<{ taskId: string; result: any; status: string }>((resolve) => {
-          const wrappedCheck = () => {
-            const t = this.taskQueue.getTask(taskId);
-            if (!t) { resolve({ taskId, result: null, status: 'lost' }); return; }
-            if (t.status === 'completed' || t.status === 'failed') {
-              resolve({ taskId, result: t.result, status: t.status });
-            }
-          };
-
-          this.taskQueue.on('task-completed', wrappedCheck);
-          this.taskQueue.on('task-failed', wrappedCheck);
-
-          const timeout = setTimeout(() => {
-            this.taskQueue.off('task-completed', wrappedCheck);
-            this.taskQueue.off('task-failed', wrappedCheck);
-            resolve({ taskId, result: null, status: 'timeout' });
-          }, CONFIG.TASK_TIMEOUT_MS);
-
-          wrappedCheck();
-
-          // 包装清理
-          const origResolve = resolve;
-          const wrappedResolve = (value: { taskId: string; result: any; status: string }) => {
-            clearTimeout(timeout);
-            this.taskQueue.off('task-completed', wrappedCheck);
-            this.taskQueue.off('task-failed', wrappedCheck);
-            origResolve(value);
-          };
-          this.taskQueue.off('task-completed', wrappedCheck);
-          this.taskQueue.off('task-failed', wrappedCheck);
-          const finalCheck = () => {
-            const t = this.taskQueue.getTask(taskId);
-            if (!t) { wrappedResolve({ taskId, result: null, status: 'lost' }); return; }
-            if (t.status === 'completed' || t.status === 'failed') {
-              wrappedResolve({ taskId, result: t.result, status: t.status });
-            }
-          };
-          this.taskQueue.on('task-completed', finalCheck);
-          this.taskQueue.on('task-failed', finalCheck);
-          finalCheck();
-        });
-      });
-
-      const layerResults = await Promise.all(layerPromises);
-
-      for (const { taskId, result, status } of layerResults) {
-        const node = graph.nodes.find(n => n.taskId === taskId)!;
-
-        if (status === 'completed' && result) {
-          completedResults.set(taskId, result);
-          allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
-          try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'completed');
-          } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
-
-          const skillData = (result as any)?.data;
-          if (skillData?.status === 'waiting_user_input' && skillData.question) {
-            // 又产生了新的询问，再次保存进度
-            request.executionProgress = {
-              currentLayerIndex: layerIdx + 1,
-              completedResults: Object.fromEntries(completedResults),
-              taskGraph: graph,
-            };
-            // 由 handleTaskCompletion 处理 QAEntry
-            return await this.handleTaskCompletion(
-              { ...this.taskQueue.getTask(taskId)!, result } as Task,
-              userId, sessionId, request,
-            );
-          }
-        } else if (status === 'failed') {
-          try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
-          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
-          return { success: false, error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' } };
-        }
-      }
-    }
-
-    // 所有层执行完毕 → 汇总结果
-    const taskList = allResults.map(tr => ({
-      taskId: tr.taskId,
-      skillName: tr.skillName,
-      requirement: tr.requirement,
-      response: (tr.result as any)?.data?.response || '',
-    }));
-
-    let finalResponse: string;
-    let isCompleted: boolean;
-
-    if (taskList.length === 1) {
-      // 单任务：直接使用子智能体的结果，无需额外汇总
-      console.log(`[MainAgent] ✅ 断点续传-单任务完成，跳过汇总`);
-      finalResponse = taskList[0].response;
-      isCompleted = true;
-      await this.sessionStore.completeRequest(userId, sessionId, request.requestId, finalResponse);
-    } else {
-      // 多任务：调用 LLM 汇总判断
-      const summary = await this.summarizeResults(request.content, taskList, userId, sessionId, request);
-      finalResponse = summary.summary;
-      isCompleted = summary.completed;
-    }
-
-    return {
-      success: true,
-      data: {
-        results: taskList,
-        type: 'skill_task',
-        requestId: request.requestId,
-        completed: isCompleted,
-        summary: finalResponse,
-      },
-    };
+    return this.taskGraphExecutor.resumeFromBreakpoint(userId, sessionId, request, question);
   }
 
   /**
@@ -626,9 +457,9 @@ export class MainAgent {
 
       const [userProfile, memory, session, dynamicContext] = await Promise.all([
         this.userProfileService.loadProfile(userId),
-        this.memoryService.loadUserMemory(userId),
+        this.memoryService.loadUserMemory(userId, sessionId),
         this.sessionStore.loadSession(userId, sessionId),
-        this.dynamicContextBuilder.build(requirement, userId),
+        this.dynamicContextBuilder.build(requirement, userId, sessionId),
       ]);
       console.log(`[MainAgent] 👤 用户画像: ${JSON.stringify(Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)))}`);
 
@@ -636,51 +467,33 @@ export class MainAgent {
       let recalledContext = '';
       try {
         const recalledResults = await this.memoryService.recall(userId, requirement, {
-          namespace: userId,
           topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_RECALL_TOP_K,
-          layers: [MemoryLayer.EPISODIC, MemoryLayer.SEMANTIC, MemoryLayer.PROCEDURAL],
         });
         if (recalledResults.length > 0) {
           const lines = recalledResults.map(r => {
-            const layer = r.entry.layer;
-            const content = r.entry.content;
-            return `[${layer}] ${content}`;
+            const source = (r.metadata?.source as string) || '知识';
+            return `[${source}] ${r.content}`;
           });
           recalledContext = '\n[相关记忆]\n' + lines.join('\n');
         }
       } catch (e) { console.error('[MainAgent] Failed to recall memory:', e); }
 
-      let sharedContext = '';
-      try {
-        const sharedResults = await this.memoryService.retrieveShared('main-agent', requirement, { topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_SHARED_TOP_K });
-        if (sharedResults.length > 0) {
-          sharedContext = '\n[共享记忆]\n' + sharedResults.map(r =>
-            `[${r.entry.metadata?.skillName || '未知技能'}] ${r.entry.content}`
-          ).join('\n');
-        }
-      } catch (e) { console.error('[MainAgent] Failed to retrieve shared memory:', e); }
-
-      // ========== 加载活跃任务（防止重复分派） ==========
-      const activeTasks = await this.memoryService.getActiveTasks(userId);
-      if (activeTasks.length > 0) {
-        console.log(`[MainAgent] 📋 活跃任务: ${activeTasks.length}个`);
+      // ========== 加载活跃任务（防止重复分派）==========
+      const activeTasksInSession = request.tasks.filter(t =>
+        t.status !== 'completed' && t.status !== 'failed'
+      );
+      if (activeTasksInSession.length > 0) {
+        console.log(`[MainAgent] 📋 活跃任务: ${activeTasksInSession.length}个`);
       }
 
-      const messages = memory.episodicEntries.map((entry) => ({
-        role: typeof entry.metadata?.role === 'string' ? entry.metadata.role : 'user',
-        content: entry.content,
-        timestamp: entry.createdAt ? new Date(entry.createdAt).getTime() : Date.now(),
-      }));
-      this.autoCompactService.microCompact(messages);
-      await this.autoCompactService.checkAndCompact(messages);
-
+      // 删除 AutoCompactService 依赖:buildContextPrompt 已 slice(-50),足够压缩
       const historyPrompt = this.memoryService.buildContextPrompt(memory);
 
       let enrichedRequirement = requirement;
       if (historyPrompt) {
-        enrichedRequirement = historyPrompt + recalledContext + sharedContext + "\n\n" + enrichedRequirement;
-      } else if (recalledContext || sharedContext) {
-        enrichedRequirement = (recalledContext + sharedContext) + "\n\n" + enrichedRequirement;
+        enrichedRequirement = historyPrompt + recalledContext + "\n\n" + enrichedRequirement;
+      } else if (recalledContext) {
+        enrichedRequirement = recalledContext + "\n\n" + enrichedRequirement;
       }
 
       // ========== 注入 Session 上下文到提示词 ==========
@@ -711,14 +524,14 @@ export class MainAgent {
       let proceduralExperience: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }> | undefined;
       try {
         const proceduralResults = await this.memoryService.recall(userId, requirement, {
-          layers: [MemoryLayer.PROCEDURAL], topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_PROCEDURAL_TOP_K, namespace: userId,
+          topK: DEFAULT_RECALL_CONFIG.MAIN_AGENT_PROCEDURAL_TOP_K,
         });
         proceduralExperience = proceduralResults
-          .filter(r => r.entry.metadata?.skillName)
+          .filter(r => r.metadata?.skill)
           .map(r => ({
-            skillName: r.entry.metadata!.skillName as string,
-            usageCount: (r.entry.metadata!.usageCount as number) || 0,
-            lastSuccess: (r.entry.metadata!.lastSuccess as boolean) ?? true,
+            skillName: r.metadata!.skill as string,
+            usageCount: (r.metadata!.usageCount as number) || 0,
+            lastSuccess: (r.metadata!.success as boolean) ?? true,
           }));
       } catch (e) { console.error('[MainAgent] Failed to recall procedural memory:', e); }
 
@@ -766,11 +579,19 @@ export class MainAgent {
 
       if (tasksToExecute.length === 0) {
         assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
-        sessionContextService.addAssistantMessage(sessionId, assistantResponse);
         try {
-          await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+          await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
         } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
+        // 请求级摘要(异步,失败不阻塞)
+        fireAndForget(
+          this.memoryService.summarizeRequest({
+            userId, sessionId, requestId: request.requestId,
+            userMessage: requirement, assistantMessage: assistantResponse,
+          }),
+          'summarizeRequest (no-skill)',
+          (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
+        );
         return { success: true, data: { message: assistantResponse, type: 'unclear' } };
       }
 
@@ -828,8 +649,6 @@ export class MainAgent {
       for (const taskDef of plan.tasks) {
         const uniqueTaskId = `${plan.id}-${taskDef.id}`;
 
-        const alreadyActive = activeTasks.some(t => t.metadata?.taskId === uniqueTaskId);
-
         const requestTask: RequestTask = {
           taskId: uniqueTaskId,
           content: taskDef.requirement,
@@ -842,18 +661,6 @@ export class MainAgent {
           currentQuestion: null,
         };
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);
-
-        if (!alreadyActive) {
-          try {
-            await this.memoryService.saveWorkingMemory(
-              userId,
-              uniqueTaskId,
-              taskDef.requirement || requirement,
-              'pending',
-              request.requestId,
-            );
-          } catch (e) { console.error('[MainAgent] Failed to save working memory:', e); }
-        }
       }
 
       console.log(`[MainAgent] 🔄 构建 TaskGraph 并执行`);
@@ -885,17 +692,7 @@ export class MainAgent {
         if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
           console.log(`[MainAgent] 🔄 检测到子任务 ${waitingTaskId} 需要用户输入`);
 
-          const questionId = `q-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-          const qaEntry: QAEntry = {
-            questionId,
-            content: skillResult.question.content,
-            source: 'sub_agent',
-            taskId: waitingTaskId,
-            skillName: waitingResult?.skillName || null,
-            answer: null,
-            answeredAt: null,
-            createdAt: new Date().toISOString(),
-          };
+          const qaEntry = this.resultAggregator.createQAEntry(skillResult!, waitingTaskId, waitingResult?.skillName || null);
 
           // 子智能体询问只放到任务级 questions，不放请求级
           await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, waitingTaskId, {
@@ -905,12 +702,9 @@ export class MainAgent {
           });
 
           try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, waitingTaskId, 'waiting');
-          } catch (e) { console.error('[MainAgent] Failed to update working memory status to waiting:', e); }
-
-          sessionContextService.addAssistantMessage(sessionId, qaEntry.content);
-          try {
-            await this.memoryService.saveAssistantMessage(userId, qaEntry.content, { skill: qaEntry.skillName || undefined });
+            await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {
+              skillName: qaEntry.skillName || undefined,
+            });
           } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
 
           return {
@@ -964,29 +758,23 @@ export class MainAgent {
       }
 
       assistantResponse = finalResponse;
-      sessionContextService.addAssistantMessage(sessionId, assistantResponse);
       try {
-        await this.memoryService.saveAssistantMessage(userId, assistantResponse, { skill: taskList[0]?.skillName || undefined });
+        await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse, {
+          skillName: taskList[0]?.skillName || undefined,
+        });
       } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+      // 请求级摘要(异步,失败不阻塞) — 替代旧 semanticExtractor.extract
       fireAndForget(
-        this.semanticExtractor.extract(userId, requirement, assistantResponse, taskList[0]?.skillName || undefined),
-        'semanticExtractor.extract (processNormalRequirement)',
+        this.memoryService.summarizeRequest({
+          userId, sessionId, requestId: request.requestId,
+          userMessage: requirement, assistantMessage: assistantResponse,
+          skillName: taskList[0]?.skillName || undefined,
+        }),
+        'summarizeRequest (processNormalRequirement)',
+        (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
       );
 
-      // ===== v3: 从已完成任务的 questionHistory 中提取语义知识 =====
-      const allTasks = await this.taskQueue.getAllTasks();
-      for (const t of allTasks) {
-        if (t.questionHistory && t.questionHistory.length > 0 && t.status === 'completed') {
-          for (const qh of t.questionHistory) {
-            if (qh.answer && qh.answer.trim().length > 0) {
-              fireAndForget(
-              this.semanticExtractor.extract(userId, qh.question.content, qh.answer, t.skillName),
-              'semanticExtractor.extract (questionHistory loop)',
-            );
-            }
-          }
-        }
-      }
+      // ===== v3: questionHistory 语义提取已由 L3 summarizeRequest 覆盖,不再单独提取 =====
 
       return {
         success: result.success,
@@ -1006,8 +794,13 @@ export class MainAgent {
         error: { type: "FATAL", message: error instanceof Error ? error.message : "Unknown error", code: "PROCESSING_ERROR" },
       };
     } finally {
+      // 回滚 L1 最后一条消息(如果未生成 assistantResponse)
       if (!assistantResponse) {
-        sessionContextService.getContext(sessionId).conversation.pop();
+        try {
+          await this.memoryService.popLastAssistantMessage(userId, sessionId);
+        } catch (e) {
+          console.error('[MainAgent] Failed to pop last assistant message:', e);
+        }
       }
     }
   }
@@ -1020,19 +813,26 @@ export class MainAgent {
 
     if (intentResult.intent === "small_talk") {
       assistantResponse = intentResult.question?.content || "您好！有什么可以帮助您的吗？";
-      sessionContextService.addAssistantMessage(sessionId, assistantResponse);
       try {
-        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+        await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
       } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
+      // 请求级摘要
+      fireAndForget(
+        this.memoryService.summarizeRequest({
+          userId, sessionId, requestId: request.requestId,
+          userMessage: request.content, assistantMessage: assistantResponse,
+        }),
+        'summarizeRequest (small_talk)',
+        (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
+      );
       return { success: true, data: { message: assistantResponse, type: "small_talk", requestId: request.requestId } };
     }
 
     if (intentResult.intent === "confirm_system") {
       assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
-      sessionContextService.addAssistantMessage(sessionId, assistantResponse);
       try {
-        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+        await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
       } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
 
       // 主智能体询问 → 记录到请求的 questions 中
@@ -1067,29 +867,42 @@ export class MainAgent {
 
     if (intentResult.intent === "out_of_scope") {
       assistantResponse = intentResult.question?.content || "抱歉，这个问题超出了我的处理范围。";
-      sessionContextService.addAssistantMessage(sessionId, assistantResponse);
       try {
-        await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+        await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
       } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
+      // 请求级摘要
+      fireAndForget(
+        this.memoryService.summarizeRequest({
+          userId, sessionId, requestId: request.requestId,
+          userMessage: request.content, assistantMessage: assistantResponse,
+        }),
+        'summarizeRequest (out_of_scope)',
+        (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
+      );
       return { success: true, data: { message: assistantResponse, type: "out_of_scope", requestId: request.requestId } };
     }
 
     // unclear 或其他非技能意图：使用 LLM 生成的友好回复
     assistantResponse = intentResult.question?.content || "抱歉，我暂时无法理解您的需求，请换个方式描述或联系人工客服。";
-    sessionContextService.addAssistantMessage(sessionId, assistantResponse);
     try {
-      await this.memoryService.saveAssistantMessage(userId, assistantResponse);
+      await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
     } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
     await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
+    // 请求级摘要
+    fireAndForget(
+      this.memoryService.summarizeRequest({
+        userId, sessionId, requestId: request.requestId,
+        userMessage: request.content, assistantMessage: assistantResponse,
+      }),
+      'summarizeRequest (unclear)',
+      (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
+    );
     return { success: true, data: { message: assistantResponse, type: "unclear", requestId: request.requestId } };
   }
 
   /**
-   * 汇总任务结果，判断是否满足用户原始需求
-   *
-   * 所有子任务执行完毕后，主智能体拿着原始需求 + 各任务结果做一次 LLM 判断，
-   * 生成汇总回复并设置 request.result
+   * 汇总任务结果，判断是否满足用户原始需求（委托给 ResultAggregator）
    */
   private async summarizeResults(
     originalRequirement: string,
@@ -1098,48 +911,7 @@ export class MainAgent {
     sessionId: string,
     request: Request,
   ): Promise<{ completed: boolean; summary: string }> {
-    console.log(`[MainAgent] 📊 汇总 ${taskResults.length} 个任务结果...`);
-
-    const resultsContext = taskResults
-      .map((t, idx) => `任务${idx + 1} [${t.skillName}]: ${t.response}`)
-      .join('\n\n');
-
-    const prompt = `用户原始需求: ${originalRequirement}
-
-以下是各子任务的执行结果:
-${resultsContext}
-
-请判断:
-1. 所有子任务的结果是否已经完整满足了用户的需求？
-2. 如果满足，请生成一段简洁自然的汇总回复（直接回复用户，不要说"根据执行结果"等机械用语）
-3. 如果不满足，说明还需要执行什么操作
-
-输出 JSON:
-{
-  "completed": true/false,
-  "summary": "汇总文本（completed=true时）或 说明还需要什么（completed=false时）"
-}`;
-
-    try {
-      const judgment = await this.llm.generateStructured(prompt, z.object({
-        completed: z.boolean(),
-        summary: z.string(),
-      }));
-
-      console.log(`[MainAgent] 📊 汇总判断: completed=${judgment.completed}`);
-
-      if (judgment.completed) {
-        await this.sessionStore.completeRequest(userId, sessionId, request.requestId, judgment.summary);
-      }
-
-      return judgment;
-    } catch (error) {
-      console.error(`[MainAgent] ⚠️ 汇总判断失败，使用默认拼接`, error);
-      // 降级：直接拼接所有任务结果
-      const fallback = taskResults.map(t => t.response).filter(r => r).join('\n\n');
-      await this.sessionStore.completeRequest(userId, sessionId, request.requestId, fallback);
-      return { completed: true, summary: fallback };
-    }
+    return this.resultAggregator.summarizeResults(originalRequirement, taskResults, userId, sessionId, request);
   }
 
   /**
@@ -1167,36 +939,9 @@ ${resultsContext}
     }
 
     // task.status === 'failed'
-    try {
-      await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
-    } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
 
-    if (task.skillName) {
-      try {
-        const taskResult = task.result;
-        await this.memoryService.saveProceduralMemory(
-          userId,
-          task.skillName,
-          task.requirement,
-          task.params,
-          taskResult && typeof taskResult === 'object' && 'data' in taskResult && typeof (taskResult as any).data?.response === 'string'
-            ? (taskResult as any).data.response.substring(0, 200)
-            : undefined,
-          false,
-        );
-      } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-    }
-    fireAndForget(
-      this.semanticExtractor.extract(
-        userId,
-        task.requirement || '',
-        (task.result && typeof task.result === 'object' && 'data' in task.result && typeof (task.result as any).data?.response === 'string')
-          ? (task.result as any).data.response
-          : JSON.stringify(task.result),
-        task.skillName,
-      ),
-      'semanticExtractor.extract (pollTaskCompletion/failed)',
-    );
+    // 失败任务的语义提取已由 L3 summarizeRequest 在请求完成时统一处理,此处不再单独调用
+
     return {
       success: false,
       error: task.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' },
@@ -1204,7 +949,7 @@ ${resultsContext}
   }
 
   /**
-   * 处理任务完成
+   * 处理任务完成（委托给 ResultAggregator）
    */
   private async handleTaskCompletion(
     task: Task,
@@ -1212,121 +957,7 @@ ${resultsContext}
     sessionId: string,
     request: Request
   ): Promise<TaskResult> {
-    const taskResult = task.result || { success: true, data: {} };
-    const skillData = (taskResult as { data?: SkillExecutionResult }).data;
-
-    // 检查是否又产生了新的询问
-    if (skillData?.status === 'waiting_user_input' && skillData.question) {
-      const questionId = `q-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      const qaEntry: QAEntry = {
-        questionId,
-        content: skillData.question.content,
-        source: 'sub_agent',
-        taskId: task.id,
-        skillName: task.skillName || null,
-        answer: null,
-        answeredAt: null,
-        createdAt: new Date().toISOString(),
-        // 关键：保留完整的 metadata（包含 source, expectedType, options, paramName 等）
-        metadata: skillData.question.metadata,
-      };
-
-      // 子智能体询问只放到任务级 questions，不放请求级
-      await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, task.id, {
-        currentQuestion: qaEntry,
-        status: 'waiting',
-        questions: [...(request.tasks.find(t => t.taskId === task.id)?.questions || []), qaEntry],
-      });
-
-      try {
-        await this.memoryService.updateWorkingMemoryStatus(userId, task.id, 'waiting');
-      } catch (e) { console.error('[MainAgent] Failed to update working memory status to waiting:', e); }
-
-      sessionContextService.addAssistantMessage(sessionId, qaEntry.content);
-      try {
-        await this.memoryService.saveAssistantMessage(userId, qaEntry.content, { skill: qaEntry.skillName || undefined });
-      } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
-
-      return {
-        success: true,
-        data: { message: qaEntry.content, type: 'question', question: qaEntry, requestId: request.requestId },
-      };
-    }
-
-    // 检查是否需要意图重分类
-    if (skillData?.status === 'needs_intent_reclassification') {
-      sessionContextService.updateContext(sessionId, {
-        currentSkill: undefined,
-        currentSystem: undefined,
-        currentTopic: undefined,
-        tempVariables: new Map(),
-      } as any);
-      console.log(`[MainAgent] 🔄 检测到用户回复与当前任务无关，重新识别意图`);
-      return this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1);
-    }
-
-    // 正常完成 → 更新请求中的任务状态
-    await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, task.id, {
-      status: 'completed',
-      result: skillData?.response || null,
-    });
-
-    try {
-      await this.memoryService.updateWorkingMemoryStatus(userId, task.id, 'completed');
-    } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
-
-    if (task.skillName) {
-      try {
-        await this.memoryService.saveProceduralMemory(
-          userId,
-          task.skillName,
-          task.requirement || '',
-          task.params,
-          typeof skillData?.response === 'string' ? skillData.response.substring(0, 200) : undefined,
-          true,
-        );
-      } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-      fireAndForget(
-        this.semanticExtractor.extract(userId, task.requirement || '', typeof skillData?.response === 'string' ? skillData.response : JSON.stringify(skillData), task.skillName),
-        'semanticExtractor.extract (handleTaskCompletion)',
-      );
-
-      // ===== v3: 从 questionHistory 中提取语义知识（如用户属性、偏好等事实信息） =====
-      if (task.questionHistory && task.questionHistory.length > 0) {
-        for (const qh of task.questionHistory) {
-          if (qh.answer && qh.answer.trim().length > 0) {
-            fireAndForget(
-              this.semanticExtractor.extract(
-                userId,
-                qh.question.content,
-                qh.answer,
-                task.skillName,
-              ),
-              'semanticExtractor.extract (handleTaskCompletion/questionHistory)',
-            );
-          }
-        }
-      }
-    }
-
-    // 检查是否所有任务都已完成，如果是则完成请求
-    const updatedSession = await this.sessionStore.loadSession(userId, sessionId);
-    const updatedRequest = updatedSession.requests.find(r => r.requestId === request.requestId);
-    if (updatedRequest) {
-      const allTasksDone = updatedRequest.tasks.every(t => t.status === 'completed' || t.status === 'failed');
-      const noWaitingQuestions = !updatedRequest.tasks.some(t => t.status === 'waiting' && t.currentQuestion);
-      if (allTasksDone && noWaitingQuestions) {
-        // 单任务直接用子智能体的结果，多任务由上层 summarizeResults 处理
-        const taskCount = updatedRequest.tasks.length;
-        if (taskCount === 1) {
-          const taskResult_text = skillData?.response || '';
-          await this.sessionStore.completeRequest(userId, sessionId, request.requestId, taskResult_text);
-        }
-        // 多任务时不在这里 completeRequest，由上层 processNormalRequirement 的 summarizeResults 处理
-      }
-    }
-
-    return taskResult;
+    return this.resultAggregator.handleTaskCompletion(task, userId, sessionId, request);
   }
 
   // ============================================================================
@@ -1334,125 +965,14 @@ ${resultsContext}
   // ============================================================================
 
   /**
-   * 从 TaskPlan 构建 TaskGraph（拓扑排序分层）
-   *
-   * 将 IntentRouter/UnifiedPlanner 输出的 TaskPlan 转换为 TaskGraph，
-   * 计算任务间的依赖关系并分层，支持串行/并行混合执行。
+   * 从 TaskPlan 构建 TaskGraph（委托给 TaskGraphExecutor）
    */
   private buildTaskGraph(plan: TaskPlan): TaskGraph {
-    const nodes: TaskGraphNode[] = plan.tasks.map(t => ({
-      taskId: `${plan.id}-${t.id}`,
-      content: t.requirement,
-      skillName: t.skillName,
-      dependencies: t.dependencies.map(depId => `${plan.id}-${depId}`),
-      params: t.params || {},
-    }));
-
-    // 拓扑排序 + 分层（Kahn 算法变体）
-    const inDegree = new Map<string, number>();
-    const nodeMap = new Map<string, TaskGraphNode>();
-    const dependents = new Map<string, string[]>();
-
-    for (const node of nodes) {
-      nodeMap.set(node.taskId, node);
-      inDegree.set(node.taskId, node.dependencies.length);
-      dependents.set(node.taskId, []);
-    }
-
-    for (const node of nodes) {
-      for (const dep of node.dependencies) {
-        if (dependents.has(dep)) {
-          dependents.get(dep)!.push(node.taskId);
-        }
-      }
-    }
-
-    const layers: string[][] = [];
-    const processed = new Set<string>();
-
-    while (processed.size < nodes.length) {
-      // 找出所有入度为 0 的节点
-      const readyNodes = nodes.filter(
-        n => !processed.has(n.taskId) && (inDegree.get(n.taskId) || 0) === 0
-      );
-
-      if (readyNodes.length === 0) {
-        // 存在循环依赖，将剩余节点放入同一层
-        console.warn(`[MainAgent] ⚠️ 检测到循环依赖，将剩余 ${nodes.length - processed.size} 个任务放入同一层`);
-        const remaining = nodes.filter(n => !processed.has(n.taskId));
-        layers.push(remaining.map(n => n.taskId));
-        break;
-      }
-
-      layers.push(readyNodes.map(n => n.taskId));
-
-      for (const node of readyNodes) {
-        processed.add(node.taskId);
-        for (const dep of dependents.get(node.taskId) || []) {
-          inDegree.set(dep, (inDegree.get(dep) || 1) - 1);
-        }
-      }
-    }
-
-    console.log(`[MainAgent] 📊 TaskGraph 构建: ${nodes.length} 个节点, ${layers.length} 层`);
-    for (let i = 0; i < layers.length; i++) {
-      console.log(`  Layer ${i}: [${layers[i].join(', ')}]`);
-    }
-
-    return { id: plan.id, requirement: plan.requirement, nodes, layers };
+    return this.taskGraphExecutor.buildTaskGraph(plan);
   }
 
   /**
-   * 解析参数引用
-   *
-   * 将参数中的 $taskId.result 引用替换为上游任务的实际结果。
-   * 例如: { classes: "$plan-123-task-1.result" } → { classes: "[{name: '一班', ...}]" }
-   */
-  private resolveParams(
-    params: Record<string, unknown> | undefined,
-    completedResults: Map<string, any>,
-  ): Record<string, unknown> {
-    if (!params) return {};
-
-    const resolved: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(params)) {
-      if (typeof value === 'string' && value.startsWith('$')) {
-        // 解析 $taskId.result 或 $taskId.result.field
-        const match = value.match(/^\$([^.]+)\.result(?:\.(.+))?$/);
-        if (match) {
-          const refTaskId = match[1];
-          const field = match[2];
-          const refResult = completedResults.get(refTaskId);
-          if (refResult !== undefined) {
-            const data = (refResult as any)?.data || refResult;
-            if (field) {
-              resolved[key] = field.split('.').reduce((obj: any, f: string) => obj?.[f], data);
-            } else {
-              resolved[key] = typeof data === 'string' ? data : JSON.stringify(data);
-            }
-            console.log(`[MainAgent] 🔗 参数解析: ${key} = $${refTaskId}.result${field ? '.' + field : ''}`);
-          } else {
-            console.warn(`[MainAgent] ⚠️ 参数引用未找到: ${value} (任务 ${refTaskId} 尚未完成)`);
-            resolved[key] = value; // 保留原始引用
-          }
-        } else {
-          resolved[key] = value;
-        }
-      } else {
-        resolved[key] = value;
-      }
-    }
-    return resolved;
-  }
-
-  /**
-   * 分层执行任务图
-   *
-   * 按拓扑排序的层级执行任务：
-   * - 同一层内的任务并行执行
-   * - 层与层之间串行（上层完成后才执行下层）
-   * - 上游任务的结果通过 $taskId.result 传递给下游任务
-   * - 支持等待用户输入时保存进度
+   * 分层执行任务图（委托给 TaskGraphExecutor）
    */
   private async executeTaskGraph(
     graph: TaskGraph,
@@ -1460,312 +980,14 @@ ${resultsContext}
     userId: string,
     request: Request,
   ): Promise<TaskResult> {
-    const completedResults: Map<string, any> = new Map();
-    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
-
-    for (let layerIdx = 0; layerIdx < graph.layers.length; layerIdx++) {
-      const layer = graph.layers[layerIdx];
-      console.log(`[MainAgent] 🚀 执行 Layer ${layerIdx}: ${layer.length} 个任务`);
-
-      // 同一层内的任务并行执行
-      const layerPromises = layer.map(async (taskId) => {
-        const node = graph.nodes.find(n => n.taskId === taskId)!;
-
-        // 解析参数引用
-        const resolvedParams = this.resolveParams(node.params, completedResults);
-
-        // 创建 TaskQueue 任务
-        const task: Task = {
-          id: taskId,
-          requirement: node.content,
-          status: 'pending',
-          skillName: node.skillName,
-          params: { ...node.params, ...resolvedParams },
-          dependencies: node.dependencies,
-          dependents: [],
-          createdAt: new Date(),
-          retryCount: 0,
-          sessionId,
-          userId,
-          questionHistory: [],  // 初始化询问历史
-        };
-
-        this.taskQueue.addTask(task);
-
-        // 等待任务完成 — 使用一次性事件监听替代混乱的 Promise 包装
-        return this.onceTaskEvent(taskId);
-      });
-
-      const layerResults = await Promise.all(layerPromises);
-
-      // 处理本层结果
-      for (const { taskId, result, status } of layerResults) {
-        const node = graph.nodes.find(n => n.taskId === taskId)!;
-
-        if (status === 'completed' && result) {
-          completedResults.set(taskId, result);
-          allResults.push({
-            taskId,
-            skillName: node.skillName,
-            requirement: node.content,
-            result,
-          });
-
-          try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'completed');
-          } catch (e) { console.error('[MainAgent] Failed to update completed working memory:', e); }
-
-          if (node.skillName) {
-            try {
-              await this.memoryService.saveProceduralMemory(
-                userId, node.skillName, node.content, undefined,
-                typeof result === 'string' ? result.substring(0, 200) : undefined,
-                true
-              );
-            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-          }
-
-          // 检查是否需要用户输入
-          const skillData = (result as any)?.data;
-          if (skillData?.status === 'waiting_user_input' && skillData.question) {
-            console.log(`[MainAgent] ⏸️ 任务 ${taskId} 等待用户输入，暂停后续层级执行`);
-
-            // 保存执行进度
-            request.executionProgress = {
-              currentLayerIndex: layerIdx + 1,
-              completedResults: Object.fromEntries(completedResults),
-              taskGraph: graph,
-            };
-
-            // 返回等待用户输入的结果（由调用方处理 QAEntry 创建）
-            return {
-              success: true,
-              data: {
-                planId: graph.id,
-                results: allResults,
-                waitingTaskId: taskId,
-              },
-            };
-          }
-        } else if (status === 'failed') {
-          console.error(`[MainAgent] ❌ 任务 ${taskId} 执行失败`);
-          try {
-            await this.memoryService.updateWorkingMemoryStatus(userId, taskId, 'failed');
-          } catch (e) { console.error('[MainAgent] Failed to update failed working memory:', e); }
-          if (node.skillName) {
-            try {
-              await this.memoryService.saveProceduralMemory(
-                userId, node.skillName, node.content, undefined,
-                undefined, false
-              );
-            } catch (e) { console.error('[MainAgent] Failed to save procedural memory:', e); }
-          }
-          return {
-            success: false,
-            error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
-          };
-        } else {
-          console.error(`[MainAgent] ❌ 任务 ${taskId} 状态异常: ${status}`);
-          return {
-            success: false,
-            error: { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
-          };
-        }
-      }
-
-      console.log(`[MainAgent] ✅ Layer ${layerIdx} 完成 (${layer.length}/${layer.length})`);
-    }
-
-    // 所有层执行完毕
-    console.log(`[MainAgent] ✅ TaskGraph 全部执行完成 (${allResults.length} 个任务)`);
-    return {
-      success: true,
-      data: {
-        planId: graph.id,
-        results: allResults,
-      },
-    };
-  }
-
-  async monitorAndReplan(plan: TaskPlan, sessionId?: string, userId?: string, _request?: Request): Promise<TaskResult> {
-    let replanAttempts = 0;
-    let currentPlan = plan;
-    let submittedPlans = new Set<string>();
-
-    while (replanAttempts <= this.maxReplanAttempts) {
-      if (!submittedPlans.has(currentPlan.id)) {
-        this.submitPlanTasks(currentPlan, sessionId, userId);
-        submittedPlans.add(currentPlan.id);
-      }
-      const result = await this.waitForCompletion(currentPlan.id);
-
-      if (result.success) {
-        return result;
-      }
-
-      const failedTasks = this.getFailedTasks(currentPlan);
-      if (failedTasks.length === 0) return result;
-
-      const errors = failedTasks.map((t) => t.error!).filter(Boolean);
-      const allRetryable = errors.every((e) => e.type === "RETRYABLE");
-
-      if (!allRetryable) {
-        const fatalError = errors.find((e) => e.type !== "RETRYABLE");
-        return { success: false, error: fatalError || errors[0] };
-      }
-
-      if (replanAttempts >= this.maxReplanAttempts) {
-        return { success: false, error: { type: "FATAL", message: `Max replan attempts (${this.maxReplanAttempts}) exceeded`, code: "MAX_REPLAN_EXCEEDED" } };
-      }
-
-      replanAttempts++;
-      currentPlan = await this.replan(currentPlan, errors);
-    }
-
-    return { success: false, error: { type: "FATAL", message: "Unexpected end of replan loop", code: "UNEXPECTED" } };
-  }
-
-  private submitPlanTasks(plan: TaskPlan, sessionId?: string, userId?: string): void {
-    console.log(`[MainAgent] 📤 向任务队列提交 ${plan.tasks.length} 个任务`);
-    for (const taskDef of plan.tasks) {
-      const uniqueTaskId = `${plan.id}-${taskDef.id}`;
-      const updatedDependencies = taskDef.dependencies.map((depId) => `${plan.id}-${depId}`);
-
-      const task: Task = {
-        id: uniqueTaskId,
-        requirement: taskDef.requirement,
-        status: "pending" as TaskStatus,
-        skillName: taskDef.skillName,
-        params: taskDef.params,
-        dependencies: updatedDependencies,
-        dependents: [],
-        createdAt: new Date(),
-        retryCount: 0,
-        sessionId,
-        userId,
-        questionHistory: [],  // 初始化询问历史
-      };
-
-      this.taskQueue.addTask(task);
-    }
-  }
-
-  private async waitForCompletion(planId: string): Promise<TaskResult> {
-    return new Promise<TaskResult>((resolve) => {
-      const handler = () => {
-        const planTasks = this.taskQueue.getAllTasks()
-          .filter((t) => t.id.startsWith(planId) && t.skillName);
-
-        if (planTasks.length === 0) {
-          cleanup();
-          resolve({ success: true, data: { planId, results: [] } });
-          return;
-        }
-
-        const allCompleted = planTasks.every((t) => t.status === 'completed' || t.status === 'failed');
-        if (!allCompleted) return;
-
-        cleanup();
-        const failed = planTasks.filter((t) => t.status === 'failed');
-        if (failed.length > 0) {
-          resolve({ success: false, error: failed[0].error });
-        } else {
-          const results = planTasks.filter((t) => t.status === 'completed').map((t) => ({
-            taskId: t.id, skillName: t.skillName, requirement: t.requirement, result: t.result,
-          }));
-          console.log(`[MainAgent] ✅ 所有任务执行完成 (${results.length}/${planTasks.length})`);
-          resolve({ success: true, data: { planId, results } });
-        }
-      };
-
-      const cleanup = () => {
-        clearTimeout(timeoutHandle);
-        this.taskQueue.off('task-completed', handler);
-        this.taskQueue.off('task-failed', handler);
-      };
-
-      this.taskQueue.on('task-completed', handler);
-      this.taskQueue.on('task-failed', handler);
-
-      const timeoutHandle = setTimeout(() => {
-        cleanup();
-        resolve({ success: false, error: { type: 'RETRYABLE', message: 'timeout', code: 'TIMEOUT' } });
-      }, CONFIG.TOTAL_TIMEOUT_MS);
-
-      // 立即检查一次
-      handler();
-    });
-  }
-
-  private getFailedTasks(plan: TaskPlan): Task[] {
-    return plan.tasks.map((t) => this.taskQueue.getTask(`${plan.id}-${t.id}`)).filter((t): t is Task => t !== undefined && t.status === "failed");
-  }
-
-  private static replanCounter = 0;
-
-  private async replan(failedPlan: TaskPlan, errors: TaskError[]): Promise<TaskPlan> {
-    const allSkills = this.skillRegistry.getAllMetadata();
-    const systemPrompt = buildReplanPrompt(allSkills);
-    const errorSummary = errors.map((e) => `- ${e.type}: ${e.message}${e.code ? ` (${e.code})` : ""}`).join("\n");
-    const prompt = `原始需求: "${failedPlan.requirement}"\n失败原因:\n${errorSummary}\n\n之前有 ${failedPlan.tasks.length} 个任务。创建新计划。`;
-
-    try {
-      const newPlan = await this.llm.generateStructured(prompt, TaskPlanSchema, systemPrompt);
-      MainAgent.replanCounter++;
-      newPlan.id = `${failedPlan.id}-retry-${MainAgent.replanCounter}-${Date.now()}`;
-      newPlan.requirement = failedPlan.requirement;
-
-      for (const taskDef of failedPlan.tasks) {
-        const oldTaskId = `${failedPlan.id}-${taskDef.id}`;
-        const task = this.taskQueue.getTask(oldTaskId);
-        if (task && task.status !== "completed" && task.status !== "failed") {
-          this.taskQueue.cancelTask(oldTaskId);
-        }
-      }
-
-      return newPlan as TaskPlan;
-    } catch (e) {
-      console.error('[MainAgent] Failed to replan:', e);
-      return failedPlan;
-    }
+    return this.taskGraphExecutor.executeTaskGraph(graph, sessionId, userId, request);
   }
 
   /**
-   * 一次性监听单个任务完成/失败事件
-   * 替代 executeTaskGraph/pollTaskCompletion 中混乱的 Promise + 事件 + 轮询模式
+   * 一次性监听单个任务完成/失败事件（委托给 TaskGraphExecutor）
    */
   private onceTaskEvent(taskId: string): Promise<{ taskId: string; result: any; status: string }> {
-    return new Promise((resolve) => {
-      const handler = (event: { taskId: string; result?: any }) => {
-        if (event.taskId !== taskId) return;
-        const t = this.taskQueue.getTask(taskId);
-        if (!t) {
-          resolve({ taskId, result: null, status: 'lost' });
-          return;
-        }
-        if (t.status === 'completed' || t.status === 'failed') {
-          cleanup();
-          resolve({ taskId, result: t.result, status: t.status });
-        }
-      };
-
-      const cleanup = () => {
-        clearTimeout(timeoutHandle);
-        this.taskQueue.off('task-completed', handler);
-        this.taskQueue.off('task-failed', handler);
-      };
-
-      this.taskQueue.on('task-completed', handler);
-      this.taskQueue.on('task-failed', handler);
-
-      const timeoutHandle = setTimeout(() => {
-        cleanup();
-        resolve({ taskId, result: null, status: 'timeout' });
-      }, CONFIG.TASK_TIMEOUT_MS);
-
-      // 同步检查：任务可能已经完成
-      handler({ taskId });
-    });
+    return this.taskGraphExecutor.onceTaskEvent(taskId);
   }
 
   private async updateProfileAfterRequest(

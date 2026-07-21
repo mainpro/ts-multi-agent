@@ -4,8 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { MainAgent } from '../agents/main-agent';
 import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
-import { Task, TaskStatus } from '../types';
-import { randomUUID } from 'crypto';
+import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
@@ -34,8 +33,8 @@ interface SubmitTaskRequest {
  * Task submission response
  */
 interface SubmitTaskResponse {
-  taskId: string;
-  status: TaskStatus;
+  status: 'accepted';
+  message: string;
   userId: string;
 }
 
@@ -183,6 +182,24 @@ export function createAPIServer(
   });
 
   // ============================================================================
+  // Metrics API (Issue #11)
+  // ============================================================================
+  app.get('/metrics', (_req: Request, res: Response) => {
+    const metrics = taskQueue.getMetrics();
+    res.json({
+      queue: {
+        tasksCompleted: metrics.tasksCompleted,
+        tasksFailed: metrics.tasksFailed,
+        tasksTimedOut: metrics.tasksTimedOut,
+        averageExecutionTime: Math.round(metrics.averageExecutionTime),
+        totalExecutionTime: Math.round(metrics.totalExecutionTime),
+      },
+      queueSize: taskQueue.getAllTasks().length,
+      runningCount: taskQueue.getRunningCount(),
+    });
+  });
+
+  // ============================================================================
   // Skills API
   // ============================================================================
   app.get('/skills', (_req: Request, res: Response<SkillsResponse>) => {
@@ -292,52 +309,27 @@ export function createAPIServer(
         return;
       }
 
-      const taskId = randomUUID();
-      const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-
-      // #12: 先创建 task 对象尝试入队，再启动异步处理
-      const task: Task = {
-        id: taskId,
-        requirement,
-        status: 'pending',
-        dependencies: [],
-        dependents: [],
-        createdAt: new Date(),
-        retryCount: 0,
-        userId: effectiveUserId,
-      };
-
-      const addResult = taskQueue.addTask(task);
-      if (!addResult.success) {
-        // #1/#12: 队列满返回 429 而非崩溃
-        res.status(429).json({
-          error: 'Too Many Requests',
-          message: addResult.error ?? 'Queue full',
-          code: 'QUEUE_FULL',
+      if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
+          code: 'REQUIREMENT_TOO_LONG',
         });
         return;
       }
 
-      // #2: 添加 .catch() 防止 unhandledRejection
+      const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+      // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
       RequestContext.run({ accessToken }, () => {
-        processTaskAsync(taskId, requirement, effectiveUserId).catch((err) => {
+        mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
           console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
-          const t = taskQueue.getTask(taskId);
-          if (t && t.status === 'pending') {
-            t.status = 'failed';
-            t.error = {
-              type: 'FATAL' as const,
-              message: err instanceof Error ? err.message : 'Unknown error',
-              code: 'PROCESSING_FAILED',
-            };
-            t.completedAt = new Date();
-          }
         });
       });
 
-      res.status(201).json({
-        taskId,
-        status: 'pending',
+      res.status(202).json({
+        status: 'accepted',
+        message: 'Request accepted and processing',
         userId: effectiveUserId,
       });
     } catch (error) {
@@ -389,6 +381,15 @@ app.post(
         error: 'Bad Request',
         message: 'Missing or invalid "requirement" field',
         code: 'INVALID_REQUEST',
+      });
+      return;
+    }
+
+    if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
+      res.status(400).json({
+        error: 'Bad Request',
+        message: `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
+        code: 'REQUIREMENT_TOO_LONG',
       });
       return;
     }
@@ -662,61 +663,6 @@ const response: TaskResultResponse = {
       });
     }
   );
-
-  async function processTaskAsync(taskId: string, requirement: string, userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`): Promise<void> {
-    // Task 已在 POST /tasks 路由中入队，此处直接处理
-    // 兼容：如果 task 不存在（如直接调用），则创建并入队
-    let existingTask = taskQueue.getTask(taskId);
-    if (!existingTask) {
-      const task: Task = {
-        id: taskId,
-        requirement,
-        status: 'pending',
-        dependencies: [],
-        dependents: [],
-        createdAt: new Date(),
-        retryCount: 0,
-        userId,
-      };
-      const addResult = taskQueue.addTask(task);
-      if (!addResult.success) {
-        console.error(`[API] Failed to add task ${taskId}: ${addResult.error}`);
-        return;
-      }
-    }
-
-    try {
-      console.log(`Processing task ${taskId} with requirement: ${requirement} for user: ${userId}`);
-      const result = await mainAgent.processRequirement(requirement, undefined, userId);
-      console.log(`Processing task ${taskId} completed with result:`, result);
-
-const updatedTask = taskQueue.getTask(taskId);
-if (updatedTask && result.success) {
-  updatedTask.status = 'completed';
-  updatedTask.result = { success: true, data: result.data };
-  updatedTask.completedAt = new Date();
-  console.log(`Task ${taskId} updated to completed`);
-} else if (updatedTask && !result.success) {
-  updatedTask.status = 'failed';
-  updatedTask.error = result.error;
-  updatedTask.completedAt = new Date();
-  console.log(`Task ${taskId} updated to failed with error:`, result.error);
-}
-    } catch (error) {
-      console.error(`Error processing task ${taskId}:`, error);
-      const updatedTask = taskQueue.getTask(taskId);
-      if (updatedTask) {
-        updatedTask.status = 'failed';
-        updatedTask.error = {
-          type: 'FATAL',
-          message: error instanceof Error ? error.message : 'Unknown error',
-          code: 'PROCESSING_ERROR',
-        };
-        updatedTask.completedAt = new Date();
-        console.log(`Task ${taskId} updated to failed with error:`, updatedTask.error);
-      }
-    }
-  }
 
   return app;
 }

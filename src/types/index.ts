@@ -330,13 +330,31 @@ export interface TaskResult {
   status?: 'completed' | 'waiting_user_input';
   data?: SkillExecutionResult | unknown;
   error?: TaskError;
-  
+
   // 统一询问字段
   question?: {
     type: 'skill_question';
     content: string;
     metadata?: Record<string, unknown>;
   };
+}
+
+/**
+ * 类型守卫：判断 TaskResult.data 是否为 SkillExecutionResult
+ *
+ * 用法：const skillData = isSkillExecutionResult(result) ? result.data : null
+ */
+export function isSkillExecutionResult(data: unknown): data is SkillExecutionResult {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return typeof obj.response === 'string';
+}
+
+/**
+ * 安全提取 TaskResult.data 中的 SkillExecutionResult
+ */
+export function getSkillData(result: { data?: unknown }): SkillExecutionResult | null {
+  return isSkillExecutionResult(result.data) ? result.data : null;
 }
 
 /**
@@ -442,6 +460,8 @@ export const CONFIG = {
   MAX_CONCURRENT_SUBAGENTS: 5,
   /** Maximum task queue size */
   MAX_QUEUE_SIZE: 100,
+  /** Maximum length of requirement input (characters) */
+  MAX_REQUIREMENT_LENGTH: 10000,
   /** Maximum replan attempts for failed tasks */
   MAX_REPLAN_ATTEMPTS: 3,
   /** Individual task timeout - must cover LLM retries (90s × 3 + backoff ≈ 300s) */
@@ -478,6 +498,8 @@ export const CONFIG = {
   VISION_MAX_RETRIES: parseInt(process.env.VISION_MAX_RETRIES || '3', 10),
   /** Maximum concurrent LLM API requests to prevent rate limiting */
   LLM_MAX_CONCURRENT_REQUESTS: parseInt(process.env.LLM_MAX_CONCURRENT_REQUESTS || '20', 10),
+  /** Maximum wait queue size when LLM concurrency limit is reached (0=unlimited) */
+  LLM_MAX_QUEUE_SIZE: parseInt(process.env.LLM_MAX_QUEUE_SIZE || '50', 10),
   /** HTTP connection pool size for LLM requests */
   LLM_CONNECTION_POOL_SIZE: parseInt(process.env.LLM_CONNECTION_POOL_SIZE || '100', 10),
   /** Connection keep-alive timeout in milliseconds */

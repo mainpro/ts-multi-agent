@@ -108,20 +108,20 @@ export class PathGuard {
       />\s*\/dev\//,
       /chmod\s+777/,
       // 远程代码执行
-      /curl.*\|\s*(ba)?sh/,
-      /wget.*\|\s*(ba)?sh/,
+      /curl.*[|]\s*(ba)?sh/,
+      /wget.*[|]\s*(ba)?sh/,
       // 提权操作
-      /\bsudo\b\s+/,          // 禁止 sudo（词边界，避免匹配文件名中的 sudo）
-      /\bsu\b\s+/,            // 禁止 su
+      /(?:^|[^a-zA-Z])sudo\s+/,     // 禁止 sudo（用负向后查找排除文件名中的 sudo）
+      /(?:^|[^a-zA-Z])su\s+/,       // 禁止 su
       // 动态代码执行
-      /\beval\b/,             // 禁止 eval
-      /`[^`]+`/,              // 禁止反引号命令替换
-      /\$\([^)]+\)/,          // 禁止 $() 命令替换
+      /(?<![a-zA-Z])eval\s*\(/,    // 禁止 eval（排除 evalfile 等）
+      /`[^`]+`/,                    // 禁止反引号命令替换
+      /\$\([^)]+\)/,                 // 禁止 $() 命令替换
       // 危险网络工具
-      /\bnc\b\s+-/,           // 禁止 netcat（需跟参数才拦截，避免误报）
+      /\bnc\s+-/,                    // 禁止 netcat（需跟参数才拦截）
       // 内联代码执行
-      /\bpython[23]?\s+-c\b/, // 禁止内联 Python
-      /\bnode\s+-e\b/,        // 禁止内联 Node
+      /\bpython[23]?\s+-c\b/,        // 禁止内联 Python
+      /\bnode\s+-e\b/,              // 禁止内联 Node
     ];
 
     for (const pattern of dangerousPatterns) {

@@ -1,8 +1,11 @@
 /**
  * 错误恢复管理器
  * P0-4: 错误恢复增强
+ *
+ * 删除 AutoCompactService 依赖。CONTEXT_TOO_LONG 时改为简单截断:
+ * - 保留 system + 最后 N 条消息
+ * - 不再调用 LLM 压缩(因为 buildContextPrompt 已 slice(-50))
  */
-import { AutoCompactService } from '../memory/auto-compact';
 
 export interface RecoveryAction {
   strategy: string;
@@ -11,13 +14,8 @@ export interface RecoveryAction {
 }
 
 export class ErrorRecoveryManager {
-  private compactService: AutoCompactService;
   // @ts-expect-error reserved for future use
   private _maxRecoveryAttempts: number = 2;
-
-  constructor(compactService: AutoCompactService) {
-    this.compactService = compactService;
-  }
 
   /**
    * 根据错误类型生成恢复策略
@@ -58,13 +56,17 @@ export class ErrorRecoveryManager {
 
       case 'CONTEXT_TOO_LONG':
         actions.push({
-          strategy: 'context_collapse',
-          description: '压缩上下文后重试',
+          strategy: 'context_truncate',
+          description: '截断上下文保留 system + 最后 N 条消息后重试',
           execute: async () => {
-            if (context.messages && this.compactService) {
-              const compacted = await this.compactService.autoCompact(context.messages);
+            if (context.messages && context.messages.length > 0) {
+              // 简单截断:保留 system 消息 + 最后 10 条
+              const systemMsgs = context.messages.filter((m: any) => m.role === 'system');
+              const nonSystem = context.messages.filter((m: any) => m.role !== 'system');
+              const kept = nonSystem.slice(-10);
               context.messages.length = 0;
-              context.messages.push(...compacted);
+              context.messages.push(...systemMsgs, ...kept);
+              console.log(`[ErrorRecovery] CONTEXT_TOO_LONG 截断: ${systemMsgs.length + nonSystem.length} → ${systemMsgs.length + kept.length} 条`);
               return true;
             }
             return false;

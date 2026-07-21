@@ -5,11 +5,19 @@ dotenv.config({ path: resolveResource('.env') });
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
 import { LLMClient } from './llm';
-import { MainAgent } from './agents/main-agent';
+import { MainAgent, MainAgentDependencies } from './agents/main-agent';
 import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
 import { Task, TaskResult } from './types';
 import { MemoryService } from './memory/memory-service';
+import { IntentRouter } from './routers';
+import { UserProfileService } from './user-profile';
+import { DynamicContextBuilder } from './context/dynamic-context';
+import { sessionContextService } from './memory';
+import { SessionStore } from './memory/session-store';
+import { migrateMemoryIfNeeded } from './memory/migrate';
+import { AskAgent } from './agents/ask-agent';
+import { SystemSkillLoader, ExecutorRegistry } from './system-skills';
 
 // 端口优先级：命令行参数 > 环境变量 > 默认值 3000
 function getPort(): number {
@@ -27,8 +35,11 @@ function getPort(): number {
 
 const PORT = getPort();
 const SKILL_DIR = process.env.SKILL_DIR || resolveResource('skills');
+const DATA_DIR = process.env.DATA_DIR || resolveResource('data');
 
 let skillRegistry: SkillRegistry;
+let taskQueue: TaskQueue;
+let memoryServiceInstance: MemoryService;
 
 async function bootstrap() {
   try {
@@ -67,33 +78,63 @@ async function bootstrap() {
       console.log();
     }
 
-    // 4. Create SubAgent
+    // 4. Create shared MemoryService (用于 SubAgent 和 MainAgent)
+    console.log('🧠 Initializing MemoryService...');
+
+    // 4.1 数据迁移(启动时一次性)
+    await migrateMemoryIfNeeded(DATA_DIR);
+
+    const memoryService = new MemoryService(DATA_DIR, llmClient);
+    memoryServiceInstance = memoryService;
+    console.log('✅ MemoryService initialized\n');
+
+    // 5. Create SubAgent
     console.log('🤖 Initializing SubAgent...');
-    const sharedMemoryService = new MemoryService('data', {}, llmClient);
-    const subAgent = new SubAgent(skillRegistry, llmClient, sharedMemoryService);
+    const subAgent = new SubAgent(skillRegistry, llmClient, memoryService);
     console.log('✅ SubAgent initialized\n');
 
-    // 5. Create Task Queue with SubAgent as executor
+    // 6. Create Task Queue with SubAgent as executor
     console.log('📋 Initializing Task Queue...');
-    const taskQueue = new TaskQueue(async (task: Task): Promise<unknown> => {
+    taskQueue = new TaskQueue(async (task: Task): Promise<unknown> => {
       const result: TaskResult = await subAgent.execute(task);
       if (!result.success) {
         throw new Error(result.error?.message || 'Task execution failed');
       }
-      // 返回完整的 TaskResult，确保 task.result 包含 .data 结构
-      // 这样 MainAgent 可以通过 task.result.data.status 检查 waiting_user_input 等状态
       return result;
     });
     console.log('✅ Task Queue initialized\n');
 
-    // 6. Create MainAgent
+    // 7. 创建所有 MainAgent 依赖（DI 模式）
+    console.log('🔧 Creating MainAgent dependencies...');
+    const intentRouter = new IntentRouter(llmClient, skillRegistry);
+    const userProfileService = new UserProfileService(DATA_DIR);
+    const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
+    const sessionStore = new SessionStore();
+    const askAgent = new AskAgent(sessionStore, llmClient);
+    const systemSkillLoader = new SystemSkillLoader();
+    systemSkillLoader.loadAll();
+    const executorRegistry = new ExecutorRegistry();
+    console.log('✅ All dependencies created\n');
+
+    // 8. Create MainAgent（通过 DI 注入所有依赖）
     console.log('🧠 Initializing MainAgent...');
-    const mainAgent = new MainAgent(llmClient, skillRegistry, taskQueue);
+    const mainAgentDeps: MainAgentDependencies = {
+      llm: llmClient,
+      skillRegistry,
+      taskQueue,
+      intentRouter,
+      userProfileService,
+      memoryService,
+      dynamicContextBuilder,
+      sessionStore,
+      askAgent,
+      systemSkillLoader,
+      executorRegistry,
+    };
+    const mainAgent = new MainAgent(mainAgentDeps);
     console.log('✅ MainAgent initialized\n');
 
-
-
-    // 10. Create and start API Server
+    // 9. Create and start API Server
     console.log('🌐 Starting API Server...');
     const app = createAPIServer(mainAgent, skillRegistry, taskQueue);
     
@@ -122,14 +163,37 @@ async function bootstrap() {
   }
 }
 
-// #3/#18: 优雅关闭函数
-async function gracefulShutdown(exitCode: number = 0): Promise<void> {
-  console.log('[Shutdown] Graceful shutdown initiated...');
+// #3/#18: 资源清理函数（不退出进程）
+async function cleanupResources(): Promise<void> {
+  try {
+    taskQueue?.clear();
+  } catch (e) {
+    // ignore
+  }
+  try {
+    sessionContextService?.stop();
+  } catch (e) {
+    // ignore
+  }
   try {
     skillRegistry?.stopWatch();
   } catch (e) {
     // ignore
   }
+  // flush L4 history 所有 pending 写入
+  try {
+    if (memoryServiceInstance) {
+      await memoryServiceInstance.flushAll();
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// #3/#18: 优雅关闭函数
+async function gracefulShutdown(exitCode: number = 0): Promise<void> {
+  console.log('[Shutdown] Graceful shutdown initiated...');
+  await cleanupResources();
   process.exit(exitCode);
 }
 
@@ -138,9 +202,10 @@ process.on('uncaughtException', async (error) => {
   await gracefulShutdown(1);
 });
 
-// #3: 不再直接 process.exit(1)，记录后让进程继续运行
-process.on('unhandledRejection', (reason, promise) => {
+// #3: 记录后让进程继续运行，但清理资源保持一致
+process.on('unhandledRejection', async (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  await cleanupResources();
 });
 
 process.on('SIGTERM', () => {

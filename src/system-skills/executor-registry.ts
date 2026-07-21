@@ -1,5 +1,5 @@
 import { SystemSkillExecutor } from './types';
-import { LLMClient } from '../llm';
+import { ILLMClient } from '../llm';
 
 type ExecutorConstructor = new (...args: any[]) => SystemSkillExecutor;
 
@@ -24,7 +24,7 @@ export class ExecutorRegistry {
     console.log(`[ExecutorRegistry] 已注册执行器: ${type}`);
   }
 
-  getExecutor(type: string, llm: LLMClient): SystemSkillExecutor | null {
+  getExecutor(type: string, llm: ILLMClient): SystemSkillExecutor | null {
     const ExecutorClass = this.executors.get(type);
     if (!ExecutorClass) return null;
     return new ExecutorClass(llm);

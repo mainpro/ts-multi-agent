@@ -1,7 +1,8 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import { ErrorRecoveryManager } from './error-recovery';
-import { AutoCompactService } from '../memory/auto-compact';
+import type { ILLMClient } from './interfaces';
+export type { ILLMClient } from './interfaces';
 
 /**
  * 安全地拼接 base URL 和路径，处理末尾斜杠问题
@@ -150,7 +151,8 @@ export type LLMErrorType =
   | 'UNKNOWN_ERROR'
   | 'CONTEXT_TOO_LONG'
   | 'OUTPUT_TOO_LONG'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'QUEUE_FULL';
 
 /**
  * LLM error class with classification
@@ -241,7 +243,7 @@ const PROVIDER_CONFIGS: Record<LLMProvider, ProviderCapabilities> = {
 /**
  * LLM client for interacting with GLM-4.7-flash API
  */
-export class LLMClient {
+export class LLMClient implements ILLMClient {
   private apiKey: string;
   private baseUrl: string;
   private model: string;
@@ -256,6 +258,7 @@ export class LLMClient {
   // Semaphore for limiting concurrent LLM requests
   private static semaphore = {
     max: CONFIG.LLM_MAX_CONCURRENT_REQUESTS,
+    maxQueue: CONFIG.LLM_MAX_QUEUE_SIZE,
     current: 0,
     queue: [] as (() => void)[],
   };
@@ -297,10 +300,9 @@ export class LLMClient {
       );
     }
 
-    // 初始化错误恢复管理器
-    const autoCompactService = new AutoCompactService(this);
-    this.errorRecoveryManager = new ErrorRecoveryManager(autoCompactService);
-    
+    // 初始化错误恢复管理器(不再依赖 AutoCompactService,CONTEXT_TOO_LONG 改为简单截断)
+    this.errorRecoveryManager = new ErrorRecoveryManager();
+
 
   }
   
@@ -312,7 +314,13 @@ export class LLMClient {
       LLMClient.semaphore.current++;
       return;
     }
-    
+
+    // 队列已满：快速拒绝，避免 OOM（Issue #4）
+    if (LLMClient.semaphore.maxQueue > 0 &&
+        LLMClient.semaphore.queue.length >= LLMClient.semaphore.maxQueue) {
+      throw new LLMError('QUEUE_FULL', `LLM request queue is full (${LLMClient.semaphore.maxQueue}), try again later`);
+    }
+
     return new Promise(resolve => {
       LLMClient.semaphore.queue.push(() => {
         LLMClient.semaphore.current++;
@@ -635,7 +643,7 @@ export class LLMClient {
             console.log('Invalid API key, throwing error');
             throw error;
           }
-          if (error.type === 'CANCELLED') throw error;
+          if (error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') throw error;
 
           // 尝试错误恢复
           if (this.errorRecoveryManager && attempt < this.maxRetries - 1) {
@@ -963,7 +971,7 @@ export class LLMClient {
         if (error instanceof LLMError) {
           lastError = error;
           if (error.type === 'INVALID_KEY') throw error;
-          if (error.type === 'CANCELLED') throw error;
+          if (error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') throw error;
           const retryableErrors = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
           const isRetryable = retryableErrors.includes(error.type) ||
             (error.type === 'API_ERROR' && error.statusCode && error.statusCode >= 500);
@@ -1320,9 +1328,13 @@ export class LLMClient {
 
         if (error instanceof LLMError) {
           lastError = error;
-          if (error.type === 'INVALID_KEY') throw error;
-          if (error.type === 'CANCELLED') throw error;
-          if (!error.type.includes('RATE_LIMIT') && !error.type.includes('SERVER')) throw error;
+          if (error.type === 'INVALID_KEY' || error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') {
+            throw error;
+          }
+          // 与 makeRequest 保持一致：RATE_LIMIT/TIMEOUT/NETWORK_ERROR/SERVER 可重试，其余抛错
+          const retryableErrors = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
+          const isRetryable = retryableErrors.includes(error.type) || error.type.includes('SERVER');
+          if (!isRetryable) throw error;
         } else {
           lastError = new LLMError(
             'NETWORK_ERROR',

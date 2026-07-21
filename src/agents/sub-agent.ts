@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { SkillRegistry } from '../skill-registry';
-import { LLMClient, llmEvents } from '../llm';
+import { ILLMClient, llmEvents } from '../llm';
 import {
   Task, TaskResult, TaskError, Skill, SkillExecutionResult,
   Message, CompletedToolCall, QuestionHistoryEntry,
@@ -12,13 +12,13 @@ import { hookManager } from '../hooks/hook-manager';
 import { HookEvent } from '../hooks/types';
 import { MemoryService } from '../memory/memory-service';
 import { resolveResource } from '../utils/app-root';
-import { MemoryLayer, DEFAULT_RECALL_CONFIG } from '../memory/types';
-import { fireAndForget } from '../utils/fire-and-forget';
+import { DEFAULT_RECALL_CONFIG } from '../memory/types';
+import { createLogger } from '../observability/logger';
 import {
   syncQuestionHistoryToContext,
   buildResumedContext,
   validateResumedContext,
-} from '../memory/conversation-context-helper';
+} from './conversation-context-helper';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -122,12 +122,13 @@ export function detectQuestion(
 }
 
 export class SubAgent {
+  private static readonly log = createLogger({ module: 'SubAgent' });
   private skillRegistry: SkillRegistry;
-  private llm: LLMClient;
+  private llm: ILLMClient;
   private toolRegistry: ToolRegistry;
   private memoryService?: MemoryService;
 
-  constructor(skillRegistry: SkillRegistry, llm: LLMClient, memoryService?: MemoryService) {
+  constructor(skillRegistry: SkillRegistry, llm: ILLMClient, memoryService?: MemoryService) {
     this.skillRegistry = skillRegistry;
     this.llm = llm;
     this.toolRegistry = new ToolRegistry();
@@ -173,6 +174,7 @@ export class SubAgent {
       }
 
       const result = await this.executeSkill(
+        task.id,
         task.requirement,
         skill,
         task.params,
@@ -211,28 +213,9 @@ export class SubAgent {
         };
       }
 
-      // ===== 发布执行结果到共享记忆池 =====
-      if (this.memoryService && cleanResult.response) {
-        const responseText = cleanResult.response.substring(0, 200);
-        fireAndForget(
-          this.memoryService.shareMemory('sub-agent', {
-            id: `shared-${task.id}-${Date.now()}`,
-            layer: 'procedural' as any,
-            content: responseText,
-            metadata: {
-              publishedBy: 'sub-agent',
-              skillName: task.skillName,
-              taskId: task.id,
-              success: true,
-            },
-            importance: 0.7,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            namespace: 'shared/sub-agent',
-          }),
-          'shareMemory (sub-agent)',
-        );
-      }
+      // ===== 发布执行结果到长期记忆 =====
+      // 旧 remember(procedural) 已由 L3 summarizeRequest 在请求完成时统一处理,
+      // 此处不再单独调用(避免重复写入且无 sessionId 归属)。
 
       return { success: true, data: cleanResult };
     } catch (error) {
@@ -243,6 +226,7 @@ export class SubAgent {
   }
 
   private async executeSkill(
+    taskId: string,
     requirement: string,
     skill: Skill,
     params?: Record<string, unknown>,
@@ -263,7 +247,7 @@ export class SubAgent {
         const contextParts: string[] = [];
 
         // 1. 加载用户画像，通用序列化为 key-value（不硬编码字段名）
-        const userMemory = await this.memoryService.loadMemory(userId);
+        const userMemory = await this.memoryService.loadUserMemory(userId, sessionId);
         if (userMemory?.profile) {
           const profile = userMemory.profile;
           const profileEntries: string[] = [];
@@ -286,12 +270,10 @@ export class SubAgent {
         // 2. 召回相关语义记忆（通用：任何被提取的语义知识都会被召回）
         try {
           const recalledResults = await this.memoryService.recall(userId, requirement, {
-            namespace: userId,
             topK: DEFAULT_RECALL_CONFIG.SUB_AGENT_SEMANTIC_TOP_K,
-            layers: [MemoryLayer.SEMANTIC],
           });
           if (recalledResults.length > 0) {
-            const memoryLines = recalledResults.map(r => `- ${r.entry.content}`);
+            const memoryLines = recalledResults.map(r => `- ${r.content}`);
             contextParts.push('### 相关记忆\n' + memoryLines.join('\n'));
             console.log(`[SubAgent] 🧠 已召回 ${recalledResults.length} 条相关记忆`);
           }
@@ -345,11 +327,8 @@ export class SubAgent {
       sessionId: sessionId || 'skill-execution',
     };
 
-    // 定义并发安全性检查函数
-    const concurrencyChecker = (toolName: string): boolean => {
-      const safeTools = new Set(['read', 'glob', 'grep', 'conversation-get']);
-      return safeTools.has(toolName);
-    };
+    // 定义并发安全性检查函数（与 DEFAULT_SAFE_TOOLS 保持一致）
+    const concurrencyChecker = (toolName: string): boolean => DEFAULT_SAFE_TOOLS.has(toolName);
 
     // ===== v2.1: 初始化或恢复对话上下文（优化版）=====
     let messages: Message[];
@@ -425,6 +404,14 @@ export class SubAgent {
     // ===== v2: 跟踪工具调用 =====
     const trackedToolCalls: CompletedToolCall[] = [...(completedToolCalls || [])];
 
+    SubAgent.log.info('llm.request', {
+      traceId: taskId,
+      skillName: skill.name,
+      messages: messages.length,
+      tools: tools.length,
+      iteration: 0,
+    });
+
     // ===== v2: 使用 generateWithTools =====
     const result = await this.llm.generateWithTools(
       messages,
@@ -433,6 +420,13 @@ export class SubAgent {
         const toolStartTime = Date.now();
         console.log(`[SubAgent] 🔧 调用工具: ${toolCall.name} (开始于 ${new Date().toISOString()})`);
         console.log(`[SubAgent] 📥 工具参数: ${JSON.stringify(toolCall.arguments)}`);
+
+        SubAgent.log.info('tool.call', {
+          traceId: taskId,
+          skillName: skill.name,
+          toolName: toolCall.name,
+          argsLength: JSON.stringify(toolCall.arguments).length,
+        });
 
         // 触发工具调用前钩子
         await hookManager.emit(HookEvent.BEFORE_TOOL_CALL, {
@@ -458,6 +452,14 @@ export class SubAgent {
             const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
             console.log(`[SubAgent] ✅ 工具执行成功: ${toolCall.name} (耗时 ${toolDuration}ms)`);
             console.log(`[SubAgent] 📤 工具返回: ${dataPreview}`);
+
+            SubAgent.log.info('tool.result', {
+              traceId: taskId,
+              skillName: skill.name,
+              toolName: toolCall.name,
+              resultLength: data.length,
+              duration: toolDuration,
+            });
 
             // bash 工具：检测脚本返回的非 200 状态码，直接报错中断
             if (toolCall.name === 'bash' && toolResult.data) {
@@ -514,6 +516,14 @@ export class SubAgent {
             console.log(`[SubAgent] ❌ 工具执行失败: ${toolCall.name} (耗时 ${toolDuration}ms)`);
             console.log(`[SubAgent] ❌ 失败原因: ${toolResult.error}`);
 
+            SubAgent.log.error('tool.result', {
+              traceId: taskId,
+              skillName: skill.name,
+              toolName: toolCall.name,
+              error: toolResult.error,
+              duration: toolDuration,
+            });
+
             await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
               skillName: skill.name,
               toolName: toolCall.name,
@@ -531,6 +541,13 @@ export class SubAgent {
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.log(`[SubAgent] 工具执行异常: ${errorMsg}`);
+
+          SubAgent.log.error('tool.exception', {
+            traceId: taskId,
+            skillName: skill.name,
+            toolName: toolCall.name,
+            error: errorMsg,
+          });
 
           await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
             skillName: skill.name,
@@ -552,10 +569,15 @@ export class SubAgent {
     );
 
     const response = result.content;
+    const toolCallsCount = result.toolCalls?.length || 0;
+    SubAgent.log.info('llm.response', {
+      traceId: taskId,
+      skillName: skill.name,
+      contentLength: response?.length || 0,
+      toolCalls: toolCallsCount,
+    });
 
     // ===== 双轨制：优先检测工具调用，其次文本检测 =====
-
-    // 轨道 1: 检测是否调用了 ask_user 工具
     const askUserCall = trackedToolCalls.find(tc => tc.name === 'ask_user');
     if (askUserCall) {
       const args = askUserCall.arguments as unknown as AskUserArgs;
