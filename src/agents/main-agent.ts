@@ -193,14 +193,17 @@ export class MainAgent {
         // 新请求，走正常流程
         return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
 
-      default:
+      case 'recall_prompt':
+      case 'no_action':
         return {
           success: false,
           error: { type: 'FATAL', message: '未知的处理结果类型', code: 'UNKNOWN_HANDLE_RESULT' },
         };
     }
-    // Unreachable: switch above always returns.
-    throw new BusinessError('UNREACHABLE', 'processRequirement reached unreachable code');
+    // Exhaustiveness check: if a new HandleResult.type variant is added,
+    // TypeScript will fail compilation here.
+    const _exhaustive: never = handleResult;
+    void _exhaustive;
   }
 
   /**
