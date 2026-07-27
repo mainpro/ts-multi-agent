@@ -650,7 +650,6 @@ export class SubAgent {
       _executionProgress: response,
     };
   }
-
 }
 
 /**
