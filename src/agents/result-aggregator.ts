@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ILLMClient } from '../llm';
+import { ILLMClient, LLMError } from '../llm';
+import { BusinessError, SkillError, LlmError, AppError } from '../errors';
 import { MemoryService } from '../memory/memory-service';
 import { SessionStore } from '../memory/session-store';
 import { fireAndForget } from '../utils/fire-and-forget';
@@ -62,7 +63,15 @@ export class ResultAggregator {
         await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {
           skillName: qaEntry.skillName || undefined,
         });
-      } catch (e) { log.error('[ResultAggregator] Failed to save assistant message to memory', { error: e }); }
+      } catch (error) {
+        if (error instanceof LLMError) {
+          throw new LlmError(error.type, error.message, { cause: error });
+        }
+        if (error instanceof AppError) throw error;
+        throw new BusinessError('QA_ENTRY_FAILED',
+          error instanceof Error ? error.message : String(error),
+          { cause: error });
+      }
 
       return {
         success: true,
@@ -103,7 +112,11 @@ export class ResultAggregator {
               skillName: task.skillName || undefined,
               requestId: request.requestId,
             });
-          } catch (e) { log.error('[ResultAggregator] Failed to save final assistant message', { error: e }); }
+          } catch (error) {
+            throw new SkillError('TASK_EXECUTION_FAILED',
+              error instanceof Error ? error.message : String(error),
+              { cause: error });
+          }
           await this.sessionStore.completeRequest(userId, sessionId, request.requestId, taskResult_text);
           // L3 请求级摘要(异步,失败不阻塞)
           fireAndForget(
@@ -181,7 +194,11 @@ ${resultsContext}
           await this.memoryService.saveAssistantMessage(userId, sessionId, judgment.summary, {
             requestId: request.requestId,
           });
-        } catch (e) { log.error('[ResultAggregator] Failed to save final assistant message', { error: e }); }
+        } catch (error) {
+          throw new SkillError('JUDGMENT_FAILED',
+            error instanceof Error ? error.message : String(error),
+            { cause: error });
+        }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, judgment.summary);
         // L3 请求级摘要(异步,失败不阻塞)
         fireAndForget(
@@ -196,25 +213,13 @@ ${resultsContext}
 
       return judgment;
     } catch (error) {
-      log.error(`⚠️ 汇总判断失败，使用默认拼接`, { error });
-      const fallback = taskResults.map(t => t.response).filter(r => r).join('\n\n');
-      // L1+L4 同步写入兜底回复
-      try {
-        await this.memoryService.saveAssistantMessage(userId, sessionId, fallback, {
-          requestId: request.requestId,
-        });
-      } catch (e) { log.error('[ResultAggregator] Failed to save fallback assistant message', { error: e }); }
-      await this.sessionStore.completeRequest(userId, sessionId, request.requestId, fallback);
-      // L3 请求级摘要(异步,失败不阻塞)
-      fireAndForget(
-        this.memoryService.summarizeRequest({
-          userId, sessionId, requestId: request.requestId,
-          userMessage: originalRequirement, assistantMessage: fallback,
-        }),
-        'summarizeRequest (summarizeResults fallback)',
-        (err) => log.error('请求摘要生成失败', { error: err }),
-      );
-      return { completed: true, summary: fallback };
+      if (error instanceof LLMError) {
+        throw new LlmError(error.type, error.message, { cause: error });
+      }
+      if (error instanceof AppError) throw error;
+      throw new BusinessError('SUMMARIZATION_FAILED',
+        error instanceof Error ? error.message : String(error),
+        { cause: error });
     }
   }
 

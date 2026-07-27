@@ -2,6 +2,8 @@ import { TaskQueue } from '../task-queue';
 import { ResultAggregator } from './result-aggregator';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
+import { BusinessError, LlmError, AppError } from '../errors';
+import { LLMError } from '../llm';
 
 const log = createLogger({ module: 'TaskGraphExecutor' });
 import {
@@ -309,8 +311,14 @@ export class TaskGraphExecutor {
         if (!serialized || serialized === 'null') {
           log.error(`[TaskGraphExecutor] ⚠️ taskGraph 序列化结果为空，跳过保存执行进度`);
         }
-      } catch (e) {
-        log.error(`[TaskGraphExecutor] ⚠️ taskGraph 序列化失败: ${(e as Error).message}，跳过保存执行进度`);
+      } catch (error) {
+        if (error instanceof LLMError) {
+          throw new LlmError(error.type, error.message, { cause: error });
+        }
+        if (error instanceof AppError) throw error;
+        throw new BusinessError('EXECUTION_INTERRUPTED',
+          error instanceof Error ? error.message : String(error),
+          { cause: error });
       }
 
       request.executionProgress = progressData;
