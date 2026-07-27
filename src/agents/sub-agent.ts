@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { SkillRegistry } from '../skill-registry';
-import { ILLMClient, llmEvents } from '../llm';
+import { ILLMClient, llmEvents, LLMError } from '../llm';
 import {
-  Task, TaskResult, TaskError, Skill, SkillExecutionResult,
+  Task, TaskResult, Skill, SkillExecutionResult,
   Message, CompletedToolCall, QuestionHistoryEntry,
 } from '../types';
+import { LlmError, SkillError, BusinessError, AppError } from '../errors';
 import { ToolRegistry, ToolContext, Tool } from '../tools';
 import type { AskUserArgs } from '../tools/ask-user-tool';
 import { buildSubAgentPrompt, SubAgentPromptOptions } from '../prompts';
@@ -219,7 +220,7 @@ export class SubAgent {
 
       return { success: true, data: cleanResult };
     } catch (error) {
-      return { success: false, error: this.classifyError(error) };
+      throw mapSubAgentError(error);
     } finally {
       llmEvents.setAgent(previousAgent);
     }
@@ -650,19 +651,30 @@ export class SubAgent {
     };
   }
 
-  private classifyError(error: unknown): TaskError {
-    if (error instanceof Error) {
-      if (error.message.includes('timeout') || error.message.includes('timed out')) {
-        return { type: 'RETRYABLE', message: 'Task timed out', code: 'TIMEOUT' };
-      }
-      if (error.message.includes('not found') || error.message.includes('ENOENT')) {
-        return { type: 'FATAL', message: error.message, code: 'FILE_NOT_FOUND' };
-      }
-      if (/permission/i.test(error.message) || error.message.includes('EACCES')) {
-        return { type: 'FATAL', message: 'Permission denied: ' + error.message, code: 'PERMISSION_DENIED' };
-      }
-      return { type: 'RETRYABLE', message: error.message, code: 'EXECUTION_ERROR' };
-    }
-    return { type: 'RETRYABLE', message: String(error), code: 'UNKNOWN_ERROR' };
+}
+
+/**
+ * Map any error thrown inside SubAgent to an AppError.
+ * - LLMError → LlmError (preserves LLMErrorType classification)
+ * - AppError → re-throw as-is
+ * - Error with ENOENT/EACCES → BusinessError with appropriate code
+ * - Other Error → SkillError
+ */
+function mapSubAgentError(error: unknown): never {
+  if (error instanceof LLMError) {
+    throw new LlmError(error.type, error.message, { cause: error, statusCode: error.statusCode });
   }
+  if (error instanceof AppError) {
+    throw error;
+  }
+  if (error instanceof Error) {
+    if (error.message.includes('ENOENT') || /\bnot found\b/i.test(error.message)) {
+      throw new BusinessError('FILE_NOT_FOUND', error.message, { cause: error });
+    }
+    if (error.message.includes('EACCES') || /permission/i.test(error.message)) {
+      throw new BusinessError('PERMISSION_DENIED', error.message, { cause: error });
+    }
+    throw new SkillError('EXECUTION_ERROR', error.message, { cause: error });
+  }
+  throw new SkillError('UNKNOWN_ERROR', String(error));
 }
