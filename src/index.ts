@@ -8,7 +8,7 @@ import { LLMClient } from './llm';
 import { MainAgent, MainAgentDependencies } from './agents/main-agent';
 import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
-import { Task, TaskResult } from './types';
+import { Task } from './types';
 import { MemoryService } from './memory/memory-service';
 import { IntentRouter } from './routers';
 import { UserProfileService } from './user-profile';
@@ -96,11 +96,9 @@ async function bootstrap() {
     // 6. Create Task Queue with SubAgent as executor
     console.log('📋 Initializing Task Queue...');
     taskQueue = new TaskQueue(async (task: Task): Promise<unknown> => {
-      const result: TaskResult = await subAgent.execute(task);
-      if (!result.success) {
-        throw new Error(result.error?.message || 'Task execution failed');
-      }
-      return result;
+      // SubAgent.execute now throws AppError directly (Task 8).
+      // We pass the error through unchanged so the API middleware can map it.
+      return await subAgent.execute(task);
     });
     console.log('✅ Task Queue initialized\n');
 
