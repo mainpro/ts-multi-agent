@@ -80,18 +80,32 @@ export class IntentRouter {
   ): Promise<IntentResult> {
     const startTime = Date.now();
 
-    // LLM 判断（所有输入统一走 LLM）
-    const result = await this.llmClassify(
-      userInput,
-      userProfile,
-      recentHistory,
-      sessionId
-    );
+    try {
+      // LLM 判断（所有输入统一走 LLM）
+      const result = await this.llmClassify(
+        userInput,
+        userProfile,
+        recentHistory,
+        sessionId
+      );
 
-    const elapsed = Date.now() - startTime;
-    console.log(`[IntentRouter] 🤖 LLM 判断: ${result.intent} (${elapsed}ms, confidence=${result.confidence})`);
+      const elapsed = Date.now() - startTime;
+      console.log(`[IntentRouter] 🤖 LLM 判断: ${result.intent} (${elapsed}ms, confidence=${result.confidence})`);
 
-    return result;
+      return result;
+    } catch (error) {
+      // LLM 调用失败时降级为 unclear + 默认友好回复,避免上层异常崩溃
+      log.warn('[IntentRouter] LLM 调用失败,降级为 unclear:', { error });
+      return {
+        intent: 'unclear',
+        confidence: 0.3,
+        tasks: [],
+        question: {
+          type: 'skill_confirm',
+          content: this.generateUnclearResponse(),
+        },
+      };
+    }
   }
 
   /**

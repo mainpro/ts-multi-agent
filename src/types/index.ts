@@ -94,9 +94,10 @@ export interface RequestTask {
   result: string | null;
   questions: QAEntry[];
   currentQuestion: QAEntry | null;
-  // 断点续执行上下文（仅内存，不持久化）
+  // 断点续执行上下文（持久化到 session.json，用于进程重启后恢复）
   conversationContext?: Task['conversationContext'];
   completedToolCalls?: CompletedToolCall[];
+  executionProgress?: string;
 }
 
 /** 请求 */

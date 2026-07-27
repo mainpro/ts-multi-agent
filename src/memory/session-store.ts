@@ -3,22 +3,27 @@ import * as path from 'path';
 import { Session, Request, QAEntry, RequestTask } from '../types';
 
 /**
- * SessionStore — 会话持久化存储
+ * SessionStore — 会话持久化存储(state machine,不是 4 层记忆之一)
  *
- * 负责 data/memory/{userId}/{sessionId}/session.json 的读写
+ * 负责 data/memory/{userId}/session/{sessionId}.json 的读写
+ * - 状态机:requests/tasks/qa/questions/activeRequestId 等
+ * - 消息流存储在 L4 (history/{sessionId}.json),由 L4HistoryStore 负责
+ *
  * 使用内存缓存 + 防抖写入策略
  */
 export class SessionStore {
   private cache: Map<string, Session> = new Map();
   private writeTimers: Map<string, NodeJS.Timeout> = new Map();
   private debounceMs: number;
+  private dataDir: string;
 
-  constructor(debounceMs: number = 100) {
+  constructor(debounceMs: number = 100, dataDir: string = 'data') {
     this.debounceMs = debounceMs;
+    this.dataDir = dataDir;
   }
 
   private getFilePath(userId: string, sessionId: string): string {
-    return path.join('data', 'memory', userId, sessionId, 'session.json');
+    return path.join(this.dataDir, 'memory', userId, 'session', `${sessionId}.json`);
   }
 
   /**
@@ -433,18 +438,13 @@ export class SessionStore {
   }
 
   /**
-   * 序列化时过滤内部字段（断点续执行上下文不持久化）
+   * 序列化时过滤内部字段
+   *
+   * 注意：conversationContext、completedToolCalls、executionProgress 不再被过滤。
+   * 这些字段是断点续执行的关键上下文，必须在 waiting 状态时持久化到磁盘，
+   * 以便进程重启后能恢复执行进度。
    */
   private stripInternalFields(session: Session): Session {
-    return {
-      ...session,
-      requests: session.requests.map(r => ({
-        ...r,
-        tasks: r.tasks.map(t => {
-          const { conversationContext, completedToolCalls, ...rest } = t as any;
-          return rest;
-        }),
-      })),
-    };
+    return session;
   }
 }

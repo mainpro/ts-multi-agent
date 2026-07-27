@@ -1,11 +1,23 @@
 /**
- * MainAgent 测试（10 个用例）
- * 运行: cd /sessions/69e6cdbe80ce6747619f0374/workspace && npx tsx __tests__/main-agent.test.ts
+ * MainAgent 测试（9 个用例，使用 DI 模式注入依赖）
+ * 运行: bun test __tests__/main-agent.test.ts
  */
 import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import assert from 'assert';
 import { EventEmitter } from 'events';
-import { MainAgent } from '../src/agents/main-agent';
+import { MainAgent, MainAgentDependencies } from '../src/agents/main-agent';
+import { ILLMClient } from '../src/llm';
+import { SkillRegistry } from '../src/skill-registry';
+import { MemoryService } from '../src/memory/memory-service';
+import { SessionStore } from '../src/memory/session-store';
+import { IntentRouter } from '../src/routers/intent-router';
+import { AskAgent } from '../src/agents/ask-agent';
+import { DynamicContextBuilder } from '../src/context/dynamic-context';
+import { UserProfileService } from '../src/user-profile';
+import { SystemSkillLoader, ExecutorRegistry } from '../src/system-skills';
+import { TaskQueue } from '../src/task-queue';
 import { Request, QAEntry, TaskResult } from '../src/types';
 
 let passed = 0;
@@ -17,10 +29,10 @@ function test(name: string, fn: () => Promise<void>) {
     try {
       await fn();
       passed++;
-      console.log(`  ${name}`);
+      console.log(`  ✅ ${name}`);
     } catch (e: any) {
       failed++;
-      const msg = `  ${name}: ${e.message}`;
+      const msg = `  ❌ ${name}: ${e.message}`;
       errors.push(msg);
       console.log(msg);
     }
@@ -33,12 +45,12 @@ function test(name: string, fn: () => Promise<void>) {
 function createMockLLM(overrides?: {
   generateText?: string | ((prompt: string, system?: string) => Promise<string>);
   generateStructured?: any;
-}) {
+}): ILLMClient {
   return {
     generateText: async (_prompt: string, _system?: string) => {
       const v = overrides?.generateText;
       if (typeof v === 'function') return v(_prompt, _system);
-      return v ?? '';
+      return (v as string) ?? '';
     },
     generateWithTools: async () => ({ response: '', toolCalls: [] }),
     generateWithToolsTracked: async () => ({
@@ -122,28 +134,69 @@ function makeQA(overrides?: Partial<QAEntry>): QAEntry {
   };
 }
 
+/**
+ * 为单次测试构建完整的 MainAgent + DI 依赖。
+ * 每个测试使用独立的临时数据目录,避免状态污染。
+ */
+async function createAgent(
+  mockLLM: ILLMClient,
+  options: {
+    skillRegistry?: any;
+  } = {}
+): Promise<{ agent: MainAgent; dataDir: string; cleanup: () => Promise<void> }> {
+  const dataDir = path.join(
+    os.tmpdir(),
+    `ma-test-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`
+  );
+  await fs.mkdir(path.join(dataDir, 'memory'), { recursive: true });
+
+  const skillRegistry = options.skillRegistry || mockSkillRegistry;
+
+  const memoryService = new MemoryService(dataDir, mockLLM);
+  const sessionStore = new SessionStore(100, dataDir);
+  const userProfileService = new UserProfileService(dataDir);
+  const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
+  const intentRouter = new IntentRouter(mockLLM, skillRegistry);
+  const askAgent = new AskAgent(sessionStore, mockLLM);
+  const systemSkillLoader = new SystemSkillLoader();
+  const executorRegistry = new ExecutorRegistry();
+  const taskQueue = new MockTaskQueue();
+
+  const deps: MainAgentDependencies = {
+    llm: mockLLM,
+    skillRegistry,
+    taskQueue,
+    intentRouter,
+    userProfileService,
+    memoryService,
+    dynamicContextBuilder,
+    sessionStore,
+    askAgent,
+    systemSkillLoader,
+    executorRegistry,
+  };
+
+  const cleanup = async () => {
+    try {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    } catch {}
+  };
+
+  return { agent: new MainAgent(deps), dataDir, cleanup };
+}
+
 // ============================================================================
 // 测试运行
 // ============================================================================
 async function run() {
   console.log('\nMainAgent 测试\n');
 
-  // 清理之前测试遗留的磁盘数据
-  try {
-    await fs.rm('data', { recursive: true });
-  } catch {}
-
-  // 创建必要的数据目录
-  await fs.mkdir('data/memory', { recursive: true });
-  await fs.mkdir('data/user-profiles', { recursive: true });
-  await fs.mkdir('data/context', { recursive: true });
-
   // ========================================================================
   // MA-04: unknown handleResult.type
   // ========================================================================
   await test('MA-04: unknown type -> TypeScript 类型系统保证安全性', async () => {
-    // HandleResult 是联合类型，TypeScript 编译时保证只有 4 种 type。
-    // 运行时不可能出现未知 type（除非使用 any 绕过类型检查）。
+    // HandleResult 是联合类型,TypeScript 编译时保证只有 4 种 type。
+    // 运行时不可能出现未知 type(除非使用 any 绕过类型检查)。
     assert.ok(true, 'TypeScript 类型系统保证 HandleResult.type 不会出现未知值');
   });
 
@@ -151,24 +204,19 @@ async function run() {
   // MA-06: processRequirement 异常处理
   // ========================================================================
   await test('MA-06: processRequirement 不抛出未捕获异常', async () => {
-    // processRequirement 的外层 try-catch 很难被触发，
-    // 因为内部方法（judgeContinuation、classify 等）都有各自的 try-catch。
-    // 验证在各种 mock 配置下不会抛出未捕获异常。
-
     const mockLLM = createMockLLM({
       generateText: async () => {
         throw new Error('模拟 LLM 调用失败');
       },
     });
 
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    const { agent, dataDir, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma06-${Date.now()}`;
     const sessionId = userId;
 
     // 创建一个 waiting 请求
-    const sessionDir = `data/memory/${userId}/${sessionId}`;
+    const sessionDir = path.join(dataDir, 'memory', userId, sessionId);
     await fs.mkdir(sessionDir, { recursive: true });
 
     const req = makeRequest({
@@ -188,58 +236,63 @@ async function run() {
       requests: [req],
       activeRequestId: req.requestId,
     };
-    await fs.writeFile(`${sessionDir}/session.json`, JSON.stringify(session, null, 2), 'utf-8');
+    await fs.writeFile(path.join(sessionDir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8');
 
-    // LLM 抛异常，但 judgeContinuation 有 try-catch，默认返回 isContinuation: true
-    // 然后 answerQuestion 返回 continue，continueRequest 走 processNormalRequirement
-    // intentRouter.classify 调用 generateStructured 也抛异常，classify 有 try-catch 返回 unclear
-    const result = await agent.processRequirement('测试', undefined, userId, sessionId);
+    try {
+      // LLM 抛异常,但 judgeContinuation 有 try-catch,默认返回 isContinuation: true
+      // 然后 answerQuestion 返回 continue,continueRequest 走 processNormalRequirement
+      // intentRouter.classify 调用 generateStructured 也抛异常,classify 有 try-catch 返回 unclear
+      const result = await agent.processRequirement('测试', undefined, userId, sessionId);
 
-    // 不管返回什么，只要不抛出异常就算通过
-    assert.ok(result !== undefined, '应该返回结果而不抛出异常');
-    assert.ok('success' in result, '结果应该包含 success 字段');
+      // 不管返回什么,只要不抛出异常就算通过
+      assert.ok(result !== undefined, '应该返回结果而不抛出异常');
+      assert.ok('success' in result, '结果应该包含 success 字段');
+    } finally {
+      await cleanup();
+    }
   });
 
-  // ========================================================================
-  // MA-07: recall 不存在的请求
-  // ========================================================================
   // ========================================================================
   // MA-12: small_talk 意图
   // ========================================================================
   console.log('\n--- handleNonSkillIntent 测试 ---');
 
   await test('MA-12: small_talk 意图 -> 返回 data.type=small_talk', async () => {
-    // 使用 "你好" 作为输入，IntentRouter 的 fastClassify 会直接匹配 small_talk
-    // 不需要 LLM 调用
-    const mockLLM = createMockLLM();
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    // IntentRouter 当前版本让所有输入都走 LLM 分类,
+    // 所以需要 mock generateStructured 返回 small_talk 意图。
+    const mockLLM = createMockLLM({
+      generateStructured: async () => ({
+        intent: 'small_talk',
+        confidence: 0.95,
+        tasks: [],
+        friendlyResponse: '您好！有什么可以帮助您的吗？',
+      }),
+    });
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma12-${Date.now()}`;
     const sessionId = userId;
 
-    const result = await agent.processRequirement('你好', undefined, userId, sessionId);
+    try {
+      const result = await agent.processRequirement('你好', undefined, userId, sessionId);
 
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual((result.data as any)?.type, 'small_talk', '应该返回 type=small_talk');
-    assert.ok(
-      typeof (result.data as any)?.message === 'string',
-      '应该包含 message 字符串'
-    );
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual((result.data as any)?.type, 'small_talk', '应该返回 type=small_talk');
+      assert.ok(
+        typeof (result.data as any)?.message === 'string',
+        '应该包含 message 字符串'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================
-  // MA-13: confirm_system 意图（带 question）
+  // MA-13: confirm_system 意图(带 question)
   // ========================================================================
   await test('MA-13: confirm_system 带问题 -> 返回 data.type=confirm_system', async () => {
-    // IntentRouter 的 fastClassify 中 "天气" 会匹配 OUT_OF_SCOPE_PATTERNS。
-    // 如果 userProfile.commonSystems 有值，会尝试 findBestMatch。
-    // UserProfileService 默认创建的 profile 有 commonSystems: ['报销系统', '差旅系统']。
-    // findBestMatch("天气怎么样", ['报销系统', '差旅系统']) 不会匹配。
-    // 所以会返回 out_of_scope，不是 confirm_system。
-    //
-    // 我们需要让 LLM 路径返回 confirm_system。
-    // 使用一个不匹配 fastClassify 的输入，并 mock generateStructured。
+    // IntentRouter 在 confirm_system 分支会用 candidateSkills 列表替换 LLM 的 question.content,
+    // 所以这里断言改为"包含反问语义"而非固定字符串。
     const mockLLM = createMockLLM({
       generateStructured: async () => ({
         intent: 'confirm_system',
@@ -252,38 +305,42 @@ async function run() {
       }),
     });
 
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma13-${Date.now()}`;
     const sessionId = userId;
 
-    const result = await agent.processRequirement(
-      '帮我查一下报销',
-      undefined,
-      userId,
-      sessionId
-    );
+    try {
+      const result = await agent.processRequirement(
+        '帮我查一下报销',
+        undefined,
+        userId,
+        sessionId
+      );
 
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual(
-      (result.data as any)?.type,
-      'confirm_system',
-      '应该返回 type=confirm_system'
-    );
-    assert.ok(
-      (result.data as any)?.question !== null && (result.data as any)?.question !== undefined,
-      '应该包含 question'
-    );
-    assert.strictEqual(
-      (result.data as any)?.question?.content,
-      '请问您说的是哪个系统？',
-      'question 内容应该匹配'
-    );
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual(
+        (result.data as any)?.type,
+        'confirm_system',
+        '应该返回 type=confirm_system'
+      );
+      assert.ok(
+        (result.data as any)?.question !== null && (result.data as any)?.question !== undefined,
+        '应该包含 question'
+      );
+      // 没有候选技能时,IntentRouter 提供默认反问消息
+      assert.ok(
+        (result.data as any)?.question?.content.includes('请问') ||
+        (result.data as any)?.question?.content.includes('抱歉'),
+        'question 内容应该是一个反问消息'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================
-  // MA-14: confirm_system 意图（不带 question）
+  // MA-14: confirm_system 意图(不带 question)
   // ========================================================================
   await test('MA-14: confirm_system LLM 返回 null question -> IntentRouter 提供默认问题', async () => {
     const mockLLM = createMockLLM({
@@ -295,35 +352,37 @@ async function run() {
       }),
     });
 
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma14-${Date.now()}`;
     const sessionId = userId;
 
-    const result = await agent.processRequirement(
-      '帮我查一下',
-      undefined,
-      userId,
-      sessionId
-    );
+    try {
+      const result = await agent.processRequirement(
+        '帮我查一下',
+        undefined,
+        userId,
+        sessionId
+      );
 
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual(
-      (result.data as any)?.type,
-      'confirm_system',
-      '应该返回 type=confirm_system'
-    );
-    // IntentRouter 在 question 为 null 时提供默认的 confirm_system 问题
-    // handleNonSkillIntent 检测到 intentResult.question 存在，会创建 QAEntry
-    assert.ok(
-      (result.data as any)?.question !== null && (result.data as any)?.question !== undefined,
-      'IntentRouter 应该提供默认 question'
-    );
-    assert.ok(
-      (result.data as any)?.question?.content.includes('请问'),
-      '默认问题应该包含"请问"'
-    );
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual(
+        (result.data as any)?.type,
+        'confirm_system',
+        '应该返回 type=confirm_system'
+      );
+      // IntentRouter 在 question 为 null 时提供默认的 confirm_system 问题
+      assert.ok(
+        (result.data as any)?.question !== null && (result.data as any)?.question !== undefined,
+        'IntentRouter 应该提供默认 question'
+      );
+      assert.ok(
+        (result.data as any)?.question?.content.includes('请问'),
+        '默认问题应该包含"请问"'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================
@@ -342,85 +401,68 @@ async function run() {
       }),
     });
 
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma15-${Date.now()}`;
     const sessionId = userId;
 
-    const result = await agent.processRequirement(
-      '帮我做点事情',
-      undefined,
-      userId,
-      sessionId
-    );
+    try {
+      const result = await agent.processRequirement(
+        '帮我做点事情',
+        undefined,
+        userId,
+        sessionId
+      );
 
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual(
-      (result.data as any)?.type,
-      'unclear',
-      '应该返回 type=unclear'
-    );
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual(
+        (result.data as any)?.type,
+        'unclear',
+        '应该返回 type=unclear'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================
-  // MA-03: new_request + NO_SKILL_MATCHED
+  // MA-03: new_request + skill_task + empty tasks (IntentRouter 自动转 unclear)
   // ========================================================================
   console.log('\n--- NO_SKILL_MATCHED 测试 ---');
 
   await test('MA-03: new_request + skill_task 但无匹配技能 -> 返回 NO_SKILL_MATCHED', async () => {
-    // 需要让 IntentRouter.classify 返回 intent='skill_task' 且 tasks=[]。
-    // IntentRouter.llmMatchSkillWithSignals 中：
-    //   - 如果 result.intent === 'unclear' || tasks.length === 0，返回 {intent: 'unclear', ...}
-    // 所以 LLM 返回 skill_task + 空 tasks 会被 IntentRouter 转为 unclear。
-    //
-    // 要让 processNormalRequirement 到达 NO_SKILL_MATCHED 分支，
-    // 需要 intentResult.intent === 'skill_task' 且 tasks.length === 0。
-    // 但 IntentRouter 不会返回这种组合（它会转为 unclear）。
-    //
-    // 唯一的方式是让 LLM 返回 skill_task + 带 skillName 的 task，
-    // 但 skillRegistry.hasSkill 返回 false，且无法映射到任何 skill。
-    // 这种情况下 tasks 仍然不为空，会进入规划执行流程。
-    //
-    // 实际上 NO_SKILL_MATCHED 路径在代码中是：
-    //   if (intentResult.intent !== "skill_task") { return handleNonSkillIntent; }
-    //   if (tasks.length === 0) { return NO_SKILL_MATCHED; }
-    //
-    // 由于 IntentRouter 在 tasks 为空时返回 unclear 而不是 skill_task，
-    // 这个路径在正常流程中不可达。
-    //
-    // 我们改为验证：当 IntentRouter 返回 unclear 时，
-    // processNormalRequirement 返回 success=true, type=unclear。
     const mockLLM = createMockLLM({
       generateStructured: async () => ({
         intent: 'skill_task',
         confidence: 0.9,
-        tasks: [], // LLM 返回空 tasks
-        // IntentRouter 会将此转为 unclear
+        tasks: [], // LLM 返回空 tasks → IntentRouter 转为 unclear
       }),
     });
 
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma03-${Date.now()}`;
     const sessionId = userId;
 
-    const result = await agent.processRequirement(
-      '帮我查一下数据',
-      undefined,
-      userId,
-      sessionId
-    );
+    try {
+      const result = await agent.processRequirement(
+        '帮我查一下数据',
+        undefined,
+        userId,
+        sessionId
+      );
 
-    // IntentRouter 将 skill_task + 空 tasks 转为 unclear
-    // handleNonSkillIntent 返回 success=true, type=unclear
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual(
-      (result.data as any)?.type,
-      'unclear',
-      '应该返回 type=unclear（IntentRouter 将空 tasks 的 skill_task 转为 unclear）'
-    );
+      // IntentRouter 将 skill_task + 空 tasks 转为 unclear
+      // handleNonSkillIntent 返回 success=true, type=unclear
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual(
+        (result.data as any)?.type,
+        'unclear',
+        '应该返回 type=unclear(IntentRouter 将空 tasks 的 skill_task 转为 unclear)'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================
@@ -429,36 +471,45 @@ async function run() {
   console.log('\n--- imageAttachment 测试 ---');
 
   await test('MA-05: imageAttachment 不导致崩溃', async () => {
-    // imageAttachment 会尝试动态 import VisionLLMClient，
-    // 如果失败会被 catch 住，不会崩溃。
-    // 然后继续走正常流程。
-    const mockLLM = createMockLLM();
-    const taskQueue = new MockTaskQueue();
-    const agent = new MainAgent(mockLLM, mockSkillRegistry, taskQueue, 3);
+    // VisionLLMClient 在 mock 不通时会抛错被 mainAgent catch,继续走文本流程
+    // "你好" 通过 LLM 被分类为 small_talk,走完整链路返回 success=true
+    const mockLLM = createMockLLM({
+      generateStructured: async () => ({
+        intent: 'small_talk',
+        confidence: 0.95,
+        tasks: [],
+        friendlyResponse: '您好！',
+      }),
+    });
+    const { agent, cleanup } = await createAgent(mockLLM);
 
     const userId = `user-ma05-${Date.now()}`;
     const sessionId = userId;
 
-    // 提供一个假的 imageAttachment
-    const result = await agent.processRequirement(
-      '你好',
-      {
-        data: Buffer.from('fake-image-data'),
-        mimeType: 'image/png',
-        originalName: 'test.png',
-      },
-      userId,
-      sessionId
-    );
+    try {
+      // 提供一个假的 imageAttachment
+      const result = await agent.processRequirement(
+        '你好',
+        {
+          data: Buffer.from('fake-image-data'),
+          mimeType: 'image/png',
+          originalName: 'test.png',
+        },
+        userId,
+        sessionId
+      );
 
-    // VisionLLMClient 会尝试调用 API 并失败，被 catch 住。
-    // 然后继续走正常流程，"你好" 触发 small_talk。
-    assert.strictEqual(result.success, true, '应该返回 success=true');
-    assert.strictEqual(
-      (result.data as any)?.type,
-      'small_talk',
-      '应该返回 type=small_talk'
-    );
+      // VisionLLMClient 会尝试调用 API 并失败,被 catch 住。
+      // 然后继续走正常流程,LLM 返回 small_talk。
+      assert.strictEqual(result.success, true, '应该返回 success=true');
+      assert.strictEqual(
+        (result.data as any)?.type,
+        'small_talk',
+        '应该返回 type=small_talk'
+      );
+    } finally {
+      await cleanup();
+    }
   });
 
   // ========================================================================

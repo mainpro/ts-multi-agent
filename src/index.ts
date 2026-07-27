@@ -109,7 +109,7 @@ async function bootstrap() {
     const intentRouter = new IntentRouter(llmClient, skillRegistry);
     const userProfileService = new UserProfileService(DATA_DIR);
     const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
-    const sessionStore = new SessionStore();
+    const sessionStore = new SessionStore(100, DATA_DIR);
     const askAgent = new AskAgent(sessionStore, llmClient);
     const systemSkillLoader = new SystemSkillLoader();
     systemSkillLoader.loadAll();

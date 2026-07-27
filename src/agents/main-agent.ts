@@ -409,10 +409,13 @@ export class MainAgent {
     }
 
     // 主智能体自己的询问（如 confirm_system），需要重新识别意图并派发任务
-    // 将回答作为上下文追加到需求中
+    // 将用户回答保存到记忆，然后直接传递原始需求 — 避免在 enrichedRequirement 中
+    // 重复 Q&A（historyPrompt 会从记忆中加载完整对话上下文，包括本次问答）
     console.log(`[MainAgent] 💬 主智能体询问已回答，重新识别意图: "${question.content.substring(0, 40)}..." → "${question.answer}"`);
-    const enrichedRequirement = `之前的对话：\n问：${question.content}\n答：${question.answer}\n\n现在请继续处理：${request.content}`;
-    return this.processNormalRequirement(enrichedRequirement, userId, sessionId, request, undefined, undefined, 1);
+    try {
+      await this.memoryService.saveUserMessage(userId, sessionId, question.answer || '');
+    } catch (e) { console.error('[MainAgent] Failed to save user answer to memory:', e); }
+    return this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1);
   }
 
   /**
@@ -695,11 +698,20 @@ export class MainAgent {
           const qaEntry = this.resultAggregator.createQAEntry(skillResult!, waitingTaskId, waitingResult?.skillName || null);
 
           // 子智能体询问只放到任务级 questions，不放请求级
+          // 同时保存断点续执行上下文（conversationContext 等），确保进程重启后可恢复
+          const waitingTask = request.tasks.find(t => t.taskId === waitingTaskId);
           await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, waitingTaskId, {
             currentQuestion: qaEntry,
             status: 'waiting',
-            questions: [...(request.tasks.find(t => t.taskId === waitingTaskId)?.questions || []), qaEntry],
+            questions: [...(waitingTask?.questions || []), qaEntry],
+            conversationContext: waitingTask?.conversationContext,
+            completedToolCalls: waitingTask?.completedToolCalls,
+            executionProgress: waitingTask?.executionProgress,
           });
+
+          // waiting 状态是断点关键点，立即刷盘（不走防抖），防止崩溃丢失上下文
+          const session = await this.sessionStore.loadSession(userId, sessionId);
+          await this.sessionStore.flushToDisk(userId, sessionId, session);
 
           try {
             await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {

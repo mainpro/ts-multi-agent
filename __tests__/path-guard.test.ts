@@ -198,19 +198,29 @@ async function testBashCommand() {
     assert.strictEqual(result.safe, true);
   });
 
-  await test('cat /path/to/sudo.conf 不应被误拦截', () => {
+  await test('node scripts/ 前缀应通过', () => {
+    const result = PathGuard.checkBashCommand('node scripts/api-call.js \'{}\'');
+    assert.strictEqual(result.safe, true);
+  });
+
+  await test('非白名单命令应被拦截', () => {
+    const result = PathGuard.checkBashCommand('wget http://example.com/file');
+    assert.strictEqual(result.safe, false);
+  });
+
+  await test('cat 命令在白名单中应通过', () => {
     const result = PathGuard.checkBashCommand('cat /etc/sudo.conf');
     assert.strictEqual(result.safe, true);
   });
 
-  await test('echo "hello sudo" 不应被误拦截', () => {
+  await test('echo 命令在白名单中应通过', () => {
     const result = PathGuard.checkBashCommand('echo "hello sudo"');
     assert.strictEqual(result.safe, true);
   });
 
-  await test('ncurses 相关命令不应被误拦截', () => {
+  await test('apt 命令不在白名单中应被拦截', () => {
     const result = PathGuard.checkBashCommand('apt install libncurses-dev');
-    assert.strictEqual(result.safe, true);
+    assert.strictEqual(result.safe, false);
   });
 }
 

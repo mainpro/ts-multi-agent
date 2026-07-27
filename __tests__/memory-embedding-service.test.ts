@@ -1,5 +1,20 @@
-import { describe, test, expect } from 'bun:test';
-import { EmbeddingService } from './embedding-service';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { EmbeddingService } from '../src/memory/embedding-service';
+
+// 清除 .env 注入的 embedding 环境变量，保证 isAvailable 判断可控
+const savedEmbeddingUrl = process.env.EMBEDDING_BASE_URL;
+const savedEmbeddingKey = process.env.EMBEDDING_API_KEY;
+const savedSiliconflowKey = process.env.SILICONFLOW_API_KEY;
+beforeAll(() => {
+  delete process.env.EMBEDDING_BASE_URL;
+  delete process.env.EMBEDDING_API_KEY;
+  delete process.env.SILICONFLOW_API_KEY;
+});
+afterAll(() => {
+  if (savedEmbeddingUrl) process.env.EMBEDDING_BASE_URL = savedEmbeddingUrl;
+  if (savedEmbeddingKey) process.env.EMBEDDING_API_KEY = savedEmbeddingKey;
+  if (savedSiliconflowKey) process.env.SILICONFLOW_API_KEY = savedSiliconflowKey;
+});
 
 describe('EmbeddingService', () => {
   test('generateEmbedding returns null by default', async () => {
@@ -51,7 +66,7 @@ describe('EmbeddingService', () => {
   });
 
   test('isAvailable returns true with apiUrl', () => {
-    const svc = new EmbeddingService(undefined, { dimension: 1024, apiUrl: 'https://example.com/embeddings' });
+    const svc = new EmbeddingService(undefined, { dimension: 1024, apiUrl: 'https://example.com/embeddings', apiKey: 'test-key' });
     expect(svc.isAvailable()).toBe(true);
   });
 });

@@ -1,14 +1,15 @@
 /**
  * SessionStore 测试（22 个用例）
- * 运行: npx tsx __tests__/session-store.test.ts
+ *
+ * 注意:测试使用独立的临时数据目录,验证新路径
+ * `data/memory/{userId}/session/{sessionId}.json`
+ *
+ * 运行: bun test __tests__/session-store.test.ts
  */
 import { SessionStore } from '../src/memory/session-store';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as assert from 'assert';
-
-const TEST_DIR = '/tmp/test-session-store-' + Date.now();
-const store = new SessionStore(0); // 防抖 0ms，立即写入
 
 let passed = 0;
 let failed = 0;
@@ -29,9 +30,19 @@ function test(name: string, fn: () => Promise<void>) {
   })();
 }
 
+/**
+ * 解析 store 中 session.json 实际写到的路径。
+ * 新路径: data/memory/{userId}/session/{sessionId}.json
+ */
+function sessionFilePath(testDir: string, userId: string, sessionId: string): string {
+  return path.join(testDir, 'memory', userId, 'session', `${sessionId}.json`);
+}
+
 async function run() {
-  // 清理测试数据
-  try { await fs.rm('data/memory', { recursive: true }); } catch {}
+  const TEST_DIR = `/tmp/test-session-store-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  await fs.mkdir(TEST_DIR, { recursive: true });
+
+  const store = new SessionStore(0, TEST_DIR); // 防抖 0ms,立即写入
 
   console.log('\n📋 SessionStore 测试\n');
 
@@ -46,7 +57,7 @@ async function run() {
     assert.strictEqual(s.activeRequestId, null);
   });
 
-  await test('SS-02: 加载已有会话（缓存命中）', async () => {
+  await test('SS-02: 加载已有会话(缓存命中)', async () => {
     const s1 = await store.loadSession('u1', 's2');
     s1.requests.push({ requestId: 'r1', content: 'test', status: 'processing', createdAt: '', updatedAt: '', suspendedAt: null, suspendedReason: null, questions: [], currentQuestion: null, tasks: [], result: null });
     await store.saveSession('u1', 's2', s1);
@@ -55,10 +66,8 @@ async function run() {
     assert.strictEqual(s2.requests[0].requestId, 'r1');
   });
 
-  await test('SS-03: 加载已有会话（缓存未命中）', async () => {
-    // 等待防抖写入完成
+  await test('SS-03: 加载已有会话(缓存未命中)', async () => {
     await new Promise(r => setTimeout(r, 50));
-    // 清缓存后从磁盘读取
     (store as any).cache.clear();
     const s = await store.loadSession('u1', 's2');
     assert.strictEqual(s.requests.length, 1);
@@ -66,19 +75,21 @@ async function run() {
   });
 
   await test('SS-04: saveSession 防抖写入', async () => {
-    const debouncedStore = new SessionStore(200);
+    const debouncedStore = new SessionStore(200, TEST_DIR);
     const s = await debouncedStore.loadSession('u1', 's3');
     s.requests.push({ requestId: 'r2', content: 'test', status: 'processing', createdAt: '', updatedAt: '', suspendedAt: null, suspendedReason: null, questions: [], currentQuestion: null, tasks: [], result: null });
     await debouncedStore.saveSession('u1', 's3', s);
     // 防抖期间文件可能还没写入
-    const filePath = path.join('data', 'memory', 'u1', 's3', 'session.json');
+    const filePath = sessionFilePath(TEST_DIR, 'u1', 's3');
     let exists = false;
     try { await fs.access(filePath); exists = true; } catch {}
-    // 不断言文件存在（防抖可能还没写入），只验证不报错
+    // 不断言文件存在(防抖可能还没写入),只验证不报错
     assert.ok(true, 'saveSession did not throw');
   });
 
-  await test('SS-05: flushToDisk 过滤内部字段', async () => {
+  await test('SS-05: flushToDisk 保留断点续执行字段', async () => {
+    // 注: conversationContext / completedToolCalls / executionProgress 在新版中
+    // 不再过滤掉 — 这些字段是断点续执行的关键上下文,必须在 waiting 状态时持久化。
     const s = await store.loadSession('u1', 's4');
     s.requests.push({
       requestId: 'r3', content: 'test', status: 'processing', createdAt: '', updatedAt: '',
@@ -90,16 +101,17 @@ async function run() {
       }], result: null,
     });
     await store.flushToDisk('u1', 's4', s);
-    const data = await fs.readFile(path.join('data', 'memory', 'u1', 's4', 'session.json'), 'utf-8');
+    const data = await fs.readFile(sessionFilePath(TEST_DIR, 'u1', 's4'), 'utf-8');
     const parsed = JSON.parse(data);
-    assert.strictEqual(parsed.requests[0].tasks[0].conversationContext, undefined);
-    assert.strictEqual(parsed.requests[0].tasks[0].completedToolCalls, undefined);
+    // 这些字段现在保留在磁盘上(用于断点续执行)
+    assert.ok(Array.isArray(parsed.requests[0].tasks[0].conversationContext), 'conversationContext 应保留');
+    assert.ok(Array.isArray(parsed.requests[0].tasks[0].completedToolCalls), 'completedToolCalls 应保留');
   });
 
   await test('SS-06: flushToDisk 自动创建目录', async () => {
     const s = await store.loadSession('new-user', 'new-session');
     await store.flushToDisk('new-user', 'new-session', s);
-    const filePath = path.join('data', 'memory', 'new-user', 'new-session', 'session.json');
+    const filePath = sessionFilePath(TEST_DIR, 'new-user', 'new-session');
     const stat = await fs.stat(filePath);
     assert.ok(stat.isFile());
   });
@@ -116,12 +128,13 @@ async function run() {
     assert.strictEqual(s.activeRequestId, r.requestId);
   });
 
-  await test('SS-08: 创建多个请求 → 最新在前', async () => {
+  await test('SS-08: 创建多个请求 → 按时间顺序追加', async () => {
+    // 注意:新版 createRequest 用 push 按发生顺序追加,旧的 unshift 行为已不再使用。
     await store.createRequest('u1', 's6', '请求1');
     await store.createRequest('u1', 's6', '请求2');
     const s = await store.loadSession('u1', 's6');
-    assert.strictEqual(s.requests[0].content, '请求2');
-    assert.strictEqual(s.requests[1].content, '请求1');
+    assert.strictEqual(s.requests[0].content, '请求1');
+    assert.strictEqual(s.requests[1].content, '请求2');
   });
 
   await test('SS-09: 获取活跃请求', async () => {
@@ -131,7 +144,7 @@ async function run() {
     assert.strictEqual(r!.content, '活跃请求');
   });
 
-  await test('SS-10: 获取活跃请求（无活跃）', async () => {
+  await test('SS-10: 获取活跃请求(无活跃)', async () => {
     const r = await store.getActiveRequest('u1', 's1');
     assert.strictEqual(r, null);
   });
@@ -161,32 +174,27 @@ async function run() {
     assert.strictEqual(s2.requests[0].currentQuestion!.questionId, 'q1');
   });
 
-  await test('SS-14: 回答子智能体问题（仅在 task.questions 中）→ 任务恢复', async () => {
+  await test('SS-14: 回答子智能体问题(仅在 task.questions 中)→ 任务恢复', async () => {
     await store.createRequest('u1', 's10', '测试');
     const s = await store.loadSession('u1', 's10');
     const rid = s.requests[0].requestId;
-    // 先添加任务
     await store.addTaskToRequest('u1', 's10', rid, { taskId: 't1', content: '任务1', status: 'waiting', skillName: 'geam', createdAt: '', updatedAt: '', result: null, questions: [], currentQuestion: null });
-    // 子智能体问题只添加到任务级（新逻辑）
     const q = { questionId: 'q2', content: '是财务岗吗？', source: 'sub_agent' as const, taskId: 't1', skillName: 'geam', answer: null, answeredAt: null, createdAt: new Date().toISOString() };
     await store.updateTaskInRequest('u1', 's10', rid, 't1', {
       currentQuestion: q,
       status: 'waiting',
       questions: [q],
     });
-    // 回答
     const updated = await store.answerQuestion('u1', 's10', rid, 'q2', '是的');
-    // 请求状态通过 syncRequestStatus 恢复（无 waiting 任务 → processing）
     assert.strictEqual(updated!.status, 'processing');
     assert.strictEqual(updated!.currentQuestion, null);
     const s2 = await store.loadSession('u1', 's10');
     assert.strictEqual(s2.requests[0].tasks[0].status, 'pending');
     assert.strictEqual(s2.requests[0].tasks[0].questions[0].answer, '是的');
-    // 子智能体问题不在请求级
     assert.strictEqual(s2.requests[0].questions.length, 0);
   });
 
-  await test('SS-15: 回答问题（无 taskId）→ 仅请求恢复', async () => {
+  await test('SS-15: 回答问题(无 taskId)→ 仅请求恢复', async () => {
     await store.createRequest('u1', 's11', '测试');
     const s = await store.loadSession('u1', 's11');
     const rid = s.requests[0].requestId;
@@ -264,7 +272,7 @@ async function run() {
     await store.suspendRequest('u1', 's17', s.requests[2].requestId, '测试');
     const suspended = await store.getSuspendedRequests('u1', 's17');
     assert.strictEqual(suspended.length, 3);
-    assert.strictEqual(suspended[0].content, '请求3'); // 最新在前
+    assert.strictEqual(suspended[0].content, '请求3');
     assert.strictEqual(suspended[2].content, '请求1');
   });
 
@@ -276,14 +284,15 @@ async function run() {
     await store.updateTaskInRequest('u1', 's18', rid, 't1', { status: 'completed' });
     const s2 = await store.loadSession('u1', 's18');
     assert.strictEqual(s2.requests[0].status, 'completed');
-    // 添加 waiting 任务
     await store.addTaskToRequest('u1', 's18', rid, { taskId: 't2', content: '任务2', status: 'waiting', skillName: 'geam', createdAt: '', updatedAt: '', result: null, questions: [], currentQuestion: null });
     await store.updateTaskInRequest('u1', 's18', rid, 't2', { status: 'waiting' });
     const s3 = await store.loadSession('u1', 's18');
-    assert.strictEqual(s3.requests[0].status, 'waiting'); // waiting 优先
+    assert.strictEqual(s3.requests[0].status, 'waiting');
   });
 
-  // 清理
+  // 清理测试目录
+  try { await fs.rm(TEST_DIR, { recursive: true, force: true }); } catch {}
+
   console.log(`\n📊 结果: ${passed} 通过, ${failed} 失败`);
   if (errors.length > 0) {
     console.log('\n失败详情:');
