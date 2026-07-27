@@ -8,6 +8,9 @@ import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
+import { traceIdMiddleware, globalErrorHandler } from './error-handler';
+import { BusinessError } from '../errors';
+import type { ApiResponse } from '../types/api-response';
 
 interface ImageAttachment {
   data: Buffer;
@@ -27,15 +30,6 @@ interface SubmitTaskRequest {
   userId?: string; // 可选，默认 'default'
   sessionId?: string; // 可选，默认使用 userId
   accessToken?: string; // 可选，透传给技能脚本的认证 token
-}
-
-/**
- * Task submission response
- */
-interface SubmitTaskResponse {
-  status: 'accepted';
-  message: string;
-  userId: string;
 }
 
 /**
@@ -125,6 +119,7 @@ export function createAPIServer(
   // Middleware
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+  app.use(traceIdMiddleware);
 
   // Rate limiting middleware - 10000 requests per minute per IP (high limit for capacity testing)
   const limiter = rateLimit({
@@ -222,17 +217,11 @@ export function createAPIServer(
     const userId = (req.query.userId as string) || 'default';
 
     if (!sessionId) {
-      res.status(400).json({ error: 'INVALID_REQUEST', message: 'sessionId is required' });
-      return;
+      throw new BusinessError('INVALID_REQUEST', 'sessionId is required');
     }
 
-    try {
-      const history = await mainAgent.getSessionHistory(userId, sessionId);
-      res.json(history);
-    } catch (error) {
-      console.error('Error getting session history:', error);
-      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to get session history' });
-    }
+    const history = await mainAgent.getSessionHistory(userId, sessionId);
+    res.json({ success: true, data: history });
   });
 
   // ============================================================================
@@ -245,43 +234,32 @@ export function createAPIServer(
    */
   app.get(
     '/tasks',
-    (req: Request<{}, {}, {}, { status?: string }>, res: Response<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> } | ApiError>) => {
-      try {
-        const { status } = req.query;
-        const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed', 'suspended'];
+    (req: Request<{}, {}, {}, { status?: string }>, res: Response<ApiResponse<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> }> | ApiError>) => {
+      const { status } = req.query;
+      const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed', 'suspended'];
 
-        // Validate status filter if provided
-        if (status && !validStatuses.includes(status as TaskStatus)) {
-          res.status(400).json({
-            error: 'Bad Request',
-            message: `Invalid status filter. Must be one of: ${validStatuses.join(', ')}`,
-            code: 'INVALID_STATUS_FILTER',
-          });
-          return;
-        }
-
-        // Get tasks (filtered by status if provided)
-        const tasks = status
-          ? taskQueue.getTasksByStatus(status as TaskStatus)
-          : taskQueue.getAllTasks();
-
-  // Format response
-  const formattedTasks = tasks.map((task) => ({
-    id: task.id,
-    status: task.status || 'pending',
-    requirement: task.requirement,
-    createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
-  }));
-
-  res.json({ tasks: formattedTasks });
-      } catch (error) {
-        console.error('Error listing tasks:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to list tasks',
-          code: 'INTERNAL_ERROR',
-        });
+      // Validate status filter if provided
+      if (status && !validStatuses.includes(status as TaskStatus)) {
+        throw new BusinessError(
+          'INVALID_STATUS_FILTER',
+          `Invalid status filter. Must be one of: ${validStatuses.join(', ')}`,
+        );
       }
+
+      // Get tasks (filtered by status if provided)
+      const tasks = status
+        ? taskQueue.getTasksByStatus(status as TaskStatus)
+        : taskQueue.getAllTasks();
+
+      // Format response
+      const formattedTasks = tasks.map((task) => ({
+        id: task.id,
+        status: task.status || 'pending',
+        requirement: task.requirement,
+        createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+      }));
+
+      res.json({ success: true, data: { tasks: formattedTasks } });
     }
   );
 
@@ -294,52 +272,40 @@ export function createAPIServer(
     taskLimiter,
     async (
     req: Request<{}, {}, SubmitTaskRequest>,
-    res: Response<SubmitTaskResponse | ApiError>
+    res: Response<ApiResponse<{ status: 'accepted'; message: string; userId: string }> | ApiError>
     ): Promise<void> => {
-    try {
-      const { requirement, userId } = req.body;
-      const accessToken = extractAccessToken(req);
-      // Validate request
-      if (!requirement || typeof requirement !== 'string') {
-        res.status(400).json({
-          error: 'Bad Request',
-          message: 'Missing or invalid "requirement" field',
-          code: 'INVALID_REQUEST',
-        });
-        return;
-      }
+    const { requirement, userId } = req.body;
+    const accessToken = extractAccessToken(req);
 
-      if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
-        res.status(400).json({
-          error: 'Bad Request',
-          message: `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
-          code: 'REQUIREMENT_TOO_LONG',
-        });
-        return;
-      }
+    // Validate request
+    if (!requirement || typeof requirement !== 'string') {
+      throw new BusinessError('INVALID_REQUEST', 'Missing or invalid "requirement" field');
+    }
 
-      const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
+      throw new BusinessError(
+        'REQUIREMENT_TOO_LONG',
+        `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
+      );
+    }
 
-      // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
-      RequestContext.run({ accessToken }, () => {
-        mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
-          console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
-        });
+    const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+    // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
+    RequestContext.run({ accessToken }, () => {
+      mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
+        console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
       });
+    });
 
-      res.status(202).json({
+    res.status(202).json({
+      success: true,
+      data: {
         status: 'accepted',
         message: 'Request accepted and processing',
         userId: effectiveUserId,
-      });
-    } catch (error) {
-      console.error('Error creating task:', error);
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: 'Failed to create task',
-        code: 'TASK_CREATION_FAILED',
-      });
-    }
+      },
+    });
   }
   );
 
@@ -489,40 +455,28 @@ try {
    */
   app.get(
     '/tasks/:id',
-    (req: Request<{ id: string }>, res: Response<TaskStatusResponse | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<TaskStatusResponse> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-const response: TaskStatusResponse = {
-  taskId: task.id,
-  status: task.status || 'pending',
-  requirement: task.requirement,
-  skillName: task.skillName,
-  createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
-  startedAt: task.startedAt?.toISOString(),
-  completedAt: task.completedAt?.toISOString(),
-  retryCount: task.retryCount || 0,
-};
-
-        res.json(response);
-      } catch (error) {
-        console.error('Error getting task status:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to get task status',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
       }
+
+      const response: TaskStatusResponse = {
+        taskId: task.id,
+        status: task.status || 'pending',
+        requirement: task.requirement,
+        skillName: task.skillName,
+        createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+        startedAt: task.startedAt?.toISOString(),
+        completedAt: task.completedAt?.toISOString(),
+        retryCount: task.retryCount || 0,
+      };
+
+      res.json({ success: true, data: response });
     }
   );
 
@@ -532,44 +486,32 @@ const response: TaskStatusResponse = {
    */
   app.get(
     '/tasks/:id/result',
-    (req: Request<{ id: string }>, res: Response<TaskResultResponse | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<TaskResultResponse> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-const response: TaskResultResponse = {
-  taskId: task.id,
-  status: task.status || 'pending',
-};
-
-        if (task.status === 'completed') {
-          response.result = task.result;
-        } else if (task.status === 'failed' && task.error) {
-          response.error = {
-            type: task.error.type,
-            message: task.error.message,
-            code: task.error.code,
-          };
-        }
-
-        res.json(response);
-      } catch (error) {
-        console.error('Error getting task result:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to get task result',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
       }
+
+      const response: TaskResultResponse = {
+        taskId: task.id,
+        status: task.status || 'pending',
+      };
+
+      if (task.status === 'completed') {
+        response.result = task.result;
+      } else if (task.status === 'failed' && task.error) {
+        response.error = {
+          type: task.error.type,
+          message: task.error.message,
+          code: task.error.code,
+        };
+      }
+
+      res.json({ success: true, data: response });
     }
   );
 
@@ -579,41 +521,29 @@ const response: TaskResultResponse = {
    */
   app.delete(
     '/tasks/:id',
-    (req: Request<{ id: string }>, res: Response<{ success: boolean; message: string } | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<{ message: string }> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-        const cancelled = taskQueue.cancelTask(id);
-
-        if (cancelled) {
-          res.json({
-            success: true,
-            message: `Task "${id}" has been cancelled`,
-          });
-        } else {
-          res.status(400).json({
-            error: 'Bad Request',
-            message: `Cannot cancel task "${id}" - task is already ${task.status}`,
-            code: 'TASK_CANNOT_CANCEL',
-          });
-        }
-      } catch (error) {
-        console.error('Error cancelling task:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to cancel task',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
+      }
+
+      const cancelled = taskQueue.cancelTask(id);
+
+      if (cancelled) {
+        res.json({
+          success: true,
+          data: { message: `Task "${id}" has been cancelled` },
+        });
+      } else {
+        throw new BusinessError(
+          'TASK_CANNOT_CANCEL',
+          `Cannot cancel task "${id}" - task is already ${task.status}`,
+          { statusCode: 400 },
+        );
       }
     }
   );
@@ -623,13 +553,7 @@ const response: TaskResultResponse = {
   // ============================================================================
   app.post('/tasks/execute', async (req, res) => {
     const { planId } = req.body;
-    try {
-      // This would call mainAgent.executePlan(planId, sessionId, userId)
-      // For now, return a placeholder response
-      res.json({ success: true, message: `Plan ${planId} execution started` });
-    } catch (error: any) {
-      res.status(500).json({ success: false, error: error.message });
-    }
+    res.json({ success: true, data: { message: `Plan ${planId} execution started` } });
   });
 
   // ============================================================================
@@ -637,32 +561,12 @@ const response: TaskResultResponse = {
   // ============================================================================
 
   // 404 handler
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({
-      error: 'Not Found',
-      message: 'The requested resource was not found',
-      code: 'NOT_FOUND',
-    });
+  app.use((_req: Request, _res: Response, next: NextFunction) => {
+    next(new BusinessError('NOT_FOUND', 'The requested resource was not found', { statusCode: 404 }));
   });
 
   // Global error handler
-  app.use(
-    (
-      err: Error,
-      _req: Request,
-      res: Response<ApiError>,
-      _next: NextFunction
-    ) => {
-      console.error('Unhandled error:', err);
-
-      // Don't expose sensitive error details in production
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: 'An unexpected error occurred',
-        code: 'INTERNAL_ERROR',
-      });
-    }
-  );
+  app.use(globalErrorHandler);
 
   return app;
 }
