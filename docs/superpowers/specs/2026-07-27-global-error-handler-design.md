@@ -73,6 +73,8 @@ class LlmError extends AppError {
     if (t === 'TIMEOUT') return 504;
     if (t === 'CONTEXT_TOO_LONG' || t === 'OUTPUT_TOO_LONG') return 400;
     if (t === 'CANCELLED') return 499;
+    if (t === 'QUEUE_FULL') return 503;
+    if (t === 'UNKNOWN_ERROR') return 500;
     return 502;
   }
 }
@@ -250,6 +252,11 @@ app.get('/sessions/:sessionId/history', async (req, res) => {
 **TaskGraphExecutor 改造**:
 - `executeLayers` catch: throw `BusinessError('EXECUTION_INTERRUPTED', ...)` 或 `SkillError`
 
+**TaskQueue 改造**(`src/index.ts` L98-104`):
+- 当前:`subAgent.execute(task)` 返回 `TaskResult`,失败时 `throw new Error(result.error?.message)` 丢失类型
+- 改造:`subAgent.execute(task)` 内部 throw AppError,TaskQueue 不再 swallow,直接让异常向上冒泡
+- 影响:`TaskQueue` 接收的 executor 签名从 `(task) => Promise<unknown>` 改为 `(task) => Promise<unknown>`,但行为上 executor 必须 throw(不返回 success=false)
+
 ### 8. SSE 流式响应
 
 ```typescript
@@ -329,7 +336,7 @@ HTTP Request
 | 1 | 基础类型 | `src/errors/`(4 文件)+ `src/types/api-response.ts` | `tsc --noEmit` |
 | 2 | API 中间件 | `src/api/error-handler.ts` + 替换 `src/api/index.ts` try/catch | 现有 endpoint 测试 |
 | 3 | SubAgent 改造 | `src/agents/sub-agent.ts` | 新增/改 sub-agent 测试 |
-| 4 | MainAgent + ResultAggregator + TaskGraphExecutor 改造 | 3 个 agent 文件 | 调整 main-agent.test.ts 断言 |
+| 4 | MainAgent + ResultAggregator + TaskGraphExecutor + TaskQueue 改造 | 3 个 agent 文件 + `src/index.ts` | 调整 main-agent.test.ts 断言 |
 | 5 | SSE + traceId | `src/api/index.ts` SSE + traceId middleware | 端到端 |
 | 6 | 日志统一 | 32 处 console.error → log | 不期望行为变化 |
 | 7 | 清理 | 删除冗余 try/catch、console | 测试通过 |
