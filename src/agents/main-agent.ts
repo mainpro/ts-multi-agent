@@ -25,6 +25,7 @@ import { fireAndForget } from "../utils/fire-and-forget";
 import { createLogger } from '../observability/logger';
 import { TaskGraphExecutor } from "./task-graph-executor";
 import { ResultAggregator } from "./result-aggregator";
+import { BusinessError, AppError } from '../errors';
 
 /**
  * MainAgent 依赖注入接口
@@ -101,113 +102,105 @@ export class MainAgent {
   ): Promise<TaskResult> {
     const effectiveSessionId = sessionId || userId;
 
-    try {
-      console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
+    // Top-level: no catch — let AppError propagate to API middleware.
+    // (Known failures throw AppError explicitly in inner methods.)
+    console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
 
-      // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
-      if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
-        try {
-          // 优先从 L4 历史恢复(更纯粹)
-          const l4 = this.memoryService.getL4();
-          const historyEntries = await l4.listEntries(userId, sessionId);
-          if (historyEntries.length > 0) {
-            sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
-          }
-        } catch (error) {
-          console.warn(`[MainAgent] ⚠️ 恢复会话上下文失败:`, error);
-        }
-      }
-
-      // L1 + L4 同步写入(替代旧的双写)
+    // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
+    if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
       try {
-        await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
-      } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
-
-      // ========== 步骤 1: 图片分析 ==========
-      if (imageAttachment) {
-        console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`);
-        try {
-          const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
-          const visionClient = new VisionLLMClient();
-          const visionResult = await visionClient.analyzeImage(
-            imageAttachment.data.toString("base64"),
-            imageAttachment.mimeType,
-          );
-          console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || "未知系统"}`);
-          requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
-        } catch (visionError) {
-          console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
+        // 优先从 L4 历史恢复(更纯粹)
+        const l4 = this.memoryService.getL4();
+        const historyEntries = await l4.listEntries(userId, sessionId);
+        if (historyEntries.length > 0) {
+          sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
         }
+      } catch (error) {
+        console.warn(`[MainAgent] ⚠️ 恢复会话上下文失败:`, error);
       }
+    }
 
-      // ========== 步骤 1.5: 系统命令拦截 ==========
-      if (SystemSkillLoader.isSystemCommand(requirement)) {
-        const cmdName = SystemSkillLoader.extractCommandName(requirement);
-        const systemSkill = this.systemSkillLoader.getCommand(cmdName);
+    // L1 + L4 同步写入(替代旧的双写)
+    try {
+      await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
+    } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
 
-        if (!systemSkill) {
-          return {
-            success: false,
-            error: {
-              type: 'FATAL',
-              message: `未知系统命令 /${cmdName}，可用命令: ${this.systemSkillLoader.getAllCommands().join(', ')}`,
-              code: 'UNKNOWN_COMMAND',
-            },
-          };
-        }
+    // ========== 步骤 1: 图片分析 ==========
+    if (imageAttachment) {
+      console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`);
+      try {
+        const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
+        const visionClient = new VisionLLMClient();
+        const visionResult = await visionClient.analyzeImage(
+          imageAttachment.data.toString("base64"),
+          imageAttachment.mimeType,
+        );
+        console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || "未知系统"}`);
+        requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
+      } catch (visionError) {
+        console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
+      }
+    }
 
-        const executor = this.executorRegistry.getExecutor(systemSkill.executor, this.llm);
-        if (!executor) {
-          return {
-            success: false,
-            error: {
-              type: 'FATAL',
-              message: `执行器类型 "${systemSkill.executor}" 未注册`,
-              code: 'EXECUTOR_NOT_FOUND',
-            },
-          };
-        }
+    // ========== 步骤 1.5: 系统命令拦截 ==========
+    if (SystemSkillLoader.isSystemCommand(requirement)) {
+      const cmdName = SystemSkillLoader.extractCommandName(requirement);
+      const systemSkill = this.systemSkillLoader.getCommand(cmdName);
 
-        console.log(`[MainAgent] 🛠️ 执行系统命令: /${cmdName} (执行器: ${systemSkill.executor})`);
-        const result = await executor.execute(systemSkill, { requirement });
-
+      if (!systemSkill) {
         return {
-          success: result.success,
-          data: result.success ? { response: result.message || '执行完成', data: result.data } : undefined,
-          error: result.success ? undefined : { type: 'FATAL' as const, message: result.error || '执行失败', code: 'EXECUTION_ERROR' },
+          success: false,
+          error: {
+            type: 'FATAL',
+            message: `未知系统命令 /${cmdName}，可用命令: ${this.systemSkillLoader.getAllCommands().join(', ')}`,
+            code: 'UNKNOWN_COMMAND',
+          },
         };
       }
 
-      // ========== 步骤 2: AskAgent 处理用户输入 ==========
-      const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
-      console.log(`[MainAgent] 📊 AskAgent 结果: ${handleResult.type}`);
-
-      switch (handleResult.type) {
-        case 'continue':
-          // 用户回复了等待的问题，继续执行
-          return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
-
-        case 'new_request':
-          // 新请求，走正常流程
-          return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
-
-        default:
-          return {
-            success: false,
-            error: { type: 'FATAL', message: '未知的处理结果类型', code: 'UNKNOWN_HANDLE_RESULT' },
-          };
+      const executor = this.executorRegistry.getExecutor(systemSkill.executor, this.llm);
+      if (!executor) {
+        return {
+          success: false,
+          error: {
+            type: 'FATAL',
+            message: `执行器类型 "${systemSkill.executor}" 未注册`,
+            code: 'EXECUTOR_NOT_FOUND',
+          },
+        };
       }
-    } catch (error) {
-      console.error("Error processing requirement:", error);
+
+      console.log(`[MainAgent] 🛠️ 执行系统命令: /${cmdName} (执行器: ${systemSkill.executor})`);
+      const result = await executor.execute(systemSkill, { requirement });
+
       return {
-        success: false,
-        error: {
-          type: "FATAL",
-          message: error instanceof Error ? error.message : "Unknown error",
-          code: "PROCESSING_ERROR",
-        },
+        success: result.success,
+        data: result.success ? { response: result.message || '执行完成', data: result.data } : undefined,
+        error: result.success ? undefined : { type: 'FATAL' as const, message: result.error || '执行失败', code: 'EXECUTION_ERROR' },
       };
     }
+
+    // ========== 步骤 2: AskAgent 处理用户输入 ==========
+    const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
+    console.log(`[MainAgent] 📊 AskAgent 结果: ${handleResult.type}`);
+
+    switch (handleResult.type) {
+      case 'continue':
+        // 用户回复了等待的问题，继续执行
+        return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
+
+      case 'new_request':
+        // 新请求，走正常流程
+        return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
+
+      default:
+        return {
+          success: false,
+          error: { type: 'FATAL', message: '未知的处理结果类型', code: 'UNKNOWN_HANDLE_RESULT' },
+        };
+    }
+    // Unreachable: switch above always returns.
+    throw new BusinessError('UNREACHABLE', 'processRequirement reached unreachable code');
   }
 
   /**
@@ -283,8 +276,9 @@ export class MainAgent {
         requestStatus: activeRequest?.status || null,
       };
     } catch (error) {
-      console.error('[MainAgent] 获取会话历史失败:', error);
-      return { exists: false, messages: [], activeRequestId: null, requestStatus: null };
+      MainAgent.log.error('[MainAgent] 获取会话历史失败', { error });
+      if (error instanceof AppError) throw error;
+      throw new BusinessError('SESSION_HISTORY_FAILED', 'Failed to load session history', { cause: error });
     }
   }
 
