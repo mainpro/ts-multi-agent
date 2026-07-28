@@ -8,7 +8,7 @@ import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
-import { traceIdMiddleware, globalErrorHandler } from './error-handler';
+import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
 import { BusinessError } from '../errors';
 import type { ApiResponse } from '../types/api-response';
 
@@ -425,10 +425,13 @@ try {
           });
         }
 
-        if (result.success) {
-          sendEvent('complete', result.data);
+        // MainAgent.processRequirement returns TaskResult ({ success, data, error }).
+        // New throw-based contract: failures throw AppError before reaching here,
+        // but we still defensively handle the legacy envelope shape.
+        if (result.success === false) {
+          sendEvent('error', { ...(result.error as object) });
         } else {
-          sendEvent('error', result.error);
+          sendEvent('complete', { success: true, data: result });
         }
       } finally {
         console.log = originalLog;
@@ -436,12 +439,8 @@ try {
       }
 
       } catch (error) {
-        console.error('[API] Error processing request:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        sendEvent('error', { 
-          message: errorMessage,
-          stack: error instanceof Error ? error.stack : undefined
-        });
+        const { body } = errorToResponse(error);
+        sendEvent('error', body.error);
       } finally {
         res.end();
       }
