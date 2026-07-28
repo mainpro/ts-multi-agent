@@ -69,9 +69,13 @@ async function buildStackedAgent(opts: StackedAgentOpts): Promise<{
 
 1. 临时 dataDir: `path.join(os.tmpdir(), 'ma-e2e-{ts}-{rand}')`,mkdir `memory` 子目录
 2. **Mock LLMClient**:
-   - `generateStructured(prompt, schema)` → 返回 `opts.intentResult`(默认 `{intent:'skill_task', confidence:0.9, tasks:[{taskId:'t1', requirement:'...', skillName:'echo', intent:'skill_task'}]}`)
-   - `generateText(prompt, system)` → 检查 prompt 是否包含 taskId(用 task context 注入),如果在 `failingTaskIds` 中,抛 `new LLMError(opts.llmErrorType, msg, statusCode)`
-   - 其他方法返回安全默认(`generateWithTools` → 空)
+   - `generateStructured(prompt, schema)` → 返回 `opts.intentResult`(默认 `{intent:'skill_task', confidence:0.9, tasks:[{taskId:'t1', requirement:'task-t1: 帮我查一下', skillName:'echo', intent:'skill_task'}]}`,使用 `task-t1:` 哨兵让 mock generateWithTools 知道当前 task)
+   - `generateWithTools(messages, tools, executor, ...)` → SubAgent 实际调用的方法。检查 `messages` 数组中是否包含哨兵字符串 `'task-<id>:'`,如果在 `failingTaskIds` 中,抛 `new LLMError(opts.llmErrorType, msg, statusCode)`;否则返回 `{content:'echo', toolCalls:[]}`(空 toolCalls,让 SubAgent 完成无副作用)
+   - 其他方法返回安全默认
+
+**为何用哨兵字符串**:SubAgent 在调用 generateWithTools 时,messages 中包含任务的 requirement 字符串(由 buildStackedAgent 在 IntentRouter mock 返回的 `task.requirement` 中注入 `task-{id}: ` 前缀)。mock LLM 通过解析 messages 知道当前是哪个 taskId。
+
+**为何不直接传 taskId**:SubAgent.generateWithTools 是闭包,LLMClient mock 看不到外部 taskId。用 prompt 内容做间接传递是最简单的。
 3. **Mock SkillRegistry**:
    - `getAllMetadata()` → 返回单个 'echo' 技能 metadata
    - `loadFullSkill('echo')` → 返回 minimal Skill
@@ -176,9 +180,9 @@ test('E2E-2a: 多任务 t1 失败 → t2/t3 不执行', async () => {
       intent: 'skill_task',
       confidence: 0.9,
       tasks: [
-        { taskId: 't1', requirement: 'A', skillName: 'echo', intent: 'skill_task' },
-        { taskId: 't2', requirement: 'B', skillName: 'echo', intent: 'skill_task', params: { ref: '$t1.result' } },
-        { taskId: 't3', requirement: 'C', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task', params: { ref: '$t1.result' } },
+        { taskId: 't3', requirement: 'task-t3: C', skillName: 'echo', intent: 'skill_task' },
       ],
     },
   });
@@ -207,9 +211,9 @@ test('E2E-2b: 多任务 t1 成功 → t2 失败 → 依赖 t2 的 t3 不执行',
       intent: 'skill_task',
       confidence: 0.9,
       tasks: [
-        { taskId: 't1', requirement: 'A', skillName: 'echo', intent: 'skill_task' },
-        { taskId: 't2', requirement: 'B', skillName: 'echo', intent: 'skill_task' },
-        { taskId: 't3', requirement: 'C', skillName: 'echo', intent: 'skill_task', params: { ref: '$t2.result' } },
+        { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't3', requirement: 'task-t3: C', skillName: 'echo', intent: 'skill_task', params: { ref: '$t2.result' } },
       ],
     },
   });
@@ -237,8 +241,8 @@ test('E2E-2c: 多任务 t1/t2 并行执行 → 都失败 → first failedTask er
       intent: 'skill_task',
       confidence: 0.9,
       tasks: [
-        { taskId: 't1', requirement: 'A', skillName: 'echo', intent: 'skill_task' },
-        { taskId: 't2', requirement: 'B', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+        { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task' },
       ],
     },
   });
