@@ -379,38 +379,29 @@ app.post(
     try {
       sendEvent('start', { message: '开始处理您的请求...' });
 
-      // NOTE: This console.log override intercepts `[MainAgent]` / `[SubAgent]` / etc.
-      // prefixed human-readable strings (the legacy log format). After Task 16, internal
-      // modules log through the structured JSON logger (src/observability/logger.ts),
-      // which writes single JSON strings via `console.log(JSON.stringify(entry))` — none
-      // of those brackets appear in the payload, so the override no longer forwards any
-      // internal logs as SSE `step` events. The override is kept intact for backward
-      // compatibility with any third-party callers that still emit prefixed strings, and
-      // to preserve the public SSE event shape consumed by public/test.html.
-      // To re-enable live step streaming from structured logs, replace this hook with an
-      // explicit emit from each agent (e.g. via a dedicated bus or `llmEvents` channel).
-      const originalLog = console.log;
-      let stepCount = 0;
-      console.log = (...args: unknown[]) => {
-        const msg = args.join(' ');
-        // Capture MainAgent, SubAgent, UnifiedPlanner process messages
-        if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]') || msg.includes('[LLM]')) {
-          stepCount++;
-          let agent = 'MainAgent';
-          if (msg.includes('[SubAgent]')) agent = 'SubAgent';
-          else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
-          else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
-          else if (msg.includes('[LLM]')) agent = 'LLM';
-
-          sendEvent('step', {
-            step: stepCount,
-            message: msg,
-            agent,
-            timestamp: new Date().toISOString()
-          });
-        }
-        originalLog.apply(console, args);
-      };
+      // NOTE: SSE `step` events from a global `console.log` override were removed.
+      //
+      // The previous implementation monkey-patched `console.log` for the lifetime of
+      // each request, then restored it in `finally`. Two issues made this unsafe:
+      //   1. Race condition: two concurrent SSE requests would overwrite the global
+      //      `console.log` and the first to finish would restore an obsolete function,
+      //      leaking another request's messages into its stream (cross-request
+      //      data leakage). Whichever order requests completed in, intercept state
+      //      could remain active after completion.
+      //   2. Stale contract: after Task 16, internal modules log via the structured
+      //      JSON logger (`createLogger`), which writes single-line JSON via
+      //      `console.log(JSON.stringify(entry))` — none of the `[MainAgent]` etc.
+      //      prefixed strings the override looked for actually appear in agent output
+      //      anymore, so the override was functionally dead for our own code.
+      //
+      // SSE observability is now provided exclusively by:
+      //   - The structured JSON logger (always-on, see src/observability/logger.ts)
+      //   - The `llmEvents.on('reasoning', ...)` stream registered below
+      //   - Per-stage events explicitly emitted by agents
+      //
+      // The `step` event in the public SSE contract is no longer emitted. The
+      // public/test.html front-end no longer mirrors console output as step events;
+      // reasoning/thinking streaming and the final result payload remain.
 
   // Subscribe to LLM reasoning events
   const reasoningBuffer: string[] = [];
@@ -449,7 +440,6 @@ try {
           sendEvent('complete', { success: true, data: result });
         }
       } finally {
-        console.log = originalLog;
         llmEvents.off('reasoning', handleReasoning);
       }
 
