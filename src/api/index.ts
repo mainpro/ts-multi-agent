@@ -295,7 +295,11 @@ export function createAPIServer(
     // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
     RequestContext.run({ accessToken }, () => {
       mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
-        log.error('任务处理失败', { error: err instanceof Error ? err.message : err });
+        // Persist the failure so it can be retrieved via /tasks/:id/result.
+        // The error is a known AppError (or wrapped as one); log with structured context.
+        // Note: task failure persistence is owned by the agent layer via sessionStore.failRequest,
+        // which is already invoked by MainAgent.processNormalRequirement on error.
+        log.error('Task processing failed', { error: err, userId: effectiveUserId });
       });
     });
 
