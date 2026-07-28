@@ -43,7 +43,7 @@ export class AskAgent {
     sessionId: string,
     userInput: string
   ): Promise<HandleResult> {
-    console.log(`[AskAgent] 📥 处理用户输入: "${userInput.substring(0, 80)}..."`);
+    AskAgent.log.info('处理用户输入', { input: userInput.substring(0, 80) });
 
     // 1. 检查是否有等待的请求
     const waitingRequest = await this.sessionStore.getWaitingRequest(userId, sessionId);
@@ -51,10 +51,10 @@ export class AskAgent {
       // 获取当前等待的问题（可能是主智能体或子智能体的）
       const currentQuestion = await this.sessionStore.getCurrentQuestion(userId, sessionId, waitingRequest.requestId);
       if (currentQuestion) {
-        console.log(`[AskAgent] 🔔 检测到等待请求: ${waitingRequest.requestId} (来源: ${currentQuestion.source})`);
+        AskAgent.log.info('检测到等待请求', { requestId: waitingRequest.requestId, source: currentQuestion.source });
 
         const judgeResult = await this.judgeContinuation(currentQuestion, userInput);
-        console.log(`[AskAgent] 🎯 延续判断: ${judgeResult.isContinuation} (置信度: ${judgeResult.confidence})`);
+        AskAgent.log.info('延续判断', { isContinuation: judgeResult.isContinuation, confidence: judgeResult.confidence });
 
         if (judgeResult.isContinuation) {
           const updated = await this.sessionStore.answerQuestion(
@@ -68,7 +68,7 @@ export class AskAgent {
       }
 
       // 用户切换话题 → 挂起当前请求，创建新请求
-      console.log(`[AskAgent] 📌 用户切换话题，挂起请求 ${waitingRequest.requestId}`);
+      AskAgent.log.info('用户切换话题，挂起请求', { requestId: waitingRequest.requestId });
       await this.sessionStore.suspendRequest(userId, sessionId, waitingRequest.requestId, '用户发起了新请求');
     }
 
@@ -118,7 +118,7 @@ export class AskAgent {
           : { isContinuation: false, confidence: parsed.confidence || 0.7, reason: parsed.reason || '未提供理由' };
       }
     } catch (error) {
-      console.warn('[AskAgent] 延续判断失败，默认为延续:', error);
+      AskAgent.log.warn('延续判断失败，默认为延续', { error });
     }
     return { isContinuation: true, confidence: 0.5 };
   }

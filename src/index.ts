@@ -1,6 +1,9 @@
 import * as dotenv from 'dotenv';
 import { resolveResource } from './utils/app-root';
+import { createLogger } from './observability/logger';
 dotenv.config({ path: resolveResource('.env') });
+
+const log = createLogger({ module: 'Bootstrap' });
 
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
@@ -52,7 +55,7 @@ async function bootstrap() {
       llmClient = new LLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
-      console.warn('⚠️  Warning: Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.\n');
+      log.warn('Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.', { error });
       process.exit(1);
     }
 
@@ -156,7 +159,7 @@ async function bootstrap() {
     });
 
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    log.error('Failed to start server', { error });
     process.exit(1);
   }
 }
@@ -190,19 +193,19 @@ async function cleanupResources(): Promise<void> {
 
 // #3/#18: 优雅关闭函数
 async function gracefulShutdown(exitCode: number = 0): Promise<void> {
-  console.log('[Shutdown] Graceful shutdown initiated...');
+  log.info('Graceful shutdown initiated');
   await cleanupResources();
   process.exit(exitCode);
 }
 
 process.on('uncaughtException', async (error) => {
-  console.error('❌ Uncaught Exception:', error);
+  log.error('Uncaught Exception', { error });
   await gracefulShutdown(1);
 });
 
 // #3: 记录后让进程继续运行，但清理资源保持一致
 process.on('unhandledRejection', async (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  log.error('Unhandled Rejection', { promise, reason });
   await cleanupResources();
 });
 

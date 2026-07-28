@@ -104,7 +104,7 @@ export class MainAgent {
 
     // Top-level: no catch — let AppError propagate to API middleware.
     // (Known failures throw AppError explicitly in inner methods.)
-    console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
+    MainAgent.log.info('收到用户请求', { requirement });
 
     // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
     if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
@@ -116,18 +116,18 @@ export class MainAgent {
           sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
         }
       } catch (error) {
-        console.warn(`[MainAgent] ⚠️ 恢复会话上下文失败:`, error);
+        MainAgent.log.warn('恢复会话上下文失败', { error });
       }
     }
 
     // L1 + L4 同步写入(替代旧的双写)
     try {
       await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
-    } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
+    } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
     // ========== 步骤 1: 图片分析 ==========
     if (imageAttachment) {
-      console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`);
+      MainAgent.log.info('附件信息', { originalName: imageAttachment.originalName, mimeType: imageAttachment.mimeType });
       try {
         const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
         const visionClient = new VisionLLMClient();
@@ -135,10 +135,10 @@ export class MainAgent {
           imageAttachment.data.toString("base64"),
           imageAttachment.mimeType,
         );
-        console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || "未知系统"}`);
+        MainAgent.log.info('视觉分析完成', { system: visionResult.system });
         requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
       } catch (visionError) {
-        console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
+        MainAgent.log.error('视觉分析失败', { error: visionError });
       }
     }
 
@@ -170,7 +170,7 @@ export class MainAgent {
         };
       }
 
-      console.log(`[MainAgent] 🛠️ 执行系统命令: /${cmdName} (执行器: ${systemSkill.executor})`);
+      MainAgent.log.info('执行系统命令', { cmdName, executor: systemSkill.executor });
       const result = await executor.execute(systemSkill, { requirement });
 
       return {
@@ -182,7 +182,7 @@ export class MainAgent {
 
     // ========== 步骤 2: AskAgent 处理用户输入 ==========
     const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
-    console.log(`[MainAgent] 📊 AskAgent 结果: ${handleResult.type}`);
+    MainAgent.log.info('AskAgent 结果', { type: handleResult.type });
 
     switch (handleResult.type) {
       case 'continue':
@@ -294,22 +294,19 @@ export class MainAgent {
     request: Request,
     question: QAEntry
   ): Promise<TaskResult> {
-    console.log(`[MainAgent] 🔄 继续执行请求: ${request.requestId}`);
-    console.log(`[MainAgent] 📝 问题: "${question.content.substring(0, 60)}..."`);
-    console.log(`[MainAgent] 📝 回答: "${question.answer}"`);
-    console.log(`[MainAgent] 📝 question.taskId="${question.taskId || '(null)'}" question.source="${question.source || '?'}"`);
+    MainAgent.log.info('继续执行请求', { requestId: request.requestId, question: question.content, answer: question.answer, taskId: question.taskId, source: question.source });
 
     // 找到关联的任务（如果有）
     const taskEntry = question.taskId
       ? request.tasks.find(t => t.taskId === question.taskId)
       : null;
 
-    console.log(`[MainAgent] 📝 taskEntry=${taskEntry ? taskEntry.taskId : 'NULL'}, request.tasks=[${request.tasks.map(t => `${t.taskId}(status=${t.status})`).join(', ')}]`);
+    MainAgent.log.info('任务关联', { taskEntryId: taskEntry?.taskId, requestTasks: request.tasks.map(t => `${t.taskId}(status=${t.status})`).join(', ') });
 
     if (taskEntry) {
       // 检查是否有断点续传的执行进度
       if (request.executionProgress) {
-        console.log(`[MainAgent] 📌 检测到执行进度，从断点恢复 (Layer ${request.executionProgress.currentLayerIndex})`);
+        MainAgent.log.info('检测到执行进度，从断点恢复', { layerIndex: request.executionProgress.currentLayerIndex });
         return this.resumeFromBreakpoint(userId, sessionId, request, question);
       }
 
@@ -318,7 +315,7 @@ export class MainAgent {
       if (!task) {
         // TaskQueue 是内存的，服务器重启后队列为空。
         // 从 SessionStore 持久化数据重建 Task 对象并恢复执行。
-        console.warn(`[MainAgent] ⚠️ 任务 ${taskEntry.taskId} 在 TaskQueue 中不存在，从持久化数据重建`);
+        MainAgent.log.warn('任务在 TaskQueue 中不存在，从持久化数据重建', { taskId: taskEntry.taskId });
 
         const answers = (taskEntry.questions || [])
           .filter((q: QAEntry) => q.answer)
@@ -339,7 +336,7 @@ export class MainAgent {
         if (paramName && question.answer) {
           reconstructed.params = reconstructed.params || {};
           reconstructed.params[paramName] = question.answer;
-          console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+          MainAgent.log.info('自动填充参数', { paramName, value: question.answer });
         }
 
         // 从已回答问题构建 conversationSummary
@@ -352,7 +349,7 @@ export class MainAgent {
           reconstructed.params.conversationSummary = conversationSummary;
         }
 
-        console.log(`[MainAgent] 📝 任务已重建并继续: ${taskEntry.taskId}`);
+        MainAgent.log.info('任务已重建并继续', { taskId: taskEntry.taskId });
         return this.pollTaskCompletion(reconstructed.id, userId, sessionId, request);
       }
 
@@ -361,7 +358,7 @@ export class MainAgent {
       if (paramName && question.answer) {
         task.params = task.params || {};
         task.params[paramName] = question.answer;
-        console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+        MainAgent.log.info('自动填充参数', { paramName, value: question.answer });
       }
 
       // 添加询问历史到 task（用于子智能体 prompt）
@@ -396,10 +393,10 @@ export class MainAgent {
       task.result = undefined;
       task.error = undefined;
 
-      console.log(`[MainAgent] 📝 任务已准备继续: ${taskEntry.taskId} (询问历史: ${task.questionHistory.length}条)`);
+      MainAgent.log.info('任务已准备继续', { taskId: taskEntry.taskId, questionHistoryCount: task.questionHistory.length });
 
       const ctxLen = task.conversationContext?.length ?? 0;
-      console.log(`[MainAgent] 📝 conversationContext entries: ${ctxLen}, completedToolCalls: ${task.completedToolCalls?.length ?? 0}`);
+      MainAgent.log.info('任务上下文状态', { conversationContextEntries: ctxLen, completedToolCalls: task.completedToolCalls?.length ?? 0 });
 
       this.taskQueue.triggerProcess();
       return this.pollTaskCompletion(taskEntry.taskId, userId, sessionId, request);
@@ -408,10 +405,10 @@ export class MainAgent {
     // 主智能体自己的询问（如 confirm_system），需要重新识别意图并派发任务
     // 将用户回答保存到记忆，然后直接传递原始需求 — 避免在 enrichedRequirement 中
     // 重复 Q&A（historyPrompt 会从记忆中加载完整对话上下文，包括本次问答）
-    console.log(`[MainAgent] 💬 主智能体询问已回答，重新识别意图: "${question.content.substring(0, 40)}..." → "${question.answer}"`);
+    MainAgent.log.info('主智能体询问已回答，重新识别意图', { question: question.content.substring(0, 40), answer: question.answer });
     try {
       await this.memoryService.saveUserMessage(userId, sessionId, question.answer || '');
-    } catch (e) { console.error('[MainAgent] Failed to save user answer to memory:', e); }
+    } catch (e) { MainAgent.log.error('保存用户回答到记忆失败', { error: e }); }
     return this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1);
   }
 
@@ -441,7 +438,7 @@ export class MainAgent {
   ): Promise<TaskResult> {
     // 递归深度限制，防止无限递归
     if (depth > 3) {
-      console.error(`[MainAgent] ❌ 递归深度超过限制 (${depth} > 3)，终止处理`);
+      MainAgent.log.error('递归深度超过限制', { depth });
       return {
         success: false,
         error: { type: 'FATAL', message: '请求处理递归深度超过限制，请简化您的需求后重试', code: 'MAX_RECURSION_DEPTH' },
@@ -461,7 +458,7 @@ export class MainAgent {
         this.sessionStore.loadSession(userId, sessionId),
         this.dynamicContextBuilder.build(requirement, userId, sessionId),
       ]);
-      console.log(`[MainAgent] 👤 用户画像: ${JSON.stringify(Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)))}`);
+      MainAgent.log.debug('用户画像', { profile: Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)) });
 
       // ========== 召回相关记忆 ==========
       let recalledContext = '';
@@ -476,14 +473,14 @@ export class MainAgent {
           });
           recalledContext = '\n[相关记忆]\n' + lines.join('\n');
         }
-      } catch (e) { console.error('[MainAgent] Failed to recall memory:', e); }
+      } catch (e) { MainAgent.log.error('召回记忆失败', { error: e }); }
 
       // ========== 加载活跃任务（防止重复分派）==========
       const activeTasksInSession = request.tasks.filter(t =>
         t.status !== 'completed' && t.status !== 'failed'
       );
       if (activeTasksInSession.length > 0) {
-        console.log(`[MainAgent] 📋 活跃任务: ${activeTasksInSession.length}个`);
+        MainAgent.log.info('活跃任务', { count: activeTasksInSession.length });
       }
 
       // 删除 AutoCompactService 依赖:buildContextPrompt 已 slice(-50),足够压缩
@@ -500,7 +497,7 @@ export class MainAgent {
       const sessionPrompt = buildSessionPrompt(session);
       if (sessionPrompt) {
         enrichedRequirement = sessionPrompt + "\n\n" + enrichedRequirement;
-        console.log(`[MainAgent] 📑 Session 上下文已注入`);
+        MainAgent.log.info('Session 上下文已注入');
       }
 
       if (dynamicContext) {
@@ -508,7 +505,7 @@ export class MainAgent {
       }
 
       // ========== 意图路由 ==========
-      console.log(`[MainAgent] 🔄 正在分类用户意图...`);
+      MainAgent.log.info('正在分类用户意图');
 
       await hookManager.emit(HookEvent.BEFORE_INTENT_CLASSIFY, {
         userId, sessionId, data: { requirement }
@@ -533,7 +530,7 @@ export class MainAgent {
             usageCount: (r.metadata!.usageCount as number) || 0,
             lastSuccess: (r.metadata!.success as boolean) ?? true,
           }));
-      } catch (e) { console.error('[MainAgent] Failed to recall procedural memory:', e); }
+      } catch (e) { MainAgent.log.error('召回过程性记忆失败', { error: e }); }
 
       const intentResult = await this.intentRouter.classify(
         requirement, userProfile, recentHistory, sessionId, proceduralExperience, userId,
@@ -543,7 +540,7 @@ export class MainAgent {
         userId, sessionId, data: { intent: intentResult.intent, confidence: intentResult.confidence, tasks: intentResult.tasks }
       });
 
-      console.log(`[MainAgent] 📊 意图分类: ${intentResult.intent} (置信度: ${intentResult.confidence})`);
+      MainAgent.log.info('意图分类结果', { intent: intentResult.intent, confidence: intentResult.confidence });
 
       if (intentResult.intent !== "skill_task") {
         return this.handleNonSkillIntent(intentResult, sessionId, request, userId);
@@ -581,7 +578,7 @@ export class MainAgent {
         assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
         try {
           await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-        } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+        } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
         // 请求级摘要(异步,失败不阻塞)
         fireAndForget(
@@ -628,7 +625,7 @@ export class MainAgent {
         }
       }
 
-      console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);
+      MainAgent.log.info('规划完成', { taskCount: plan.tasks.length });
 
       if (options?.planMode && plan) {
         return {
@@ -663,7 +660,7 @@ export class MainAgent {
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);
       }
 
-      console.log(`[MainAgent] 🔄 构建 TaskGraph 并执行`);
+      MainAgent.log.info('构建 TaskGraph 并执行');
 
       await hookManager.emit(HookEvent.BEFORE_TASK_EXECUTE, {
         userId, sessionId, data: { planId: plan.id, tasks: plan.tasks }
@@ -690,7 +687,7 @@ export class MainAgent {
         const skillResult = waitingResult?.result?.data;
 
         if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
-          console.log(`[MainAgent] 🔄 检测到子任务 ${waitingTaskId} 需要用户输入`);
+          MainAgent.log.info('检测到子任务需要用户输入', { waitingTaskId });
 
           const qaEntry = this.resultAggregator.createQAEntry(skillResult!, waitingTaskId, waitingResult?.skillName || null);
 
@@ -714,7 +711,7 @@ export class MainAgent {
             await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {
               skillName: qaEntry.skillName || undefined,
             });
-          } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+          } catch (e) { MainAgent.log.error('保存助手消息到记忆失败', { error: e }); }
 
           return {
             success: true,
@@ -742,7 +739,7 @@ export class MainAgent {
 
       if (taskList.length === 1) {
         // 单任务：直接使用子智能体的结果，无需额外汇总
-        console.log(`[MainAgent] ✅ 单任务完成，跳过汇总，直接使用子智能体结果`);
+        MainAgent.log.info('单任务完成，跳过汇总，直接使用子智能体结果');
         finalResponse = taskList[0].response;
         if (!finalResponse) {
           finalResponse = JSON.stringify(result.data);
@@ -771,7 +768,7 @@ export class MainAgent {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse, {
           skillName: taskList[0]?.skillName || undefined,
         });
-      } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存助手消息到记忆失败', { error: e }); }
       // 请求级摘要(异步,失败不阻塞) — 替代旧 semanticExtractor.extract
       fireAndForget(
         this.memoryService.summarizeRequest({
@@ -796,7 +793,7 @@ export class MainAgent {
         },
       };
     } catch (error) {
-      console.error("Error processing normal requirement:", error);
+      MainAgent.log.error('处理普通需求失败', { error });
       await this.sessionStore.failRequest(userId, sessionId, request.requestId, error instanceof Error ? error.message : 'Unknown error');
       return {
         success: false,
@@ -808,7 +805,7 @@ export class MainAgent {
         try {
           await this.memoryService.popLastAssistantMessage(userId, sessionId);
         } catch (e) {
-          console.error('[MainAgent] Failed to pop last assistant message:', e);
+          MainAgent.log.error('移除最后助手消息失败', { error: e });
         }
       }
     }
@@ -824,7 +821,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "您好！有什么可以帮助您的吗？";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
       // 请求级摘要
       fireAndForget(
@@ -842,7 +839,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
 
       // 主智能体询问 → 记录到请求的 questions 中
       if (intentResult.question) {
@@ -878,7 +875,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "抱歉，这个问题超出了我的处理范围。";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
       // 请求级摘要
       fireAndForget(
@@ -896,7 +893,7 @@ export class MainAgent {
     assistantResponse = intentResult.question?.content || "抱歉，我暂时无法理解您的需求，请换个方式描述或联系人工客服。";
     try {
       await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-    } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+    } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
     await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
     // 请求级摘要
     fireAndForget(
@@ -1006,7 +1003,7 @@ export class MainAgent {
   ): Promise<void> {
     const mentionedSystem = this.userProfileService.inferSystemFromText(enrichedRequirement);
     if (mentionedSystem && !userProfile.commonSystems.includes(mentionedSystem)) {
-      console.log(`[MainAgent] 📝 更新用户画像: 新增系统 ${mentionedSystem}`);
+      MainAgent.log.info('更新用户画像: 新增系统', { system: mentionedSystem });
       await this.userProfileService.updateProfile(userId, {
         commonSystems: [...userProfile.commonSystems, mentionedSystem],
         conversationCount: userProfile.conversationCount + 1,

@@ -1,4 +1,7 @@
 import { LLMError } from '../llm/index';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'VisionClient' });
 
 /**
  * 安全地拼接 base URL 和路径，处理末尾斜杠问题
@@ -117,11 +120,11 @@ export class VisionLLMClient {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        console.log(`Vision LLM request attempt ${attempt + 1}/${this.maxRetries}`);
+        log.debug('Vision LLM request attempt', { attempt: attempt + 1, maxRetries: this.maxRetries });
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
-          console.log('Vision LLM request timeout');
+          log.warn('Vision LLM request timeout');
           controller.abort();
         }, this.timeoutMs);
 
@@ -153,7 +156,7 @@ export class VisionLLMClient {
         };
 
         const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
-        console.log('Sending Vision LLM request to:', apiUrl);
+        log.debug('Sending Vision LLM request', { apiUrl });
 
         const response = await fetch(apiUrl, {
           method: 'POST',
@@ -166,14 +169,14 @@ export class VisionLLMClient {
         });
 
         clearTimeout(timeoutId);
-        console.log('Vision LLM request response status:', response.status);
+        log.debug('Vision LLM request response status', { status: response.status });
 
         const data = await response.json() as Record<string, unknown>;
-        console.log('Vision LLM request response data:', JSON.stringify(data, null, 2));
+        log.debug('Vision LLM request response data', { data: JSON.stringify(data, null, 2) });
 
         if (data.error) {
           const err = data.error as Record<string, unknown>;
-          console.log('Vision LLM API error:', err);
+          log.error('Vision LLM API error', { error: err });
           throw new LLMError(
             'API_ERROR',
             (err.message as string) || 'Unknown API error',
@@ -182,7 +185,7 @@ export class VisionLLMClient {
         }
 
         if (!response.ok) {
-          console.log('Vision LLM request not ok:', response.status);
+          log.warn('Vision LLM request not ok', { status: response.status });
           throw new LLMError(
             'API_ERROR',
             `Request failed with status ${response.status}`,
@@ -202,7 +205,7 @@ export class VisionLLMClient {
           throw new LLMError('API_ERROR', 'No content in response');
         }
 
-        console.log('Vision LLM request successful');
+        log.debug('Vision LLM request successful');
 
         try {
           const parsed = JSON.parse(content);
@@ -216,20 +219,20 @@ export class VisionLLMClient {
           );
         }
       } catch (error) {
-        console.log('Vision LLM request error:', error);
+        log.warn('Vision LLM request error', { error });
 
         if (error instanceof LLMError) {
           lastError = error;
 
           // Don't retry on invalid key
           if (error.type === 'INVALID_KEY') {
-            console.log('Invalid API key, throwing error');
+            log.warn('Invalid API key, throwing error');
             throw error;
           }
 
           // Check if this is the last attempt
           if (attempt === this.maxRetries - 1) {
-            console.log('Last attempt failed, throwing error');
+            log.warn('Last attempt failed, throwing error');
             throw error;
           }
         } else if (error instanceof Error) {
@@ -242,7 +245,7 @@ export class VisionLLMClient {
             );
 
             if (attempt === this.maxRetries - 1) {
-              console.log('Request timeout, throwing error');
+              log.warn('Request timeout, throwing error');
               throw lastError;
             }
           } else {
@@ -254,7 +257,7 @@ export class VisionLLMClient {
             );
 
             if (attempt === this.maxRetries - 1) {
-              console.log('Network error, throwing error');
+              log.warn('Network error, throwing error');
               throw lastError;
             }
           }
@@ -267,20 +270,20 @@ export class VisionLLMClient {
           );
 
           if (attempt === this.maxRetries - 1) {
-            console.log('Unknown error, throwing error');
+            log.warn('Unknown error, throwing error');
             throw lastError;
           }
         }
 
         // Wait before retrying (exponential backoff)
         const delay = this.getRetryDelay(attempt);
-        console.log(`Waiting ${delay}ms before retrying`);
+        log.debug('Waiting before retrying', { delay });
         await this.sleep(delay);
       }
     }
 
     // This should never be reached, but just in case
-    console.log('All retry attempts failed');
+    log.error('All retry attempts failed');
     throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
   }
 }

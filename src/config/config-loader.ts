@@ -12,6 +12,9 @@
  */
 
 import { resolveResource } from '../utils/app-root';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'ConfigLoader' });
 
 interface ConfigOptions {
   cliArgs?: string[];
@@ -132,7 +135,7 @@ export const config = new ConfigLoader();
 /** 向后兼容：静态 CONFIG 对象（已废弃，推荐使用 config.get()） */
 export const CONFIG = new Proxy({} as Record<string, unknown>, {
   get(_target, key: string) {
-    console.warn(`[ConfigLoader] CONFIG.${key} 已废弃，请使用 config.get('${key}')`);
+    log.warn(`CONFIG.${key} 已废弃，请使用 config.get('${key}')`);
     return config.get(key as ConfigKey);
   },
 });

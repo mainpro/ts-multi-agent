@@ -1,8 +1,11 @@
 import { MemoryService, UserMemory } from '../memory/memory-service';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'DynamicContext' });
 
 /**
  * Dynamic Context Builder for Multi-Agent System
- * 
+ *
  * Focuses on user memory and conversation context (no CLAUDE.md or Git for non-coding agents)
  */
 export class DynamicContextBuilder {
@@ -37,7 +40,7 @@ export class DynamicContextBuilder {
     try {
       return await this.memoryService.loadUserMemory(userId, sessionId);
     } catch (error) {
-      console.error('Error loading memory:', error);
+      log.error('加载用户记忆失败', { error });
       return null;
     }
   }

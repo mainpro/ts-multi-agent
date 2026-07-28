@@ -1,5 +1,8 @@
 import { SystemSkillExecutor } from './types';
 import { ILLMClient } from '../llm';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'ExecutorRegistry' });
 
 type ExecutorConstructor = new (...args: any[]) => SystemSkillExecutor;
 
@@ -15,13 +18,13 @@ export class ExecutorRegistry {
       const { ImprovementAgent } = require('../agents/improvement-agent') as { ImprovementAgent: ExecutorConstructor };
       this.register('improvement-agent', ImprovementAgent);
     } catch {
-      console.warn('[ExecutorRegistry] ⚠️ 无法加载 ImprovementAgent，跳过注册');
+      log.warn('无法加载 ImprovementAgent，跳过注册');
     }
   }
 
   register(type: string, executorClass: ExecutorConstructor): void {
     this.executors.set(type, executorClass);
-    console.log(`[ExecutorRegistry] 已注册执行器: ${type}`);
+    log.info('已注册执行器', { type });
   }
 
   getExecutor(type: string, llm: ILLMClient): SystemSkillExecutor | null {

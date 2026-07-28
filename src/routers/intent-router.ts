@@ -60,8 +60,7 @@ export class IntentRouter {
     private skillRegistry: SkillRegistry,
   ) {
     const skills = this.skillRegistry.getAllMetadata();
-    console.log(`[IntentRouter] 🚀 初始化完成`);
-    console.log(`[IntentRouter] 🎯 技能: ${skills.map(s => s.name).join(', ')}`);
+    log.info('初始化完成', { skills: skills.map(s => s.name).join(', ') });
   }
 
   /**
@@ -90,7 +89,7 @@ export class IntentRouter {
       );
 
       const elapsed = Date.now() - startTime;
-      console.log(`[IntentRouter] 🤖 LLM 判断: ${result.intent} (${elapsed}ms, confidence=${result.confidence})`);
+      log.info('LLM 判断', { intent: result.intent, elapsed, confidence: result.confidence });
 
       return result;
     } catch (error) {

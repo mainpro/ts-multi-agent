@@ -1,7 +1,10 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import type { ILLMClient } from './interfaces';
+import { createLogger } from '../observability/logger';
 export type { ILLMClient } from './interfaces';
+
+const log = createLogger({ module: 'LLM' });
 
 /**
  * 安全地拼接 base URL 和路径，处理末尾斜杠问题
@@ -549,7 +552,7 @@ export class LLMClient implements ILLMClient {
       let onExternalAbort: (() => void) | undefined;
 
       try {
-        console.log(`[LLM] 请求 attempt ${attempt + 1}/${this.maxRetries}`);
+        log.debug('请求 attempt', { attempt: attempt + 1, maxRetries: this.maxRetries });
 
         // 内部超时
         timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -613,7 +616,7 @@ export class LLMClient implements ILLMClient {
 
         if (attempt < this.maxRetries - 1) {
           const delay = this.getBackoffDelay(attempt, lastError.type);
-          console.log(`[LLM] ${delay}ms 后重试 (${lastError.type})`);
+          log.info('后重试', { delay, errorType: lastError.type });
           await this.sleep(delay);
         }
       } finally {
@@ -712,7 +715,7 @@ export class LLMClient implements ILLMClient {
       }
     }
 
-    console.log(`[LLM] 流式请求完成, reasoning: ${reasoning.length} chars, content: ${content.length} chars`);
+    log.info('流式请求完成', { reasoningLength: reasoning.length, contentLength: content.length });
 
     if (!content && !reasoning) {
       throw new LLMError('API_ERROR', `Empty response from LLM (reasoning: ${reasoning.length}, content: ${content.length})`);
@@ -737,7 +740,7 @@ export class LLMClient implements ILLMClient {
     const response = await this.fetchWithRetry(requestBody, signal);
 
     const data = (await response.json()) as GLMResponse;
-    console.log('LLM request response data:', JSON.stringify(data, null, 2));
+    log.debug('LLM request response data', { data: JSON.stringify(data, null, 2) });
 
     if (data.error) {
       throw this.classifyError(response.status, {
@@ -824,7 +827,7 @@ export class LLMClient implements ILLMClient {
       try {
         const repaired = repairUnescapedQuotes(content);
         const parsed = JSON.parse(repaired);
-        console.warn('[LLM] JSON 修复成功（原内容包含未转义双引号）');
+        log.warn('JSON 修复成功（原内容包含未转义双引号）');
         return schema.parse(parsed);
       } catch {
         // 修复后仍失败，抛出原始错误
@@ -832,8 +835,8 @@ export class LLMClient implements ILLMClient {
       const errMsg = parseError instanceof Error
         ? `${parseError.name}: ${parseError.message}`
         : String(parseError);
-      console.error('[LLM] Schema validation failed. Content:', content.substring(0, 500));
-      console.error('[LLM] Parse error:', errMsg);
+      log.error('Schema validation failed', { content: content.substring(0, 500) });
+      log.error('Parse error', { errMsg });
       throw new LLMError('API_ERROR', 'Schema validation failed: ' + errMsg);
     }
   }
@@ -895,11 +898,11 @@ export class LLMClient implements ILLMClient {
       }
 
       iteration++;
-      console.log(`[LLM] [Tracked] 🔄 第 ${iteration} 轮工具调用循环开始 (${new Date().toISOString()})`);
+      log.debug('工具调用循环开始', { iteration, timestamp: new Date().toISOString() });
       const llmStartTime = Date.now();
       const result = await this.makeToolRequestStream(trackedMessages, tools, signal);
       const llmDuration = Date.now() - llmStartTime;
-      console.log(`[LLM] [Tracked] ⏱️ LLM 响应耗时 ${llmDuration}ms`);
+      log.debug('LLM 响应耗时', { duration: llmDuration });
 
       if (!result.message) {
         throw new LLMError('API_ERROR', 'No message in response');
@@ -907,11 +910,11 @@ export class LLMClient implements ILLMClient {
 
       const message = result.message;
 
-      console.log('[LLM] [Tracked] Response message.content:', message.content?.substring(0, 200));
-      console.log('[LLM] [Tracked] Response message.tool_calls:', message.tool_calls?.length);
+      log.debug('Response message.content', { content: message.content?.substring(0, 200) });
+      log.debug('Response message.tool_calls', { count: message.tool_calls?.length });
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
-        console.log('[LLM] [Tracked] No tool_calls in response, returning content directly');
+        log.debug('No tool_calls in response, returning content directly');
 
         // NOTE: 必须在返回前将 assistant 回复加入 trackedMessages，
         // 否则纯对话技能的 conversationContext 会丢失 assistant 的提问，
@@ -928,7 +931,7 @@ export class LLMClient implements ILLMClient {
         };
       }
 
-      console.log('[LLM] [Tracked] Has tool_calls, will execute them');
+      log.debug('Has tool_calls, will execute them');
 
       // 添加 assistant 消息（含 tool_calls）到跟踪数组
       trackedMessages.push({
@@ -959,7 +962,7 @@ export class LLMClient implements ILLMClient {
 
       // Execute safe calls in parallel
       if (safeCalls.length > 0) {
-        console.log(`[LLM] [Tracked] P1-2: 并行执行 ${safeCalls.length} 个并发安全工具调用`);
+        log.debug('P1-2: 并行执行并发安全工具调用', { count: safeCalls.length });
         const safeResults = await Promise.allSettled(
           safeCalls.map(async (toolCall) => {
             const toolName = toolCall.function.name;
@@ -970,16 +973,16 @@ export class LLMClient implements ILLMClient {
               toolArgs = {};
             }
 
-            console.log(`[LLM] [Tracked] 执行工具 (并行): ${toolName}`, toolArgs);
+            log.debug('执行工具 (并行)', { toolName, toolArgs });
 
             let toolResult: string;
             try {
               const execStart = Date.now();
               toolResult = await toolExecutor({ name: toolName, arguments: toolArgs });
               const execDuration = Date.now() - execStart;
-              console.log(`[LLM] [Tracked] ✅ 并行工具完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
+              log.debug('并行工具完成', { toolName, duration: execDuration, resultLength: toolResult.length });
             } catch (execError) {
-              console.error('[LLM] [Tracked] 工具执行失败:', execError);
+              log.error('工具执行失败', { error: execError });
               toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
             }
 
@@ -1001,7 +1004,7 @@ export class LLMClient implements ILLMClient {
               tool_call_id: toolCall.id,
             });
           } else {
-            console.error('[LLM] [Tracked] 并行工具调用失败:', result.reason);
+            log.error('并行工具调用失败', { reason: result.reason });
             const failedIndex = safeResults.indexOf(result);
             if (failedIndex >= 0 && safeCalls[failedIndex]) {
               const errorMsg = `工具执行失败: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`;
@@ -1023,11 +1026,11 @@ export class LLMClient implements ILLMClient {
         try {
           toolArgs = JSON.parse(toolCall.function.arguments);
         } catch {
-          console.error('[LLM] [Tracked] 工具参数 JSON 解析失败:', toolCall.function.arguments);
+          log.error('工具参数 JSON 解析失败', { arguments: toolCall.function.arguments });
           toolArgs = {};
         }
 
-        console.log(`[LLM] [Tracked] 执行工具 (串行): ${toolName}`, toolArgs);
+        log.debug('执行工具 (串行)', { toolName, toolArgs });
 
         let toolResult: string;
         try {
@@ -1037,9 +1040,9 @@ export class LLMClient implements ILLMClient {
             arguments: toolArgs,
           });
           const execDuration = Date.now() - execStart;
-          console.log(`[LLM] [Tracked] ✅ 工具执行完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
+          log.debug('工具执行完成', { toolName, duration: execDuration, resultLength: toolResult.length });
         } catch (execError) {
-          console.error('[LLM] [Tracked] 工具执行失败:', execError);
+          log.error('工具执行失败', { error: execError });
           toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
         }
 
@@ -1089,7 +1092,7 @@ export class LLMClient implements ILLMClient {
       llmEvents.emit('reasoning', reasoning);
     }
 
-    console.log(`[LLM] 工具调用请求完成, reasoning: ${reasoning.length} chars, content: ${(message.content || '').length} chars, tool_calls: ${message.tool_calls?.length || 0}`);
+    log.info('工具调用请求完成', { reasoningLength: reasoning.length, contentLength: (message.content || '').length, toolCallsCount: message.tool_calls?.length || 0 });
 
     return {
       message: {

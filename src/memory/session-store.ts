@@ -1,6 +1,9 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Session, Request, QAEntry, RequestTask } from '../types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'SessionStore' });
 
 /**
  * SessionStore — 会话持久化存储(state machine,不是 4 层记忆之一)
@@ -42,7 +45,7 @@ export class SessionStore {
       const data = await fs.readFile(filePath, 'utf-8');
       const session: Session = JSON.parse(data);
       this.cache.set(cacheKey, session);
-      console.log(`[SessionStore] 📂 加载会话: ${cacheKey} (${session.requests.length}个请求)`);
+      log.info('加载会话', { cacheKey, requestCount: session.requests.length });
       return session;
     } catch (error: any) {
       if (error.code === 'ENOENT') {
@@ -188,7 +191,7 @@ export class SessionStore {
     session.activeRequestId = requestId;
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📝 创建请求: ${requestId} "${content.substring(0, 50)}..."`);
+    log.info('创建请求', { requestId, content: content.substring(0, 50) });
     return request;
   }
 
@@ -219,7 +222,7 @@ export class SessionStore {
     request.updatedAt = new Date().toISOString();
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ❓ 添加询问: ${question.questionId} "${question.content.substring(0, 60)}..."`);
+    log.info('添加询问', { questionId: question.questionId, content: question.content.substring(0, 60) });
   }
 
   /**
@@ -245,7 +248,7 @@ export class SessionStore {
       // 子智能体问题：在任务级查找
       const targetTask = request.tasks.find(t => t.questions.some(q => q.questionId === questionId));
       if (!targetTask) {
-        console.warn(`[SessionStore] ⚠️ 问题 ${questionId} 不存在，跳过`);
+        log.warn('问题不存在，跳过', { questionId });
         return request;
       }
 
@@ -259,7 +262,7 @@ export class SessionStore {
 
     request.updatedAt = new Date().toISOString();
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 💬 回答问题: ${questionId} "${answer}"`);
+    log.info('回答问题', { questionId, answer });
     return request;
   }
 
@@ -292,7 +295,7 @@ export class SessionStore {
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📌 挂起请求: ${requestId} 原因: ${reason}`);
+    log.info('挂起请求', { requestId, reason });
     return request;
   }
 
@@ -320,7 +323,7 @@ export class SessionStore {
     session.activeRequestId = requestId;
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 🔄 召回请求: ${requestId}`);
+    log.info('召回请求', { requestId });
     return request;
   }
 
@@ -336,7 +339,7 @@ export class SessionStore {
     request.updatedAt = new Date().toISOString();
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📋 添加任务: ${task.taskId} [${task.skillName}]`);
+    log.info('添加任务', { taskId: task.taskId, skillName: task.skillName });
   }
 
   /**
@@ -385,7 +388,7 @@ export class SessionStore {
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ✅ 完成请求: ${requestId} (status=${request.status})`);
+    log.info('完成请求', { requestId, status: request.status });
   }
 
   /**
@@ -405,13 +408,13 @@ export class SessionStore {
 
     if (hasWaitingQuestion) {
       // 保留 waiting 状态和 activeRequestId，仅记录错误信息
-      console.log(`[SessionStore] ⚠️ 请求出错但保留等待状态: ${requestId} (原因: ${result.substring(0, 80)})`);
+      log.warn('请求出错但保留等待状态', { requestId, reason: result.substring(0, 80) });
     } else {
       request.status = 'failed';
       if (session.activeRequestId === requestId) {
         session.activeRequestId = null;
       }
-      console.log(`[SessionStore] ❌ 请求失败: ${requestId}`);
+      log.error('请求失败', { requestId });
     }
 
     await this.saveSession(userId, sessionId, session);

@@ -11,6 +11,9 @@
 
 import type { L1SessionMetadata, L1Message, L4HistoryEntry } from './types';
 import { L1_SESSION_IDLE_MS, L1_CLEANUP_INTERVAL_MS } from './types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'L1' });
 
 /**
  * L1SessionMetadataService - 会话级内存元数据管理
@@ -197,7 +200,7 @@ export class L1SessionMetadataService {
           try {
             this.onSessionExpired(context.userId, sessionId);
           } catch (e) {
-            console.error(`[L1] onSessionExpired 回调失败 session=${sessionId}:`, e);
+            log.error('onSessionExpired 回调失败', { sessionId, error: e });
           }
         }
         this.contexts.delete(sessionId);
@@ -215,7 +218,7 @@ export class L1SessionMetadataService {
   restoreFromHistory(sessionId: string, userId: string, history: L4HistoryEntry[]): void {
     // 如果内存中已有上下文且是活跃的,不覆盖
     if (this.contexts.has(sessionId) && this.hasActiveContext(sessionId)) {
-      console.log(`[L1] ℹ️ 会话 ${sessionId} 已有活跃上下文,跳过恢复`);
+      log.info('会话已有活跃上下文,跳过恢复', { sessionId });
       return;
     }
 
@@ -246,7 +249,7 @@ export class L1SessionMetadataService {
       ? new Date(history[0].timestamp).getTime()
       : Date.now();
 
-    console.log(`[L1] 🔄 从 L4 历史恢复会话 ${sessionId}: ${context.conversation.length} 条消息, turnCount=${context.turnCount}`);
+    log.info('从 L4 历史恢复会话', { sessionId, messageCount: context.conversation.length, turnCount: context.turnCount });
   }
 
   /**

@@ -10,6 +10,7 @@ import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
 import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
 import { BusinessError } from '../errors';
+import { createLogger } from '../observability/logger';
 import type { ApiResponse } from '../types/api-response';
 
 interface ImageAttachment {
@@ -109,6 +110,8 @@ function extractAccessToken(req: Request): string | undefined {
 /**
  * Create Express HTTP API server
  */
+const log = createLogger({ module: 'API' });
+
 export function createAPIServer(
   mainAgent: MainAgent,
   skillRegistry: SkillRegistry,
@@ -158,9 +161,7 @@ export function createAPIServer(
 
     res.on('finish', () => {
       const duration = Date.now() - startTime;
-      console.log(
-        `[${timestamp}] ${req.method} ${req.path} - ${res.statusCode} - ${duration}ms`
-      );
+      log.info('API 请求', { timestamp, method: req.method, path: req.path, statusCode: res.statusCode, duration });
     });
 
     next();
@@ -294,7 +295,7 @@ export function createAPIServer(
     // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
     RequestContext.run({ accessToken }, () => {
       mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
-        console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
+        log.error('任务处理失败', { error: err instanceof Error ? err.message : err });
       });
     });
 
@@ -338,7 +339,7 @@ app.post(
           mimeType: mimeType,
           originalName: 'uploaded-image',
         };
-        console.log('[API] 解析图片成功, 大小:', buffer.length);
+        log.info('解析图片成功', { size: buffer.length });
       }
     }
 

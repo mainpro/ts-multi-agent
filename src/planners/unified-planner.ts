@@ -3,6 +3,9 @@ import { ILLMClient } from '../llm';
 import { SkillRegistry } from '../skill-registry';
 import { SkillMetadata, TaskPlan } from '../types';
 import { buildTaskPlannerPrompt } from '../prompts';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'UnifiedPlanner' });
 
 /**
  * 统一规划器 - 将需求分析、技能匹配、任务规划合并为一次 LLM 调用
@@ -69,14 +72,13 @@ export class UnifiedPlanner {
    * 一次 LLM 调用完成：需求分析 + 技能匹配 + 任务规划
    */
   async plan(requirement: string): Promise<PlanResult> {
-    console.log(`[UnifiedPlanner] 🚀 开始统一规划...`);
-    console.log(`[UnifiedPlanner] 📥 需求: "${requirement}"`);
+    log.info('开始统一规划', { requirement });
 
     const allSkills = this.skillRegistry.getAllMetadata();
-    console.log(`[UnifiedPlanner] 📋 可用技能: ${allSkills.map(s => s.name).join(', ')}`);
+    log.debug('可用技能', { skills: allSkills.map(s => s.name).join(', ') });
 
     if (allSkills.length === 0) {
-      console.log(`[UnifiedPlanner] ⚠️ 没有可用技能`);
+      log.warn('没有可用技能');
       return {
         success: false,
         needsClarification: true,
@@ -89,7 +91,7 @@ export class UnifiedPlanner {
   const userPrompt = `需求: "${requirement}"`;
 
   try {
-    console.log(`[UnifiedPlanner] 🤖 发送统一规划请求...`);
+    log.info('发送统一规划请求');
 
     const result = await this.llm.generateStructured(
       userPrompt,
@@ -97,20 +99,18 @@ export class UnifiedPlanner {
       systemPrompt
     );
 
-      console.log(`[UnifiedPlanner] ✅ 规划完成`);
+      log.info('规划完成');
 
       // 提取选中的技能（处理两种格式）
       const selectedSkillNames: string[] = Array.isArray(result.skillSelection)
         ? result.skillSelection
         : (result.skillSelection as { selectedSkills?: string[] }).selectedSkills || [];
 
-      console.log(`[UnifiedPlanner] 📊 分析意图: ${result.analysis?.intent || 'N/A'}`);
-      console.log(`[UnifiedPlanner] 📊 选中技能: ${selectedSkillNames.join(', ')}`);
-      console.log(`[UnifiedPlanner] 📊 任务数量: ${result.plan.tasks.length}`);
+      log.info('规划结果', { intent: result.analysis?.intent, selectedSkills: selectedSkillNames.join(', '), taskCount: result.plan.tasks.length });
 
       // 检查是否需要澄清
       if (result.plan.needsClarification) {
-        console.log(`[UnifiedPlanner] ❓ 需要澄清: ${result.plan.clarificationPrompt}`);
+        log.info('需要澄清', { prompt: result.plan.clarificationPrompt });
         return {
           success: false,
           needsClarification: true,
@@ -124,7 +124,7 @@ export class UnifiedPlanner {
         .filter((s): s is SkillMetadata => s !== undefined);
 
   if (matchedSkills.length === 0) {
-    console.log(`[UnifiedPlanner] ⚠️ 没有匹配到有效技能`);
+    log.warn('没有匹配到有效技能');
     const skillDescriptions = allSkills.map(s => `- **${s.name}**: ${s.description}`).join('\n');
     return {
       success: false,
@@ -155,7 +155,7 @@ export class UnifiedPlanner {
       };
 
     } catch (error) {
-      console.error(`[UnifiedPlanner] ❌ 规划失败:`, error);
+      log.error('规划失败', { error });
       return {
         success: false,
         needsClarification: true,
