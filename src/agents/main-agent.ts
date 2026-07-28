@@ -795,10 +795,10 @@ export class MainAgent {
     } catch (error) {
       MainAgent.log.error('处理普通需求失败', { error });
       await this.sessionStore.failRequest(userId, sessionId, request.requestId, error instanceof Error ? error.message : 'Unknown error');
-      return {
-        success: false,
-        error: { type: "FATAL", message: error instanceof Error ? error.message : "Unknown error", code: "PROCESSING_ERROR" },
-      };
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new BusinessError('PROCESSING_FAILED', error instanceof Error ? error.message : 'Unknown error', { cause: error });
     } finally {
       // 回滚 L1 最后一条消息(如果未生成 assistantResponse)
       if (!assistantResponse) {
