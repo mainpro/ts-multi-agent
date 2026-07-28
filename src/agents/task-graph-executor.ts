@@ -424,9 +424,21 @@ export class TaskGraphExecutor {
         const onceResult = await this.onceTaskEvent(question.taskId);
         if (onceResult.status !== 'completed') {
           if (onceResult.status === 'failed') {
-            return { success: false, error: taskAfterReconstruct!.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' } };
+            // After triggerProcess, the task error may have been repopulated by the worker.
+            // Read the latest value through a Task-typed local to avoid TS narrowing to `undefined`
+            // (we assigned undefined above intentionally to clear stale state).
+            const taskRef = taskAfterReconstruct as Task;
+            const failedError: TaskError | undefined = taskRef.error;
+            throw new SkillError(
+              failedError?.code || 'TASK_FAILED',
+              failedError?.message || '任务执行失败',
+              { cause: failedError },
+            );
           }
-          return { success: false, error: { type: 'FATAL', message: `任务状态异常: ${onceResult.status}`, code: `TASK_${onceResult.status.toUpperCase()}` } };
+          throw new SkillError(
+            `TASK_${onceResult.status.toUpperCase()}`,
+            `任务状态异常: ${onceResult.status}`,
+          );
         }
         taskAfterReconstruct!.result = onceResult.result;
 
@@ -469,7 +481,12 @@ export class TaskGraphExecutor {
     }
 
     if (layerResult.failedTasks.length > 0) {
-      return { success: false, error: layerResult.failedTasks[0].error };
+      const firstFailure = layerResult.failedTasks[0];
+      throw new SkillError(
+        firstFailure.error?.code || 'TASK_GRAPH_EXECUTION_FAILED',
+        firstFailure.error?.message || 'Task graph execution failed',
+        { cause: firstFailure.error },
+      );
     }
 
     // 所有层执行完毕 → 汇总结果
