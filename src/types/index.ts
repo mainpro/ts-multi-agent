@@ -162,10 +162,9 @@ export interface QuestionHistoryEntry {
  */
 export type ErrorType = 'RETRYABLE' | 'FATAL' | 'USER_ERROR' | 'SKILL_ERROR';
 
-/**
- * LLM error types for retry classification
- */
-export type LLMErrorType = 'RATE_LIMIT' | 'TIMEOUT' | 'INVALID_KEY' | 'API_ERROR' | 'NETWORK_ERROR' | 'CONTEXT_TOO_LONG' | 'OUTPUT_TOO_LONG';
+// Canonical LLMErrorType is exported from src/llm/index.ts (includes UNKNOWN_ERROR, CANCELLED, QUEUE_FULL).
+// Re-export here so legacy callers that imported from `../types` keep working.
+export type { LLMErrorType } from '../llm';
 
 /**
  * Task error information

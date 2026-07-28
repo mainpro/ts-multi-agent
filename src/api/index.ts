@@ -375,6 +375,16 @@ app.post(
     try {
       sendEvent('start', { message: '开始处理您的请求...' });
 
+      // NOTE: This console.log override intercepts `[MainAgent]` / `[SubAgent]` / etc.
+      // prefixed human-readable strings (the legacy log format). After Task 16, internal
+      // modules log through the structured JSON logger (src/observability/logger.ts),
+      // which writes single JSON strings via `console.log(JSON.stringify(entry))` — none
+      // of those brackets appear in the payload, so the override no longer forwards any
+      // internal logs as SSE `step` events. The override is kept intact for backward
+      // compatibility with any third-party callers that still emit prefixed strings, and
+      // to preserve the public SSE event shape consumed by public/test.html.
+      // To re-enable live step streaming from structured logs, replace this hook with an
+      // explicit emit from each agent (e.g. via a dedicated bus or `llmEvents` channel).
       const originalLog = console.log;
       let stepCount = 0;
       console.log = (...args: unknown[]) => {
