@@ -79,7 +79,7 @@ describe('SubAgent', () => {
       expect(result.data).toBeDefined();
     });
 
-    it('should handle missing skill name', async () => {
+    it('should throw SkillError for missing skill name', async () => {
       const task: Task = {
         id: 'test-task',
         requirement: 'Test requirement',
@@ -92,13 +92,16 @@ describe('SubAgent', () => {
         retryCount: 0
       };
 
-      const result = await subAgent.execute(task);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('MISSING_SKILL');
+      await expect(subAgent.execute(task)).rejects.toThrow(SkillError);
+      try {
+        await subAgent.execute(task);
+      } catch (err) {
+        expect(err).toBeInstanceOf(SkillError);
+        expect((err as SkillError).code).toBe('MISSING_SKILL');
+      }
     });
 
-    it('should handle non-existent skill', async () => {
+    it('should throw SkillError for non-existent skill', async () => {
       const task: Task = {
         id: 'test-task',
         requirement: 'Test requirement',
@@ -111,10 +114,13 @@ describe('SubAgent', () => {
         retryCount: 0
       };
 
-      const result = await subAgent.execute(task);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SKILL_NOT_FOUND');
+      await expect(subAgent.execute(task)).rejects.toThrow(SkillError);
+      try {
+        await subAgent.execute(task);
+      } catch (err) {
+        expect(err).toBeInstanceOf(SkillError);
+        expect((err as SkillError).code).toBe('SKILL_NOT_FOUND');
+      }
     });
 
     it('should handle execution errors', async () => {

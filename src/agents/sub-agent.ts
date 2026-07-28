@@ -152,18 +152,12 @@ export class SubAgent {
       SubAgent.log.debug('execute 入口状态', { isResuming, conversationContext: task.conversationContext?.length, questionHistory: task.questionHistory?.length, latestUserAnswer: (task.params as any)?.latestUserAnswer });
 
       if (!task.skillName) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: 'No skill assigned', code: 'MISSING_SKILL' },
-        };
+        throw new SkillError('MISSING_SKILL', 'No skill assigned');
       }
 
       const skill = await this.skillRegistry.loadFullSkill(task.skillName);
       if (!skill) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: 'Skill not found: ' + task.skillName, code: 'SKILL_NOT_FOUND' },
-        };
+        throw new SkillError('SKILL_NOT_FOUND', 'Skill not found: ' + task.skillName);
       }
 
       const result = await this.executeSkill(
@@ -200,10 +194,7 @@ export class SubAgent {
 
       // 防止 response 为空或 undefined 时返回无意义内容
       if (!cleanResult.response) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: '任务执行异常：未能生成有效回复', code: 'EMPTY_RESPONSE' },
-        };
+        throw new SkillError('EMPTY_RESPONSE', '任务执行异常：未能生成有效回复');
       }
 
       // ===== 发布执行结果到长期记忆 =====
