@@ -9,6 +9,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import { MainAgent, MainAgentDependencies } from '../src/agents/main-agent';
 import { ILLMClient } from '../src/llm';
+import { BusinessError, AppError } from '../src/errors';
 import { SkillRegistry } from '../src/skill-registry';
 import { MemoryService } from '../src/memory/memory-service';
 import { SessionStore } from '../src/memory/session-store';
@@ -506,6 +507,61 @@ async function run() {
         (result.data as any)?.type,
         'small_talk',
         '应该返回 type=small_talk'
+      );
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // ========================================================================
+  // AppError throw tests
+  // ========================================================================
+  console.log('\n--- AppError throw tests ---');
+
+  await test('MA-E01: getSessionHistory throws BusinessError on internal failure', async () => {
+    // Custom SessionStore that throws a generic (non-AppError) error when loadSession is called.
+    // getSessionHistory should wrap it in BusinessError('SESSION_HISTORY_FAILED').
+    class FailingSessionStore extends SessionStore {
+      async loadSession(_userId: string, _sessionId: string): Promise<any> {
+        throw new Error('disk on fire');
+      }
+    }
+
+    const mockLLM = createMockLLM();
+    const { agent, cleanup } = await createAgent(mockLLM);
+
+    // Override the injected sessionStore with our failing stub.
+    (agent as any).sessionStore = new FailingSessionStore(100, 'data');
+
+    try {
+      await assert.rejects(
+        () => agent.getSessionHistory('u1', 's1'),
+        (err: any) => err instanceof BusinessError && err.code === 'SESSION_HISTORY_FAILED'
+      );
+    } finally {
+      await cleanup();
+    }
+  });
+
+  await test('MA-E02: getSessionHistory re-throws existing AppError unchanged', async () => {
+    // Custom SessionStore that throws an AppError (BusinessError) when loadSession is called.
+    // getSessionHistory must NOT re-wrap it — it should propagate with the original code/message.
+    class AppErrorSessionStore extends SessionStore {
+      async loadSession(_userId: string, _sessionId: string): Promise<any> {
+        throw new BusinessError('ORIGINAL_CODE', 'original message');
+      }
+    }
+
+    const mockLLM = createMockLLM();
+    const { agent, cleanup } = await createAgent(mockLLM);
+
+    // Override the injected sessionStore with our AppError-throwing stub.
+    (agent as any).sessionStore = new AppErrorSessionStore(100, 'data');
+
+    try {
+      await assert.rejects(
+        () => agent.getSessionHistory('u1', 's1'),
+        (err: any) => err instanceof AppError && err.code === 'ORIGINAL_CODE' && err.message === 'original message'
       );
     } finally {
       await cleanup();
