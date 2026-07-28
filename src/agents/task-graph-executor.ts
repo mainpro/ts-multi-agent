@@ -2,7 +2,7 @@ import { TaskQueue } from '../task-queue';
 import { ResultAggregator } from './result-aggregator';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
-import { BusinessError, LlmError, AppError } from '../errors';
+import { BusinessError, LlmError, AppError, SkillError } from '../errors';
 import { LLMError } from '../llm';
 
 const log = createLogger({ module: 'TaskGraphExecutor' });
@@ -334,15 +334,12 @@ export class TaskGraphExecutor {
 
     // 有任务失败
     if (layerResult.failedTasks.length > 0) {
-      return {
-        success: false,
-        error: layerResult.failedTasks[0].error,
-        data: {
-          planId: graph.id,
-          results: allResults,
-          failedTasks: layerResult.failedTasks,
-        } as any,
-      };
+      const firstFailure = layerResult.failedTasks[0];
+      throw new SkillError(
+        firstFailure.error.code || 'TASK_GRAPH_EXECUTION_FAILED',
+        firstFailure.error.message || 'Task graph execution failed',
+        { cause: firstFailure.error }
+      );
     }
 
     return {
@@ -371,7 +368,7 @@ export class TaskGraphExecutor {
     // 防御性检查：验证加载的进度数据有效性
     if (!graph || !Array.isArray(graph.layers) || !Array.isArray(graph.nodes)) {
       log.error('[TaskGraphExecutor] ⚠️ executionProgress.taskGraph 格式无效，无法恢复断点');
-      return { success: false, error: { type: 'FATAL', message: '执行进度损坏，无法恢复断点', code: 'CORRUPT_PROGRESS' } };
+      throw new BusinessError('CORRUPT_PROGRESS', '执行进度损坏，无法恢复断点');
     }
     if (!progress.completedResults || typeof progress.completedResults !== 'object') {
       log.warn('[TaskGraphExecutor] ⚠️ executionProgress.completedResults 格式异常，将从空结果开始');
