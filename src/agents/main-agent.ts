@@ -555,8 +555,20 @@ export class MainAgent {
     (this as any)._lastSeenSessionId = sessionId;
     (this as any)._lastSeenActiveRequestId = requestId;
 
-    // Fire-and-forget: process the merged requirement
-    void this.processRequirement(mergedRequirement, undefined, userId, sessionId);
+    // Fire-and-forget: process the merged requirement.
+    // Catch rejections so R2 errors don't become unhandled promise rejections.
+    // The original SSE connection can't receive these (it's already closing 202),
+    // so we log via structured logger; full SSE-error propagation is a follow-up.
+    void this.processRequirement(mergedRequirement, undefined, userId, sessionId).catch((err) => {
+      MainAgent.log.error('合并请求处理失败', {
+        parentRequestId,
+        newRequestId: requestId,
+        userId,
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+    });
   }
 
   /**
