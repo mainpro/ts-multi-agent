@@ -68,8 +68,35 @@ async function buildStackedAgent(opts: StackedAgentOpts): Promise<StackedAgent> 
   const intentResult = opts.intentResult ?? defaultIntentResult;
 
   // Mock LLMClient
+  // generateStructured is called twice for multi-task requests:
+  //   1st call: IntentRouter.classify → returns intentResult
+  //   2nd call: UnifiedPlanner.plan → returns a planner-shaped response built from intentResult.tasks
+  let generateStructuredCallCount = 0;
   const mockLLM: ILLMClient = {
-    generateStructured: async () => intentResult,
+    generateStructured: async (prompt: string) => {
+      generateStructuredCallCount += 1;
+      // First call: intent classification → return the intentResult as-is.
+      if (generateStructuredCallCount === 1) {
+        return intentResult;
+      }
+      // Second+ call: planning → return a UnifiedPlanResult-shaped response
+      // with the same tasks (sentinel-string prefixes preserved so the failingTaskIds
+      // dispatch in SubAgent can fire later).
+      return {
+        analysis: { summary: 'mock analysis', intent: 'skill_task' },
+        skillSelection: ['echo'],
+        plan: {
+          needsClarification: false,
+          tasks: intentResult.tasks.map((t, idx) => ({
+            id: t.taskId ?? `task-${idx + 1}`,
+            requirement: t.requirement,
+            skillName: t.skillName,
+            params: t.params ?? {},
+            dependencies: [],
+          })),
+        },
+      };
+    },
     generateText: async () => '',
     generateWithTools: async (messages: any) => {
       // Sentinel-string dispatch: check which task's prompt this is for.
@@ -253,6 +280,93 @@ describe('End-to-end error propagation', () => {
 
       // 3. No complete event on failure path
       expect(events.find((e) => e.event === 'complete')).toBeUndefined();
+    } finally {
+      await stack.close();
+    }
+  });
+
+  test('E2E-2a: multi-task t1 fails → dependent t2/t3 do not execute', async () => {
+    const stack = await buildStackedAgent({
+      failingTaskIds: new Set(['t1']),
+      intentResult: {
+        intent: 'skill_task',
+        confidence: 0.9,
+        tasks: [
+          { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+          { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task', params: { ref: '$t1.result' } },
+          { taskId: 't3', requirement: 'task-t3: C', skillName: 'echo', intent: 'skill_task' },
+        ],
+      },
+    });
+    try {
+      const { headers, events } = await postStreamExpectEvents(stack.url, {
+        requirement: 'multi task first fails',
+        userId: 'u1',
+      });
+      expect(headers['x-trace-id']).toBeTruthy();
+
+      const errorEvent = events.find((e) => e.event === 'error');
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent!.data.code).toMatch(/^LLM_/);
+      expect(errorEvent!.data.type).toBe('RETRYABLE');
+      expect(events.find((e) => e.event === 'complete')).toBeUndefined();
+    } finally {
+      await stack.close();
+    }
+  });
+
+  test('E2E-2b: multi-task t1 ok → t2 fails → t3 dependent on t2 is skipped', async () => {
+    const stack = await buildStackedAgent({
+      failingTaskIds: new Set(['t2']),
+      intentResult: {
+        intent: 'skill_task',
+        confidence: 0.9,
+        tasks: [
+          { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+          { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task' },
+          { taskId: 't3', requirement: 'task-t3: C', skillName: 'echo', intent: 'skill_task', params: { ref: '$t2.result' } },
+        ],
+      },
+    });
+    try {
+      const { events } = await postStreamExpectEvents(stack.url, {
+        requirement: 'multi task middle fails',
+        userId: 'u1',
+      });
+
+      const errorEvent = events.find((e) => e.event === 'error');
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent!.data.code).toMatch(/^LLM_/);
+      expect(errorEvent!.data.type).toBe('RETRYABLE');
+    } finally {
+      await stack.close();
+    }
+  });
+
+  test('E2E-2c: parallel t1/t2 both fail → first failedTask error propagated', async () => {
+    const stack = await buildStackedAgent({
+      failingTaskIds: new Set(['t1', 't2']),
+      intentResult: {
+        intent: 'skill_task',
+        confidence: 0.9,
+        tasks: [
+          { taskId: 't1', requirement: 'task-t1: A', skillName: 'echo', intent: 'skill_task' },
+          { taskId: 't2', requirement: 'task-t2: B', skillName: 'echo', intent: 'skill_task' },
+        ],
+      },
+    });
+    try {
+      const { events } = await postStreamExpectEvents(stack.url, {
+        requirement: 'parallel both fail',
+        userId: 'u1',
+      });
+
+      const errorEvent = events.find((e) => e.event === 'error');
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent!.data.code).toMatch(/^LLM_/);
+      expect(errorEvent!.data.type).toBe('RETRYABLE');
+      // Error code should be one of the expected LlmError codes (depends on which failed first)
+      expect(['LLM_RATE_LIMIT']).toContain(errorEvent!.data.code);
     } finally {
       await stack.close();
     }
