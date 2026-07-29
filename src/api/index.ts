@@ -6,6 +6,7 @@ import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
+import { requestLifecycle } from '../events/request-lifecycle';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
 import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
@@ -31,6 +32,7 @@ interface SubmitTaskRequest {
   userId?: string; // 可选，默认 'default'
   sessionId?: string; // 可选，默认使用 userId
   accessToken?: string; // 可选，透传给技能脚本的认证 token
+  draftId?: string; // 可选，幂等键（与 Tasks 6 的 gate.queue 关联）
 }
 
 /**
@@ -365,18 +367,36 @@ app.post(
       return;
     }
 
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-
     const sendEvent = (event: string, data: unknown) => {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    let handleReasoning: ((data: string | ReasoningEvent) => void) | null = null;
+    let lifecycleHandler: ((event: import('../events/request-lifecycle').RequestLifecycleEvent) => void) | null = null;
+
     try {
+      const sessionId = req.body.sessionId as string | undefined;
+
+      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
+
+      // Queue path: when the gate decides to queue, return 202 + JSON (no SSE).
+      if ((result as any).queued === true) {
+        res.status(202).json({
+          status: 'queued',
+          draftId: (result as any).draftId,
+          position: (result as any).position,
+        } as any);
+        return;
+      }
+
+      // Execution path — only now commit to SSE: set headers and emit start event.
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.flushHeaders?.();
+
       sendEvent('start', { message: '开始处理您的请求...' });
 
       // NOTE: SSE `step` events from a global `console.log` override were removed.
@@ -403,24 +423,28 @@ app.post(
       // public/test.html front-end no longer mirrors console output as step events;
       // reasoning/thinking streaming and the final result payload remain.
 
-  // Subscribe to LLM reasoning events
-  const reasoningBuffer: string[] = [];
-  const handleReasoning = (data: string | ReasoningEvent) => {
-    const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
-    reasoningBuffer.push(eventData.content);
-    sendEvent('reasoning', {
-      type: 'thinking',
-      content: eventData.content,
-      agent: eventData.agent,
-      timestamp: new Date().toISOString()
-    });
-  };
-  llmEvents.on('reasoning', handleReasoning);
+      try {
+        // Subscribe to LLM reasoning events
+        const reasoningBuffer: string[] = [];
+        handleReasoning = (data: string | ReasoningEvent) => {
+          const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
+          reasoningBuffer.push(eventData.content);
+          sendEvent('reasoning', {
+            type: 'thinking',
+            content: eventData.content,
+            agent: eventData.agent,
+            timestamp: new Date().toISOString()
+          });
+        };
+        llmEvents.on('reasoning', handleReasoning);
 
-try {
-      const sessionId = req.body.sessionId as string | undefined;
-
-      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId);
+        // Subscribe to request lifecycle events — forwarded to SSE during active stream.
+        lifecycleHandler = (event: import('../events/request-lifecycle').RequestLifecycleEvent) => {
+          sendEvent(event.type, event);
+        };
+        requestLifecycle.on('request_queued', lifecycleHandler);
+        requestLifecycle.on('request_checkpoint', lifecycleHandler);
+        requestLifecycle.on('request_spawned', lifecycleHandler);
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {
@@ -434,13 +458,18 @@ try {
         // MainAgent.processRequirement returns TaskResult ({ success, data, error }).
         // New throw-based contract: failures throw AppError before reaching here,
         // but we still defensively handle the legacy envelope shape.
-        if (result.success === false) {
-          sendEvent('error', { ...(result.error as object) });
+        if ((result as any).success === false) {
+          sendEvent('error', { ...((result as any).error as object) });
         } else {
           sendEvent('complete', { success: true, data: result });
         }
       } finally {
-        llmEvents.off('reasoning', handleReasoning);
+        if (handleReasoning) llmEvents.off('reasoning', handleReasoning);
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+        }
       }
 
       } catch (error) {
