@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
+import { AppError } from '../errors';
 import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'TaskQueue' });
@@ -458,11 +459,24 @@ export class TaskQueue {
         log.warn('任务失败', { taskId: task.id, executionTime });
       }
 
-      const taskError: TaskError = {
-        type: "RETRYABLE",
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      };
+      // Preserve original AppError (type/code/statusCode) so downstream layers
+      // (TaskGraphExecutor + global error handler) can honor the invariant
+      // "thrown AppError → envelope with original type/code".
+      const taskError: TaskError =
+        error instanceof AppError
+          ? {
+              type: error.type,
+              code: error.code,
+              message: error.message,
+              statusCode: error.statusCode,
+              stack: error.stack,
+              originalError: error,
+            }
+          : {
+              type: "RETRYABLE",
+              message: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            };
       this.failTask(task.id, taskError, isTimeout);
     } finally {
       this.running.delete(task.id);

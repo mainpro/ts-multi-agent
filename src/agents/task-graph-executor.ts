@@ -246,6 +246,10 @@ export class TaskGraphExecutor {
       for (const { taskId, result, status } of layerResults) {
         const node = graph.nodes.find(n => n.taskId === taskId)!;
 
+        // Read task.error directly so original AppError (with code/type preserved) is available.
+        // `result?.error` is not reliable — TaskQueue only sets task.error, not task.result.error.
+        const taskRecord = this.taskQueue.getTask(taskId);
+
         if (status === 'completed' && result) {
           completedResults.set(taskId, result);
           allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
@@ -264,14 +268,16 @@ export class TaskGraphExecutor {
           failedTasks.push({
             taskId,
             skillName: node.skillName,
-            error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
+            // Prefer task.error (set by TaskQueue with original AppError code/type).
+            // Fall back to result?.error or hardcoded TASK_FAILED only if both unavailable.
+            error: taskRecord?.error || result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
           });
         } else {
           log.error(`❌ 任务 ${taskId} 状态异常: ${status}`);
           failedTasks.push({
             taskId,
             skillName: node.skillName,
-            error: { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
+            error: taskRecord?.error || { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
           });
         }
       }
@@ -335,6 +341,11 @@ export class TaskGraphExecutor {
     // 有任务失败
     if (layerResult.failedTasks.length > 0) {
       const firstFailure = layerResult.failedTasks[0];
+      // Preserve original AppError so the global error handler envelope
+      // (type/code/statusCode) reflects the upstream cause, not the wrapping layer.
+      if (firstFailure.error.originalError instanceof AppError) {
+        throw firstFailure.error.originalError;
+      }
       throw new SkillError(
         firstFailure.error.code || 'TASK_GRAPH_EXECUTION_FAILED',
         firstFailure.error.message || 'Task graph execution failed',

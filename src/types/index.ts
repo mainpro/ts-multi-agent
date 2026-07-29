@@ -176,8 +176,17 @@ export interface TaskError {
   message: string;
   /** Error code (optional) */
   code?: string;
+  /** HTTP status code preserved from upstream AppError (optional) */
+  statusCode?: number;
   /** Stack trace (optional, for debugging) */
   stack?: string;
+  /**
+   * Original AppError instance (if the upstream threw one).
+   * Used by TaskGraphExecutor to rethrow the original class so the global
+   * error handler preserves the envelope invariant (type/code preserved).
+   * @internal
+   */
+  originalError?: unknown;
 }
 
 /**
