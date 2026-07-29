@@ -44,6 +44,10 @@ export class SessionStore {
     try {
       const data = await fs.readFile(filePath, 'utf-8');
       const session: Session = JSON.parse(data);
+      // Backward compat: legacy session.json files predate pendingRequests.
+      if (!Array.isArray(session.pendingRequests)) {
+        session.pendingRequests = [];
+      }
       this.cache.set(cacheKey, session);
       log.info('加载会话', { cacheKey, requestCount: session.requests.length });
       return session;
@@ -57,6 +61,7 @@ export class SessionStore {
           updatedAt: new Date().toISOString(),
           requests: [],
           activeRequestId: null,
+          pendingRequests: [],
         };
         this.cache.set(cacheKey, session);
         return session;
