@@ -64,7 +64,7 @@ export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'suspe
 // ============================================================================
 
 /** 请求状态 */
-export type RequestStatus = 'pending' | 'processing' | 'waiting' | 'suspended' | 'completed' | 'failed';
+export type RequestStatus = 'pending' | 'processing' | 'waiting' | 'suspended' | 'completed' | 'failed' | 'checkpoint_reached';
 
 /** 询问来源 */
 export type QuestionSource = 'main_agent' | 'sub_agent';
@@ -117,6 +117,21 @@ export interface Request {
   executionProgress?: ExecutionProgress;
 }
 
+/**
+ * Pending request: user message queued while a session has an active
+ * request. Drained at the next checkpoint and merged into a new request.
+ */
+export interface PendingRequest {
+  /** Client-generated draft ID for tracking; echoed back in SSE events. */
+  draftId: string;
+  /** Original (un-merged) user message. */
+  requirement: string;
+  /** ISO timestamp of when the message entered the queue. */
+  enqueuedAt: string;
+  /** Whether the message carried an image attachment. */
+  hasImage: boolean;
+}
+
 /** 会话 */
 export interface Session {
   sessionId: string;
@@ -125,6 +140,8 @@ export interface Session {
   updatedAt: string;
   requests: Request[];
   activeRequestId: string | null;
+  /** FIFO queue of user messages waiting to merge into a spawned request. */
+  pendingRequests: PendingRequest[];
 }
 
 /** RequestManager.handleUserInput 返回结果 */
