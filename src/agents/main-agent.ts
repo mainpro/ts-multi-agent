@@ -25,6 +25,8 @@ import { fireAndForget } from "../utils/fire-and-forget";
 import { createLogger } from '../observability/logger';
 import { TaskGraphExecutor } from "./task-graph-executor";
 import { ResultAggregator } from "./result-aggregator";
+import { SessionGate } from "./session-gate";
+import { requestLifecycle } from "../events/request-lifecycle";
 import { BusinessError, AppError } from '../errors';
 
 /**
@@ -62,6 +64,7 @@ export class MainAgent {
   private executorRegistry: ExecutorRegistry;
   private taskGraphExecutor: TaskGraphExecutor;
   private resultAggregator: ResultAggregator;
+  private gate: SessionGate;
 
   constructor(deps: MainAgentDependencies) {
     const {
@@ -90,7 +93,11 @@ export class MainAgent {
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
     );
-    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator);
+    this.gate = new SessionGate(sessionStore);
+    // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.
+    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator, {
+      onCheckpoint: (info) => this.onTaskGraphCheckpoint(info),
+    });
   }
 
   async processRequirement(
@@ -98,9 +105,31 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean },
-  ): Promise<TaskResult> {
+    options?: { planMode?: boolean; draftId?: string },
+  ): Promise<TaskResult & { queued?: boolean; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
+
+    // Gate: if the session already has an active request, queue this one.
+    const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const decision = await this.gate.decide(userId, effectiveSessionId, {
+      draftId, requirement, hasImage: !!imageAttachment,
+    });
+    if (decision.type === 'queue') {
+      const enqueuedAt = new Date().toISOString();
+      const { position } = await this.gate.enqueue(userId, effectiveSessionId, {
+        draftId, requirement, enqueuedAt, hasImage: !!imageAttachment,
+      });
+      requestLifecycle.emit({ type: 'request_queued', draftId, position, enqueuedAt });
+      return { success: true, queued: true, draftId, position, data: undefined as any };
+    }
+    if (decision.type === 'continue_waiting') {
+      // Fall through to existing AskAgent.handleUserInput path which routes to continueRequest.
+    }
+
+    // Track last seen session for checkpoint callback
+    (this as any)._lastSeenUserId = userId;
+    (this as any)._lastSeenSessionId = effectiveSessionId;
+    (this as any)._lastSeenActiveRequestId = await this.sessionIdForCheckpoint(effectiveSessionId);
 
     // Top-level: no catch — let AppError propagate to API middleware.
     // (Known failures throw AppError explicitly in inner methods.)
@@ -422,6 +451,112 @@ export class MainAgent {
     question: QAEntry,
   ): Promise<TaskResult> {
     return this.taskGraphExecutor.resumeFromBreakpoint(userId, sessionId, request, question);
+  }
+
+  /** Look up the active request ID for the given session — used by onTaskGraphCheckpoint. */
+  private async sessionIdForCheckpoint(sessionId: string): Promise<string | null> {
+    const session = await this.sessionStore.loadSession(
+      (this as any)._lastSeenUserId,
+      sessionId,
+    );
+    return session.activeRequestId;
+  }
+
+  /**
+   * Checkpoint callback wired into TaskGraphExecutor. Invoked between task
+   * graph layers. If the session has pending requests, drain them and spawn
+   * a new merged request. The current request is marked 'checkpoint_reached'.
+   */
+  private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<void> {
+    // Locate the session this layer belongs to. We rely on _lastSeen* fields
+    // populated at the start of processRequirement.
+    const userId = (this as any)._lastSeenUserId as string | undefined;
+    const sessionId = (this as any)._lastSeenSessionId as string | undefined;
+    if (!userId || !sessionId) {
+      return; // No session context — skip checkpoint.
+    }
+
+    const session = await this.sessionStore.loadSession(userId, sessionId);
+    if (session.pendingRequests.length === 0) {
+      return; // Nothing to drain.
+    }
+
+    // Mark current request as checkpoint_reached
+    const currentReq = session.requests.find(r => r.requestId === session.activeRequestId);
+    if (currentReq) {
+      currentReq.status = 'checkpoint_reached';
+      currentReq.updatedAt = new Date().toISOString();
+    }
+    session.activeRequestId = null;
+    await this.sessionStore.saveSession(userId, sessionId, session);
+
+    // Emit checkpoint event
+    requestLifecycle.emit({
+      type: 'request_checkpoint',
+      requestId: info.requestId,
+      checkpointAt: new Date().toISOString(),
+      pendingCount: session.pendingRequests.length,
+      completedTaskCount: info.completedTaskIds.length,
+    });
+
+    // Spawn merged
+    await this.spawnMergedRequest(userId, sessionId, currentReq?.requestId ?? '', session.pendingRequests);
+  }
+
+  /**
+   * Drain pending requests, build merged requirement, create a new Request,
+   * emit request_spawned, and trigger processRequirement on the merged content.
+   */
+  private async spawnMergedRequest(
+    userId: string,
+    sessionId: string,
+    parentRequestId: string,
+    _pendingRequests: import('../types').PendingRequest[],
+  ): Promise<void> {
+    const drained = await this.gate.drain(userId, sessionId);
+    if (drained.length === 0) return;
+
+    const session = await this.sessionStore.loadSession(userId, sessionId);
+    const parent = session.requests.find(r => r.requestId === parentRequestId);
+    const parentContent = parent?.content ?? '';
+
+    const mergedRequirement =
+      parentContent +
+      '\n\n---\n\n' +
+      drained.map(p => p.requirement).join('\n\n---\n\n');
+
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    session.requests.push({
+      requestId,
+      content: mergedRequirement,
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      suspendedAt: null,
+      suspendedReason: null,
+      questions: [],
+      currentQuestion: null,
+      tasks: [],
+      result: null,
+    });
+    session.activeRequestId = requestId;
+    await this.sessionStore.saveSession(userId, sessionId, session);
+
+    requestLifecycle.emit({
+      type: 'request_spawned',
+      requestId,
+      parentRequestId,
+      draftIds: drained.map(d => d.draftId),
+      requirementPreview: mergedRequirement.substring(0, 200),
+    });
+
+    // Track last seen session for checkpoint callback
+    (this as any)._lastSeenUserId = userId;
+    (this as any)._lastSeenSessionId = sessionId;
+    (this as any)._lastSeenActiveRequestId = requestId;
+
+    // Fire-and-forget: process the merged requirement
+    void this.processRequirement(mergedRequirement, undefined, userId, sessionId);
   }
 
   /**
