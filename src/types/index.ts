@@ -577,7 +577,9 @@ export const TaskErrorSchema = z.object({
   type: ErrorTypeSchema,
   message: z.string(),
   code: z.string().optional(),
+  statusCode: z.number().optional(),
   stack: z.string().optional(),
+  originalError: z.unknown().optional(),
 });
 
 /**
