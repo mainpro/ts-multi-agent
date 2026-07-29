@@ -378,10 +378,38 @@ app.post(
     try {
       const sessionId = req.body.sessionId as string | undefined;
 
+      // Subscribe to request lifecycle events BEFORE awaiting processRequirement.
+      // Lifecycle events (request_queued, request_checkpoint, request_spawned) can fire
+      // while the first request is still running — e.g. when a second user message
+      // arrives during processing. Subscribing up-front ensures the active SSE stream
+      // captures queue/checkpoint/spawn events emitted during its own execution.
+      // The handler buffers events until the SSE stream is opened; if the request turns
+      // out to be queued (202 path), the buffered events are discarded.
+      const lifecycleBuffer: Array<import('../events/request-lifecycle').RequestLifecycleEvent> = [];
+      let lifecycleActive = true;
+      lifecycleHandler = (event: import('../events/request-lifecycle').RequestLifecycleEvent) => {
+        if (!lifecycleActive) return;
+        if (res.headersSent) {
+          sendEvent(event.type, event);
+        } else {
+          lifecycleBuffer.push(event);
+        }
+      };
+      requestLifecycle.on('request_queued', lifecycleHandler);
+      requestLifecycle.on('request_checkpoint', lifecycleHandler);
+      requestLifecycle.on('request_spawned', lifecycleHandler);
+
       const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
       // Queue path: when the gate decides to queue, return 202 + JSON (no SSE).
       if ((result as any).queued === true) {
+        lifecycleActive = false;
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+          lifecycleHandler = null;
+        }
         res.status(202).json({
           status: 'queued',
           draftId: (result as any).draftId,
@@ -396,6 +424,12 @@ app.post(
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.flushHeaders?.();
+
+      // Replay buffered lifecycle events captured before SSE opened.
+      for (const ev of lifecycleBuffer) {
+        sendEvent(ev.type, ev);
+      }
+      lifecycleBuffer.length = 0;
 
       sendEvent('start', { message: '开始处理您的请求...' });
 
@@ -439,12 +473,8 @@ app.post(
         llmEvents.on('reasoning', handleReasoning);
 
         // Subscribe to request lifecycle events — forwarded to SSE during active stream.
-        lifecycleHandler = (event: import('../events/request-lifecycle').RequestLifecycleEvent) => {
-          sendEvent(event.type, event);
-        };
-        requestLifecycle.on('request_queued', lifecycleHandler);
-        requestLifecycle.on('request_checkpoint', lifecycleHandler);
-        requestLifecycle.on('request_spawned', lifecycleHandler);
+        // (Already subscribed BEFORE processRequirement awaited so cross-request events
+        // emitted during the first request's execution are captured.)
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {
