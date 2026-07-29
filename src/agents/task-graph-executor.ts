@@ -57,6 +57,10 @@ export class TaskGraphExecutor {
   constructor(
     private taskQueue: TaskQueue,
     private resultAggregator: ResultAggregator,
+    private options: {
+      /** Called after each task layer completes; awaited before next layer starts. */
+      onCheckpoint?: (info: { requestId: string; completedTaskIds: string[] }) => Promise<void>;
+    } = {},
   ) {}
 
   /**
@@ -283,6 +287,19 @@ export class TaskGraphExecutor {
       }
 
       log.info(`✅ Layer ${layerIdx} 完成 (${layer.length}/${layer.length})`);
+
+      // Checkpoint hook: invoked between layers so the orchestrator can drain
+      // the pending request queue. Awaited so the next layer does not start
+      // until the gate decides whether to continue, merge, or stop.
+      if (this.options.onCheckpoint) {
+        const completedTaskIds = layerResults
+          .filter(r => r.status === 'completed')
+          .map(r => r.taskId);
+        await this.options.onCheckpoint({
+          requestId: 'session-active',  // overwritten by caller in Task 6
+          completedTaskIds,
+        });
+      }
     }
 
     log.info(`✅ TaskGraph 全部执行完成 (${allResults.length} 个任务)`);
