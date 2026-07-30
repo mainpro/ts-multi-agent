@@ -39,6 +39,13 @@ interface LayerExecutionResult {
   failedTasks: FailedTaskInfo[];
   /** 是否全部执行完成（true=完成，false=中途暂停或失败） */
   done: boolean;
+  /**
+   * 是否因 checkpoint 让位而被中断。
+   * true=onCheckpoint 返回 shouldStop=true,executeLayers 在该层完成后立即返回,
+   * 调用方(executeTaskGraph / resumeFromBreakpoint)应停止后续层的执行。
+   * 用于多任务合并:R1 在 checkpoint 让位给 R2 后,后续 layer 不再执行,避免并发写 session。
+   */
+  stopped?: boolean;
 }
 
 /**
@@ -58,8 +65,13 @@ export class TaskGraphExecutor {
     private taskQueue: TaskQueue,
     private resultAggregator: ResultAggregator,
     private options: {
-      /** Called after each task layer completes; awaited before next layer starts. */
-      onCheckpoint?: (info: { requestId: string; completedTaskIds: string[] }) => Promise<void>;
+      /**
+       * Called after each task layer completes; awaited before next layer starts.
+       * 返回 `{ shouldStop: true }` 时,executeLayers 立即中断后续层执行 —— 用于多任务合并
+       * 流程:R1 在 checkpoint 让位给 R2 后,后续 layer 不再执行,避免并发写 session。
+       * 返回 void / undefined 时,保持原行为(继续执行下一层)。
+       */
+      onCheckpoint?: (info: { requestId: string; completedTaskIds: string[] }) => Promise<{ shouldStop?: boolean } | void>;
     } = {},
   ) {}
 
@@ -291,14 +303,22 @@ export class TaskGraphExecutor {
       // Checkpoint hook: invoked between layers so the orchestrator can drain
       // the pending request queue. Awaited so the next layer does not start
       // until the gate decides whether to continue, merge, or stop.
+      //
+      // P0 闭环修复:onCheckpoint 可返回 `{ shouldStop: true }`,表示 R1 已在该层
+      // 让位给 spawn 的 R2,后续 layer 不应再执行(否则 R1 与 R2 并发写 session,
+      // 且 R1 永远停在 checkpoint_reached)。
       if (this.options.onCheckpoint) {
         const completedTaskIds = layerResults
           .filter(r => r.status === 'completed')
           .map(r => r.taskId);
-        await this.options.onCheckpoint({
+        const checkpointResult = await this.options.onCheckpoint({
           requestId: 'session-active',  // overwritten by caller in Task 6
           completedTaskIds,
         });
+        if (checkpointResult?.shouldStop) {
+          log.info(`⏸️ checkpoint 信号让位,停止后续 layer (R1 已让给 R2)`);
+          return { allResults, failedTasks, done: false, stopped: true };
+        }
       }
     }
 
@@ -319,6 +339,21 @@ export class TaskGraphExecutor {
     const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
 
     const layerResult = await this.executeLayers(graph, sessionId, userId, 0, completedResults, allResults);
+
+    // P0 闭环修复:R1 在 checkpoint 让位给 R2,跳过后续 layer。
+    // 不保存 executionProgress(因为 R1 不再是 active),通过 mergedAway 标记让
+    // main-agent 跳过 completeRequest / 汇总 / 助手消息保存。
+    if (layerResult.stopped) {
+      log.info(`📤 R1 让位给 R2,跳过后续汇总`);
+      return {
+        success: true,
+        data: {
+          planId: graph.id,
+          results: allResults,
+          mergedAway: true,
+        },
+      };
+    }
 
     // 遇到等待用户输入：保存执行进度并返回
     if (layerResult.waitingTaskId) {

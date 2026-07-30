@@ -494,19 +494,23 @@ export class MainAgent {
    * The `info.requestId` from TaskGraphExecutor is a placeholder ('session-active')
    * that the executor doesn't have access to; we resolve the real current request
    * from `session.activeRequestId` instead.
+   *
+   * P0 闭环修复:当实际 spawn 了 R2 时,返回 `{ shouldStop: true }`,让 executeLayers
+   * 立即中断后续 layer(否则 R1 与 R2 并发执行,产生竞争写 session 且 R1 永远停在
+   * checkpoint_reached)。无 pending 时返回 undefined,保持原行为(R1 继续执行)。
    */
-  private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<void> {
+  private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<{ shouldStop?: boolean } | void> {
     // Locate the session this layer belongs to. We rely on _lastSeen* fields
     // populated at the start of processRequirement.
     const userId = (this as any)._lastSeenUserId as string | undefined;
     const sessionId = (this as any)._lastSeenSessionId as string | undefined;
     if (!userId || !sessionId) {
-      return; // No session context — skip checkpoint.
+      return undefined; // No session context — skip checkpoint.
     }
 
     const session = await this.sessionStore.loadSession(userId, sessionId);
     if (session.pendingRequests.length === 0) {
-      return; // Nothing to drain.
+      return undefined; // Nothing to drain.
     }
 
     // Mark current request as checkpoint_reached
@@ -550,6 +554,10 @@ export class MainAgent {
 
     // Spawn merged
     await this.spawnMergedRequest(userId, sessionId, currentReq?.requestId ?? '', session.pendingRequests);
+
+    // P0 闭环修复:R1 已在 checkpoint 让位给 R2,后续 layer 不应执行。
+    // executeLayers 收到 shouldStop=true 后会立即中断,避免 R1 与 R2 并发写 session。
+    return { shouldStop: true };
   }
 
   /**
@@ -946,6 +954,27 @@ export class MainAgent {
       // 检查是否有任务需要等待用户输入
       const resultData = result.data as any;
       const taskResults = resultData?.results || [];
+
+      // P0 闭环修复:R1 在 checkpoint 让位给了 R2,跳过后续汇总 / completeRequest。
+      // R1.result 保持现状(null),R1.status='checkpoint_reached' 由 onTaskGraphCheckpoint
+      // 写入,R2 会基于 R1 的内容 + pending 重新规划并执行。
+      if (resultData?.mergedAway) {
+        MainAgent.log.info('R1 在 checkpoint 让位给 R2,跳过汇总', {
+          requestId: request.requestId,
+          completedLayerResults: taskResults.length,
+        });
+        // 设置 assistantResponse 占位,跳过 finally 中的 popLastAssistantMessage
+        // (R1 此时尚未生成助手消息,无需 pop)
+        assistantResponse = '[merged-into-r2]';
+        return {
+          success: true,
+          data: {
+            type: 'merged',
+            requestId: request.requestId,
+            results: taskResults,
+          },
+        };
+      }
 
       // 检查 executeTaskGraph 返回的 waitingTaskId
       if (resultData?.waitingTaskId) {
