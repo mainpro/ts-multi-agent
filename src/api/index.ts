@@ -7,6 +7,7 @@ import { TaskQueue } from '../task-queue';
 import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
 import { requestLifecycle } from '../events/request-lifecycle';
+import { taskEvents, TaskEvent } from '../events/task-events';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
 import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
@@ -400,6 +401,22 @@ app.post(
       requestLifecycle.on('request_spawned', lifecycleHandler);
       requestLifecycle.on('request_error', lifecycleHandler);
 
+      // 订阅 task_events 总线,转发 task_started/completed/failed/waiting 到 SSE 进度卡
+      const taskBuffer: TaskEvent[] = [];
+      let taskActive = true;
+      const taskListener = (event: TaskEvent) => {
+        if (!taskActive) return;
+        if (res.headersSent) {
+          sendEvent(event.type, event);
+        } else {
+          taskBuffer.push(event);
+        }
+      };
+      const offTaskStarted = taskEvents.on('task_started', taskListener);
+      const offTaskCompleted = taskEvents.on('task_completed', taskListener);
+      const offTaskFailed = taskEvents.on('task_failed', taskListener);
+      const offTaskWaiting = taskEvents.on('task_waiting', taskListener);
+
       const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
       // Queue full: pending queue exceeded MAX_PENDING_REQUESTS. Return 503 directly.
@@ -412,6 +429,7 @@ app.post(
           requestLifecycle.off('request_error', lifecycleHandler);
           lifecycleHandler = null;
         }
+        offTaskStarted(); offTaskCompleted(); offTaskFailed(); offTaskWaiting();
         res.status(503).json({
           error: 'Service Unavailable',
           message: 'Pending queue is full. Please wait for the current request to complete.',
@@ -431,6 +449,7 @@ app.post(
           requestLifecycle.off('request_error', lifecycleHandler);
           lifecycleHandler = null;
         }
+        offTaskStarted(); offTaskCompleted(); offTaskFailed(); offTaskWaiting();
         res.status(202).json({
           status: 'queued',
           draftId: (result as any).draftId,
@@ -451,6 +470,12 @@ app.post(
         sendEvent(ev.type, ev);
       }
       lifecycleBuffer.length = 0;
+
+      // Replay buffered task events captured before SSE opened.
+      for (const ev of taskBuffer) {
+        sendEvent(ev.type, ev);
+      }
+      taskBuffer.length = 0;
 
       sendEvent('start', { message: '开始处理您的请求...' });
 
@@ -522,6 +547,8 @@ app.post(
           requestLifecycle.off('request_spawned', lifecycleHandler);
           requestLifecycle.off('request_error', lifecycleHandler);
         }
+        offTaskStarted(); offTaskCompleted(); offTaskFailed(); offTaskWaiting();
+        taskActive = false;
       }
 
       } catch (error) {

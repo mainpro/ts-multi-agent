@@ -522,7 +522,7 @@ export class TaskGraphExecutor {
         }
         taskAfterReconstruct!.result = onceResult.result;
 
-        const tcResult = await this.resultAggregator.handleTaskCompletion(taskAfterReconstruct!, userId, sessionId, request);
+        const tcResult = await this.resultAggregator.handleTaskCompletion(taskAfterReconstruct!, userId, sessionId, request, graph.id);
         if (tcResult.success && tcResult.data && typeof tcResult.data === 'object' && 'type' in tcResult.data && (tcResult.data as any).type === 'question') {
           return tcResult;
         }
@@ -556,7 +556,7 @@ export class TaskGraphExecutor {
       };
       const task = this.taskQueue.getTask(taskId);
       if (task) {
-        return this.resultAggregator.handleTaskCompletion({ ...task, result: completedResults.get(taskId) } as Task, userId, sessionId, request);
+        return this.resultAggregator.handleTaskCompletion({ ...task, result: completedResults.get(taskId) } as Task, userId, sessionId, request, graph.id);
       }
     }
 

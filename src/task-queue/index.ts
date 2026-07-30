@@ -445,6 +445,9 @@ export class TaskQueue {
     task.startedAt = new Date();
     this.running.add(task.id);
 
+    // P1-1: 发射 task-started,供 MainAgent 翻译层订阅后转发到 SSE
+    this.emitter.emit('task-started', { taskId: task.id, task });
+
     const startTime = Date.now();
     const controller = new AbortController();
 

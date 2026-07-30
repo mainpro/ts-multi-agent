@@ -27,6 +27,7 @@ import { TaskGraphExecutor } from "./task-graph-executor";
 import { ResultAggregator } from "./result-aggregator";
 import { SessionGate, QueueFullError } from "./session-gate";
 import { requestLifecycle } from "../events/request-lifecycle";
+import { taskEvents } from "../events/task-events";
 import { BusinessError, AppError } from '../errors';
 
 /**
@@ -931,9 +932,20 @@ export class MainAgent {
         userId, sessionId, data: { planId: plan.id, tasks: plan.tasks }
       });
 
+      // 订阅 TaskQueue 内部事件,翻译为 TaskEvent(供 SSE 进度卡消费)
+      // 必须在 buildTaskGraph 之前订阅,因为 executeTaskGraph 内部会立即 addTask 触发 task-started
+      const offTaskEvents = this.setupTaskEventForwarding(
+        request.requestId, plan.id, plan.tasks.length,
+      );
+
       // 构建 TaskGraph 并分层执行
       const graph = this.buildTaskGraph(plan);
-      const result = await this.executeTaskGraph(graph, sessionId, userId, request);
+      let result: TaskResult;
+      try {
+        result = await this.executeTaskGraph(graph, sessionId, userId, request);
+      } finally {
+        offTaskEvents();
+      }
 
       await hookManager.emit(HookEvent.AFTER_TASK_EXECUTE, {
         userId, sessionId, data: { planId: plan.id, success: result.success, result: result.data, error: result.error }
@@ -1294,6 +1306,81 @@ export class MainAgent {
    */
   private onceTaskEvent(taskId: string): Promise<{ taskId: string; result: any; status: string }> {
     return this.taskGraphExecutor.onceTaskEvent(taskId);
+  }
+
+  /**
+   * 订阅 TaskQueue 内部事件,翻译为 TaskEvent 发射到 taskEvents 总线。
+   *
+   * 必须在 executeTaskGraph 之前调用,因为 executeLayers 会立即 addTask 触发 task-started。
+   * 调用方负责在 finally 中调用返回的 unsubscribe 函数清理监听器
+   * (避免多 session 并发时上下文泄漏 —— P1-1 教训)。
+   *
+   * @param requestId 当前请求 ID
+   * @param planId 当前 plan ID(用于进度卡分组)
+   * @param totalTasks plan 内任务总数(用于进度卡显示 N/M)
+   */
+  private setupTaskEventForwarding(
+    requestId: string,
+    planId: string,
+    totalTasks: number,
+  ): () => void {
+    const startedListener = (e: { taskId: string; task: { requirement: string; skillName?: string | null } }) => {
+      taskEvents.emit({
+        type: 'task_started',
+        requestId,
+        planId,
+        taskId: e.taskId,
+        requirement: e.task.requirement,
+        skillName: e.task.skillName ?? null,
+        totalTasks,
+        startedAt: new Date().toISOString(),
+      });
+    };
+
+    const completedListener = (e: { taskId: string }) => {
+      const task = this.taskQueue.getTask(e.taskId);
+      const durationMs = task?.startedAt && task?.completedAt
+        ? task.completedAt.getTime() - task.startedAt.getTime()
+        : 0;
+      taskEvents.emit({
+        type: 'task_completed',
+        requestId,
+        planId,
+        taskId: e.taskId,
+        status: 'completed',
+        durationMs,
+      });
+    };
+
+    const failedListener = (e: { taskId: string; error?: { type?: string; code?: string; message?: string } }) => {
+      const task = this.taskQueue.getTask(e.taskId);
+      const durationMs = task?.startedAt && task?.completedAt
+        ? task.completedAt.getTime() - task.startedAt.getTime()
+        : 0;
+      taskEvents.emit({
+        type: 'task_failed',
+        requestId,
+        planId,
+        taskId: e.taskId,
+        status: 'failed',
+        error: {
+          type: e.error?.type ?? 'UNKNOWN',
+          code: e.error?.code,
+          message: e.error?.message ?? 'Unknown error',
+        },
+        durationMs,
+      });
+    };
+
+    this.taskQueue.on('task-started', startedListener);
+    this.taskQueue.on('task-completed', completedListener);
+    this.taskQueue.on('task-failed', failedListener);
+
+    return () => {
+      this.taskQueue.off('task-started', startedListener);
+      this.taskQueue.off('task-completed', completedListener);
+      this.taskQueue.off('task-failed', failedListener);
+    };
   }
 
   private async updateProfileAfterRequest(

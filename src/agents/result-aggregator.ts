@@ -4,6 +4,7 @@ import { BusinessError, SkillError, LlmError, AppError } from '../errors';
 import { MemoryService } from '../memory/memory-service';
 import { SessionStore } from '../memory/session-store';
 import { fireAndForget } from '../utils/fire-and-forget';
+import { taskEvents } from '../events/task-events';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
 
@@ -39,12 +40,16 @@ export class ResultAggregator {
 
   /**
    * 处理任务完成
+   *
+   * @param planId 可选,用于 task_waiting 事件携带 planId 给前端做进度卡分组。
+   *   不传时跳过 TaskEvent 发射(waiting 事件是可选的进度反馈)。
    */
   async handleTaskCompletion(
     task: Task,
     userId: string,
     sessionId: string,
     request: Request,
+    planId?: string,
   ): Promise<TaskResult> {
     const taskResult = task.result || { success: true, data: {} };
     const skillData = getSkillData(taskResult);
@@ -58,6 +63,23 @@ export class ResultAggregator {
         status: 'waiting',
         questions: [...(request.tasks.find(t => t.taskId === task.id)?.questions || []), qaEntry],
       });
+
+      // 发射 task_waiting 事件供前端进度卡显示子智能体提问
+      if (planId) {
+        taskEvents.emit({
+          type: 'task_waiting',
+          requestId: request.requestId,
+          planId,
+          taskId: task.id,
+          status: 'waiting',
+          requirement: task.requirement,
+          skillName: task.skillName ?? null,
+          question: {
+            content: skillData.question.content,
+            metadata: skillData.question.metadata,
+          },
+        });
+      }
 
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {

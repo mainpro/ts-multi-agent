@@ -67,11 +67,21 @@ POST /tasks/stream
 | 事件类型 | 说明 |
 |----------|------|
 | `start` | 任务开始 |
-| `step` | 执行步骤更新 |
-| `reasoning` | 推理过程 |
+| `reasoning` | 推理过程(LLM 流式输出) |
+| `reasoning_complete` | 推理过程结束 |
+| `task_started` | 子任务开始执行(多任务场景下用于实时进度卡) |
+| `task_completed` | 子任务完成,携带 `durationMs` |
+| `task_failed` | 子任务失败,携带 `error` |
+| `task_waiting` | 子任务请求用户输入,携带 `question` |
+| `request_queued` | 请求被排队等待 |
+| `request_checkpoint` | 多任务检查点(R1 让位给 R2) |
+| `request_spawned` | 合并请求已生成 |
+| `request_error` | 合并请求失败 |
 | `question` | 需要用户回答 |
 | `complete` | 任务完成 |
 | `error` | 执行错误 |
+
+> 注:`step` 事件曾用于传输执行步骤更新,自重构后移除(dead code)。多任务进度通过 `task_started/completed/failed/waiting` 四个独立事件传递。
 
 #### 响应示例
 

@@ -220,6 +220,38 @@
 
     .error-box { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
 
+    .task-progress {
+      align-self: flex-start; max-width: 85%; margin-left: 42px;
+      background: var(--bg-white); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px;
+      animation: fadeIn 0.3s;
+    }
+    .task-progress-header {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 12px; font-weight: 600; color: var(--text-sec);
+      margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+    }
+    .task-progress-count { font-weight: 400; color: var(--text-light); font-size: 11px; }
+    .task-rows { display: flex; flex-direction: column; gap: 4px; }
+    .task-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 4px 0; font-size: 13px;
+    }
+    .task-row .icon {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--border); flex-shrink: 0; margin-top: 3px;
+      transition: background 0.2s;
+    }
+    .task-row.pending .icon { background: var(--border); }
+    .task-row.running .icon { background: var(--primary); animation: pulse 1.5s infinite; }
+    .task-row.completed .icon { background: var(--success); }
+    .task-row.failed .icon { background: var(--error); }
+    .task-row.waiting .icon { background: #f59e0b; }
+    .task-text { flex: 1; min-width: 0; line-height: 1.4; }
+    .task-req { color: var(--text); font-size: 13px; word-break: break-word; }
+    .task-meta { color: var(--text-light); font-size: 11px; margin-top: 2px; }
+    .task-detail { color: var(--text-sec); font-size: 11px; margin-top: 4px; word-break: break-word; }
+
     @media(max-width:768px) {
       .sidebar { display: none; }
       .msg, .thinking-msg { max-width: 95%; }
@@ -284,9 +316,71 @@
 const API = window.location.origin;
 let busy = false;
 const thinkingBubbles = {};
+const progressCards = {}; // planId → { cardEl, totalTasks, rows: Map<taskId, rowEl> }
 let selectedImage = null;
 
 // 生成唯一的 userId 和 sessionId，每个浏览器窗口独立
+function addTaskProgress(planId, totalTasks) {
+  if (progressCards[planId]) return progressCards[planId];
+  const c = document.getElementById('chatMessages');
+  const el = document.createElement('div');
+  el.className = 'task-progress';
+  el.dataset.planId = planId;
+  el.innerHTML = `
+    <div class="task-progress-header">
+      <span>📋 任务进度</span>
+      <span class="task-progress-count" data-count>0/${totalTasks}</span>
+    </div>
+    <div class="task-rows" data-rows></div>
+  `;
+  c.appendChild(el);
+  c.scrollTop = c.scrollHeight;
+  progressCards[planId] = { cardEl: el, totalTasks, rows: new Map() };
+  return progressCards[planId];
+}
+
+function upsertTaskRow(planId, taskId, status, detail) {
+  const card = progressCards[planId];
+  if (!card) return;
+  let row = card.rows.get(taskId);
+  if (!row) {
+    const rowsEl = card.cardEl.querySelector('[data-rows]');
+    row = document.createElement('div');
+    row.className = 'task-row pending';
+    row.dataset.taskId = taskId;
+    row.innerHTML = `
+      <div class="icon"></div>
+      <div class="task-text">
+        <div class="task-req">${esc(detail.requirement || taskId)}</div>
+        <div class="task-meta">${esc(detail.skillName || '')}</div>
+        <div class="task-detail"></div>
+      </div>
+    `;
+    rowsEl.appendChild(row);
+    card.rows.set(taskId, row);
+  }
+  row.classList.remove('pending', 'running', 'completed', 'failed', 'waiting');
+  row.classList.add(status);
+  const detailEl = row.querySelector('.task-detail');
+  if (status === 'completed') {
+    detailEl.textContent = `✓ 完成${detail.durationMs != null ? ` (${detail.durationMs}ms)` : ''}`;
+  } else if (status === 'failed') {
+    detailEl.textContent = `✗ ${detail.error?.message || '失败'}`;
+  } else if (status === 'waiting') {
+    detailEl.textContent = `⏸ ${detail.question?.content || '等待输入'}`;
+  } else if (status === 'running') {
+    detailEl.textContent = '运行中...';
+  } else {
+    detailEl.textContent = '';
+  }
+  const completedCount = Array.from(card.rows.values()).filter(r =>
+    r.classList.contains('completed') || r.classList.contains('failed')
+  ).length;
+  const countEl = card.cardEl.querySelector('[data-count]');
+  if (countEl) countEl.textContent = `${completedCount}/${card.totalTasks}`;
+  card.cardEl.scrollIntoView({ block: 'nearest' });
+}
+
 const userId = '1727596139882397698';
 // sessionId 持久化到 localStorage，同一浏览器窗口复用
 let sessionId = localStorage.getItem('agent_session_id');
@@ -558,6 +652,44 @@ function handleEvent(ev) {
   if (ev.type === 'reasoning_complete') {
     console.log('[All] 推理完成');
     Object.keys(thinkingBubbles).filter(k => k.startsWith('__')).forEach(k => delete thinkingBubbles[k]);
+    return;
+  }
+
+  if (ev.type === 'task_started') {
+    const { planId, taskId, requirement, skillName, totalTasks } = ev.data;
+    if (totalTasks > 1) {
+      addTaskProgress(planId, totalTasks);
+      upsertTaskRow(planId, taskId, 'running', { requirement, skillName });
+      setStep('exec', 'active', `执行中 ${taskId}`, `[Task] ${taskId} started`);
+    } else {
+      setStep('exec', 'active', `单任务执行: ${requirement || taskId}`, `[Task] ${taskId} started`);
+    }
+    return;
+  }
+
+  if (ev.type === 'task_completed') {
+    const { planId, taskId, durationMs } = ev.data;
+    if (progressCards[planId]) {
+      upsertTaskRow(planId, taskId, 'completed', { durationMs });
+    }
+    return;
+  }
+
+  if (ev.type === 'task_failed') {
+    const { planId, taskId, error } = ev.data;
+    if (progressCards[planId]) {
+      upsertTaskRow(planId, taskId, 'failed', { error });
+    } else {
+      showError(`任务 ${taskId} 失败: ${error?.message || '未知错误'}`);
+    }
+    return;
+  }
+
+  if (ev.type === 'task_waiting') {
+    const { planId, taskId, question } = ev.data;
+    if (progressCards[planId]) {
+      upsertTaskRow(planId, taskId, 'waiting', { question });
+    }
     return;
   }
   
