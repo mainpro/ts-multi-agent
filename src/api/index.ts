@@ -401,6 +401,24 @@ app.post(
 
       const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
+      // Queue full: pending queue exceeded MAX_PENDING_REQUESTS. Return 503 directly.
+      if ((result as any).queueFull === true) {
+        lifecycleActive = false;
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+          lifecycleHandler = null;
+        }
+        res.status(503).json({
+          error: 'Service Unavailable',
+          message: 'Pending queue is full. Please wait for the current request to complete.',
+          code: 'QUEUE_FULL',
+          pendingCount: (result as any).pendingCount,
+        } as any);
+        return;
+      }
+
       // Queue path: when the gate decides to queue, return 202 + JSON (no SSE).
       if ((result as any).queued === true) {
         lifecycleActive = false;

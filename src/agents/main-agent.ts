@@ -25,7 +25,7 @@ import { fireAndForget } from "../utils/fire-and-forget";
 import { createLogger } from '../observability/logger';
 import { TaskGraphExecutor } from "./task-graph-executor";
 import { ResultAggregator } from "./result-aggregator";
-import { SessionGate } from "./session-gate";
+import { SessionGate, QueueFullError } from "./session-gate";
 import { requestLifecycle } from "../events/request-lifecycle";
 import { BusinessError, AppError } from '../errors';
 
@@ -105,25 +105,43 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean; draftId?: string },
-  ): Promise<TaskResult & { queued?: boolean; draftId?: string; position?: number }> {
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean },
+  ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
     // Gate: if the session already has an active request, queue this one.
-    const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const decision = await this.gate.decide(userId, effectiveSessionId, {
-      draftId, requirement, hasImage: !!imageAttachment,
-    });
-    if (decision.type === 'queue') {
-      const enqueuedAt = new Date().toISOString();
-      const { position } = await this.gate.enqueue(userId, effectiveSessionId, {
-        draftId, requirement, enqueuedAt, hasImage: !!imageAttachment,
+    // Skip when the caller is the queue/merge pipeline itself (spawnMergedRequest)
+    // — the merged R2 is already the active request by the time it runs, so the
+    // gate would queue it again as a self-enqueue.
+    if (!options?.skipGate) {
+      const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const decision = await this.gate.decide(userId, effectiveSessionId, {
+        draftId, requirement, hasImage: !!imageAttachment,
       });
-      requestLifecycle.emit({ type: 'request_queued', draftId, position, enqueuedAt });
-      return { success: true, queued: true, draftId, position, data: undefined as any };
-    }
-    if (decision.type === 'continue_waiting') {
-      // Fall through to existing AskAgent.handleUserInput path which routes to continueRequest.
+      if (decision.type === 'queue') {
+        const enqueuedAt = new Date().toISOString();
+        try {
+          const { position } = await this.gate.enqueue(userId, effectiveSessionId, {
+            draftId, requirement, enqueuedAt, hasImage: !!imageAttachment,
+          });
+          requestLifecycle.emit({ type: 'request_queued', draftId, position, enqueuedAt });
+          return { success: true, queued: true, draftId, position, data: undefined as any };
+        } catch (enqueueErr) {
+          if (enqueueErr instanceof QueueFullError) {
+            return {
+              success: false,
+              queueFull: true,
+              pendingCount: enqueueErr.pendingCount,
+              draftId,
+              data: undefined as any,
+            };
+          }
+          throw enqueueErr;
+        }
+      }
+      if (decision.type === 'continue_waiting') {
+        // Fall through to existing AskAgent.handleUserInput path which routes to continueRequest.
+      }
     }
 
     // Track last seen session for checkpoint callback
@@ -466,6 +484,10 @@ export class MainAgent {
    * Checkpoint callback wired into TaskGraphExecutor. Invoked between task
    * graph layers. If the session has pending requests, drain them and spawn
    * a new merged request. The current request is marked 'checkpoint_reached'.
+   *
+   * The `info.requestId` from TaskGraphExecutor is a placeholder ('session-active')
+   * that the executor doesn't have access to; we resolve the real current request
+   * from `session.activeRequestId` instead.
    */
   private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<void> {
     // Locate the session this layer belongs to. We rely on _lastSeen* fields
@@ -490,10 +512,10 @@ export class MainAgent {
     session.activeRequestId = null;
     await this.sessionStore.saveSession(userId, sessionId, session);
 
-    // Emit checkpoint event
+    // Emit checkpoint event with the real current requestId
     requestLifecycle.emit({
       type: 'request_checkpoint',
-      requestId: info.requestId,
+      requestId: currentReq?.requestId ?? info.requestId,
       checkpointAt: new Date().toISOString(),
       pendingCount: session.pendingRequests.length,
       completedTaskCount: info.completedTaskIds.length,
@@ -556,10 +578,12 @@ export class MainAgent {
     (this as any)._lastSeenActiveRequestId = requestId;
 
     // Fire-and-forget: process the merged requirement.
+    // skipGate: this is the merged R2, already the active request — the gate would
+    // otherwise treat it as a fresh pending submission and self-enqueue it.
     // Catch rejections so R2 errors don't become unhandled promise rejections.
     // The original SSE connection can't receive these (it's already closing 202),
     // so we log via structured logger; full SSE-error propagation is a follow-up.
-    void this.processRequirement(mergedRequirement, undefined, userId, sessionId).catch((err) => {
+    void this.processRequirement(mergedRequirement, undefined, userId, sessionId, { skipGate: true }).catch((err) => {
       MainAgent.log.error('合并请求处理失败', {
         parentRequestId,
         newRequestId: requestId,

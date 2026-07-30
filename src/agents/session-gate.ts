@@ -15,6 +15,22 @@ import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'SessionGate' });
 
+/**
+ * Maximum number of pending requests allowed in a session's queue.
+ * Beyond this, new submissions are rejected with 503 Service Unavailable.
+ * Rationale: if R1 runs for a long time and R2-R10 queue up, the eventual
+ * merge would push the merged requirement past token limits (4000+ chars).
+ * The cap protects the LLM context window.
+ */
+export const MAX_PENDING_REQUESTS = 10;
+
+export class QueueFullError extends Error {
+  constructor(public readonly pendingCount: number) {
+    super(`Pending queue full (${pendingCount}/${MAX_PENDING_REQUESTS})`);
+    this.name = 'QueueFullError';
+  }
+}
+
 export type SessionGateDecision =
   | { type: 'fresh' }
   | { type: 'queue'; activeRequest: Request; pending: PendingRequest[] }
@@ -46,6 +62,14 @@ export class SessionGate {
 
   async enqueue(userId: string, sessionId: string, draft: PendingRequest): Promise<{ position: number }> {
     const session = await this.sessionStore.loadSession(userId, sessionId);
+    if (session.pendingRequests.length >= MAX_PENDING_REQUESTS) {
+      log.warn('pending queue full, rejecting enqueue', {
+        draftId: draft.draftId,
+        pendingCount: session.pendingRequests.length,
+        max: MAX_PENDING_REQUESTS,
+      });
+      throw new QueueFullError(session.pendingRequests.length);
+    }
     session.pendingRequests.push(draft);
     await this.sessionStore.saveSession(userId, sessionId, session);
     log.info('enqueued pending request', { draftId: draft.draftId, position: session.pendingRequests.length });

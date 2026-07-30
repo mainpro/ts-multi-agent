@@ -448,9 +448,15 @@ export class SessionStore {
   /**
    * 序列化时过滤内部字段
    *
-   * 注意：conversationContext、completedToolCalls、executionProgress 不再被过滤。
-   * 这些字段是断点续执行的关键上下文，必须在 waiting 状态时持久化到磁盘，
-   * 以便进程重启后能恢复执行进度。
+   * ⚠️ 重要:目前函数是 identity(不过滤任何字段),依靠外层 JSON.stringify 来保留
+   * 所有 session 字段。如果将来把它改成基于白名单的过滤实现,必须显式包含
+   * `pendingRequests`(由 request-queue/merge 特性在 2026-07-29 引入,用于在
+   * R1 运行时暂存用户输入,等检查点合并到 R2)。漏掉这个字段会导致 pending 队列
+   * 被静默丢弃,用户消息丢失。
+   *
+   * 同样需要保留的字段已经在这:`conversationContext`、`completedToolCalls`、
+   * `executionProgress` —— 这些是断点续执行的关键上下文,必须在 waiting 状态时
+   * 持久化到磁盘,以便进程重启后能恢复执行进度。
    */
   private stripInternalFields(session: Session): Session {
     return session;

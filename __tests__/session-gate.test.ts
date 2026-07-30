@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionStore } from '../src/memory/session-store';
-import { SessionGate } from '../src/agents/session-gate';
+import { SessionGate, MAX_PENDING_REQUESTS, QueueFullError } from '../src/agents/session-gate';
 import { Session, Request, PendingRequest } from '../src/types';
 
 describe('SessionGate', () => {
@@ -81,5 +81,26 @@ describe('SessionGate', () => {
 
     const session = await store.loadSession('u1', 's1');
     expect(session.pendingRequests).toEqual([]);
+  });
+
+  test(`enqueue: rejects with QueueFullError after MAX_PENDING_REQUESTS (${MAX_PENDING_REQUESTS})`, async () => {
+    await store.loadSession('u1', 's1');
+    for (let i = 0; i < MAX_PENDING_REQUESTS; i++) {
+      await gate.enqueue('u1', 's1', {
+        draftId: `d${i}`, requirement: `r${i}`, enqueuedAt: `t${i}`, hasImage: false,
+      });
+    }
+
+    // 第 MAX_PENDING_REQUESTS+1 个应该拒绝
+    await expect(
+      gate.enqueue('u1', 's1', {
+        draftId: 'overflow', requirement: 'overflow', enqueuedAt: 't-overflow', hasImage: false,
+      }),
+    ).rejects.toBeInstanceOf(QueueFullError);
+
+    // Queue 状态完全未变(拒绝的 draft 没进去)
+    const session = await store.loadSession('u1', 's1');
+    expect(session.pendingRequests.length).toBe(MAX_PENDING_REQUESTS);
+    expect(session.pendingRequests.map(p => p.draftId)).not.toContain('overflow');
   });
 });
