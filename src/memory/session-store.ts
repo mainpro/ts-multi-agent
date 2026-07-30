@@ -1,24 +1,32 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Session, Request, QAEntry, RequestTask } from '../types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'SessionStore' });
 
 /**
- * SessionStore — 会话持久化存储
+ * SessionStore — 会话持久化存储(state machine,不是 4 层记忆之一)
  *
- * 负责 data/memory/{userId}/{sessionId}/session.json 的读写
+ * 负责 data/memory/{userId}/session/{sessionId}.json 的读写
+ * - 状态机:requests/tasks/qa/questions/activeRequestId 等
+ * - 消息流存储在 L4 (history/{sessionId}.json),由 L4HistoryStore 负责
+ *
  * 使用内存缓存 + 防抖写入策略
  */
 export class SessionStore {
   private cache: Map<string, Session> = new Map();
   private writeTimers: Map<string, NodeJS.Timeout> = new Map();
   private debounceMs: number;
+  private dataDir: string;
 
-  constructor(debounceMs: number = 100) {
+  constructor(debounceMs: number = 100, dataDir: string = 'data') {
     this.debounceMs = debounceMs;
+    this.dataDir = dataDir;
   }
 
   private getFilePath(userId: string, sessionId: string): string {
-    return path.join('data', 'memory', userId, sessionId, 'session.json');
+    return path.join(this.dataDir, 'memory', userId, 'session', `${sessionId}.json`);
   }
 
   /**
@@ -36,8 +44,12 @@ export class SessionStore {
     try {
       const data = await fs.readFile(filePath, 'utf-8');
       const session: Session = JSON.parse(data);
+      // Backward compat: legacy session.json files predate pendingRequests.
+      if (!Array.isArray(session.pendingRequests)) {
+        session.pendingRequests = [];
+      }
       this.cache.set(cacheKey, session);
-      console.log(`[SessionStore] 📂 加载会话: ${cacheKey} (${session.requests.length}个请求)`);
+      log.info('加载会话', { cacheKey, requestCount: session.requests.length });
       return session;
     } catch (error: any) {
       if (error.code === 'ENOENT') {
@@ -49,6 +61,7 @@ export class SessionStore {
           updatedAt: new Date().toISOString(),
           requests: [],
           activeRequestId: null,
+          pendingRequests: [],
         };
         this.cache.set(cacheKey, session);
         return session;
@@ -183,7 +196,7 @@ export class SessionStore {
     session.activeRequestId = requestId;
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📝 创建请求: ${requestId} "${content.substring(0, 50)}..."`);
+    log.info('创建请求', { requestId, content: content.substring(0, 50) });
     return request;
   }
 
@@ -214,7 +227,7 @@ export class SessionStore {
     request.updatedAt = new Date().toISOString();
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ❓ 添加询问: ${question.questionId} "${question.content.substring(0, 60)}..."`);
+    log.info('添加询问', { questionId: question.questionId, content: question.content.substring(0, 60) });
   }
 
   /**
@@ -240,7 +253,7 @@ export class SessionStore {
       // 子智能体问题：在任务级查找
       const targetTask = request.tasks.find(t => t.questions.some(q => q.questionId === questionId));
       if (!targetTask) {
-        console.warn(`[SessionStore] ⚠️ 问题 ${questionId} 不存在，跳过`);
+        log.warn('问题不存在，跳过', { questionId });
         return request;
       }
 
@@ -254,7 +267,7 @@ export class SessionStore {
 
     request.updatedAt = new Date().toISOString();
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 💬 回答问题: ${questionId} "${answer}"`);
+    log.info('回答问题', { questionId, answer });
     return request;
   }
 
@@ -287,7 +300,7 @@ export class SessionStore {
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📌 挂起请求: ${requestId} 原因: ${reason}`);
+    log.info('挂起请求', { requestId, reason });
     return request;
   }
 
@@ -315,7 +328,7 @@ export class SessionStore {
     session.activeRequestId = requestId;
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 🔄 召回请求: ${requestId}`);
+    log.info('召回请求', { requestId });
     return request;
   }
 
@@ -331,7 +344,7 @@ export class SessionStore {
     request.updatedAt = new Date().toISOString();
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] 📋 添加任务: ${task.taskId} [${task.skillName}]`);
+    log.info('添加任务', { taskId: task.taskId, skillName: task.skillName });
   }
 
   /**
@@ -380,7 +393,7 @@ export class SessionStore {
     }
 
     await this.saveSession(userId, sessionId, session);
-    console.log(`[SessionStore] ✅ 完成请求: ${requestId} (status=${request.status})`);
+    log.info('完成请求', { requestId, status: request.status });
   }
 
   /**
@@ -400,13 +413,13 @@ export class SessionStore {
 
     if (hasWaitingQuestion) {
       // 保留 waiting 状态和 activeRequestId，仅记录错误信息
-      console.log(`[SessionStore] ⚠️ 请求出错但保留等待状态: ${requestId} (原因: ${result.substring(0, 80)})`);
+      log.warn('请求出错但保留等待状态', { requestId, reason: result.substring(0, 80) });
     } else {
       request.status = 'failed';
       if (session.activeRequestId === requestId) {
         session.activeRequestId = null;
       }
-      console.log(`[SessionStore] ❌ 请求失败: ${requestId}`);
+      log.error('请求失败', { requestId });
     }
 
     await this.saveSession(userId, sessionId, session);
@@ -433,18 +446,19 @@ export class SessionStore {
   }
 
   /**
-   * 序列化时过滤内部字段（断点续执行上下文不持久化）
+   * 序列化时过滤内部字段
+   *
+   * ⚠️ 重要:目前函数是 identity(不过滤任何字段),依靠外层 JSON.stringify 来保留
+   * 所有 session 字段。如果将来把它改成基于白名单的过滤实现,必须显式包含
+   * `pendingRequests`(由 request-queue/merge 特性在 2026-07-29 引入,用于在
+   * R1 运行时暂存用户输入,等检查点合并到 R2)。漏掉这个字段会导致 pending 队列
+   * 被静默丢弃,用户消息丢失。
+   *
+   * 同样需要保留的字段已经在这:`conversationContext`、`completedToolCalls`、
+   * `executionProgress` —— 这些是断点续执行的关键上下文,必须在 waiting 状态时
+   * 持久化到磁盘,以便进程重启后能恢复执行进度。
    */
   private stripInternalFields(session: Session): Session {
-    return {
-      ...session,
-      requests: session.requests.map(r => ({
-        ...r,
-        tasks: r.tasks.map(t => {
-          const { conversationContext, completedToolCalls, ...rest } = t as any;
-          return rest;
-        }),
-      })),
-    };
+    return session;
   }
 }

@@ -6,8 +6,13 @@ import { SkillRegistry } from '../skill-registry';
 import { TaskQueue } from '../task-queue';
 import { TaskStatus, CONFIG } from '../types';
 import { llmEvents, ReasoningEvent } from '../llm';
+import { requestLifecycle } from '../events/request-lifecycle';
 import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
+import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
+import { BusinessError } from '../errors';
+import { createLogger } from '../observability/logger';
+import type { ApiResponse } from '../types/api-response';
 
 interface ImageAttachment {
   data: Buffer;
@@ -27,15 +32,7 @@ interface SubmitTaskRequest {
   userId?: string; // 可选，默认 'default'
   sessionId?: string; // 可选，默认使用 userId
   accessToken?: string; // 可选，透传给技能脚本的认证 token
-}
-
-/**
- * Task submission response
- */
-interface SubmitTaskResponse {
-  status: 'accepted';
-  message: string;
-  userId: string;
+  draftId?: string; // 可选，幂等键（与 Tasks 6 的 gate.queue 关联）
 }
 
 /**
@@ -115,6 +112,8 @@ function extractAccessToken(req: Request): string | undefined {
 /**
  * Create Express HTTP API server
  */
+const log = createLogger({ module: 'API' });
+
 export function createAPIServer(
   mainAgent: MainAgent,
   skillRegistry: SkillRegistry,
@@ -125,6 +124,7 @@ export function createAPIServer(
   // Middleware
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+  app.use(traceIdMiddleware);
 
   // Rate limiting middleware - 10000 requests per minute per IP (high limit for capacity testing)
   const limiter = rateLimit({
@@ -163,9 +163,7 @@ export function createAPIServer(
 
     res.on('finish', () => {
       const duration = Date.now() - startTime;
-      console.log(
-        `[${timestamp}] ${req.method} ${req.path} - ${res.statusCode} - ${duration}ms`
-      );
+      log.info('API 请求', { timestamp, method: req.method, path: req.path, statusCode: res.statusCode, duration });
     });
 
     next();
@@ -222,17 +220,11 @@ export function createAPIServer(
     const userId = (req.query.userId as string) || 'default';
 
     if (!sessionId) {
-      res.status(400).json({ error: 'INVALID_REQUEST', message: 'sessionId is required' });
-      return;
+      throw new BusinessError('INVALID_REQUEST', 'sessionId is required');
     }
 
-    try {
-      const history = await mainAgent.getSessionHistory(userId, sessionId);
-      res.json(history);
-    } catch (error) {
-      console.error('Error getting session history:', error);
-      res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Failed to get session history' });
-    }
+    const history = await mainAgent.getSessionHistory(userId, sessionId);
+    res.json({ success: true, data: history });
   });
 
   // ============================================================================
@@ -245,43 +237,32 @@ export function createAPIServer(
    */
   app.get(
     '/tasks',
-    (req: Request<{}, {}, {}, { status?: string }>, res: Response<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> } | ApiError>) => {
-      try {
-        const { status } = req.query;
-        const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed', 'suspended'];
+    (req: Request<{}, {}, {}, { status?: string }>, res: Response<ApiResponse<{ tasks: Array<{ id: string; status: TaskStatus; requirement: string; createdAt: string }> }> | ApiError>) => {
+      const { status } = req.query;
+      const validStatuses: TaskStatus[] = ['pending', 'running', 'completed', 'failed', 'suspended'];
 
-        // Validate status filter if provided
-        if (status && !validStatuses.includes(status as TaskStatus)) {
-          res.status(400).json({
-            error: 'Bad Request',
-            message: `Invalid status filter. Must be one of: ${validStatuses.join(', ')}`,
-            code: 'INVALID_STATUS_FILTER',
-          });
-          return;
-        }
-
-        // Get tasks (filtered by status if provided)
-        const tasks = status
-          ? taskQueue.getTasksByStatus(status as TaskStatus)
-          : taskQueue.getAllTasks();
-
-  // Format response
-  const formattedTasks = tasks.map((task) => ({
-    id: task.id,
-    status: task.status || 'pending',
-    requirement: task.requirement,
-    createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
-  }));
-
-  res.json({ tasks: formattedTasks });
-      } catch (error) {
-        console.error('Error listing tasks:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to list tasks',
-          code: 'INTERNAL_ERROR',
-        });
+      // Validate status filter if provided
+      if (status && !validStatuses.includes(status as TaskStatus)) {
+        throw new BusinessError(
+          'INVALID_STATUS_FILTER',
+          `Invalid status filter. Must be one of: ${validStatuses.join(', ')}`,
+        );
       }
+
+      // Get tasks (filtered by status if provided)
+      const tasks = status
+        ? taskQueue.getTasksByStatus(status as TaskStatus)
+        : taskQueue.getAllTasks();
+
+      // Format response
+      const formattedTasks = tasks.map((task) => ({
+        id: task.id,
+        status: task.status || 'pending',
+        requirement: task.requirement,
+        createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+      }));
+
+      res.json({ success: true, data: { tasks: formattedTasks } });
     }
   );
 
@@ -294,52 +275,44 @@ export function createAPIServer(
     taskLimiter,
     async (
     req: Request<{}, {}, SubmitTaskRequest>,
-    res: Response<SubmitTaskResponse | ApiError>
+    res: Response<ApiResponse<{ status: 'accepted'; message: string; userId: string }> | ApiError>
     ): Promise<void> => {
-    try {
-      const { requirement, userId } = req.body;
-      const accessToken = extractAccessToken(req);
-      // Validate request
-      if (!requirement || typeof requirement !== 'string') {
-        res.status(400).json({
-          error: 'Bad Request',
-          message: 'Missing or invalid "requirement" field',
-          code: 'INVALID_REQUEST',
-        });
-        return;
-      }
+    const { requirement, userId } = req.body;
+    const accessToken = extractAccessToken(req);
 
-      if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
-        res.status(400).json({
-          error: 'Bad Request',
-          message: `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
-          code: 'REQUIREMENT_TOO_LONG',
-        });
-        return;
-      }
+    // Validate request
+    if (!requirement || typeof requirement !== 'string') {
+      throw new BusinessError('INVALID_REQUEST', 'Missing or invalid "requirement" field');
+    }
 
-      const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    if (requirement.length > CONFIG.MAX_REQUIREMENT_LENGTH) {
+      throw new BusinessError(
+        'REQUIREMENT_TOO_LONG',
+        `Requirement exceeds maximum length of ${CONFIG.MAX_REQUIREMENT_LENGTH} characters`,
+      );
+    }
 
-      // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
-      RequestContext.run({ accessToken }, () => {
-        mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
-          console.error('[API] Task processing failed:', err instanceof Error ? err.message : err);
-        });
+    const effectiveUserId = userId || `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+    // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
+    RequestContext.run({ accessToken }, () => {
+      mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
+        // Persist the failure so it can be retrieved via /tasks/:id/result.
+        // The error is a known AppError (or wrapped as one); log with structured context.
+        // Note: task failure persistence is owned by the agent layer via sessionStore.failRequest,
+        // which is already invoked by MainAgent.processNormalRequirement on error.
+        log.error('Task processing failed', { error: err, userId: effectiveUserId });
       });
+    });
 
-      res.status(202).json({
+    res.status(202).json({
+      success: true,
+      data: {
         status: 'accepted',
         message: 'Request accepted and processing',
         userId: effectiveUserId,
-      });
-    } catch (error) {
-      console.error('Error creating task:', error);
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: 'Failed to create task',
-        code: 'TASK_CREATION_FAILED',
-      });
-    }
+      },
+    });
   }
   );
 
@@ -372,7 +345,7 @@ app.post(
           mimeType: mimeType,
           originalName: 'uploaded-image',
         };
-        console.log('[API] 解析图片成功, 大小:', buffer.length);
+        log.info('解析图片成功', { size: buffer.length });
       }
     }
 
@@ -394,61 +367,135 @@ app.post(
       return;
     }
 
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-
     const sendEvent = (event: string, data: unknown) => {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    let handleReasoning: ((data: string | ReasoningEvent) => void) | null = null;
+    let lifecycleHandler: ((event: import('../events/request-lifecycle').RequestLifecycleEvent) => void) | null = null;
+
     try {
-      sendEvent('start', { message: '开始处理您的请求...' });
-
-      const originalLog = console.log;
-      let stepCount = 0;
-      console.log = (...args: unknown[]) => {
-        const msg = args.join(' ');
-        // Capture MainAgent, SubAgent, UnifiedPlanner process messages
-        if (msg.includes('[MainAgent]') || msg.includes('[SubAgent]') || msg.includes('[UnifiedPlanner]') || msg.includes('[IntentRouter]') || msg.includes('[LLM]')) {
-          stepCount++;
-          let agent = 'MainAgent';
-          if (msg.includes('[SubAgent]')) agent = 'SubAgent';
-          else if (msg.includes('[UnifiedPlanner]')) agent = 'UnifiedPlanner';
-          else if (msg.includes('[IntentRouter]')) agent = 'IntentRouter';
-          else if (msg.includes('[LLM]')) agent = 'LLM';
-
-          sendEvent('step', {
-            step: stepCount,
-            message: msg,
-            agent,
-            timestamp: new Date().toISOString()
-          });
-        }
-        originalLog.apply(console, args);
-      };
-
-  // Subscribe to LLM reasoning events
-  const reasoningBuffer: string[] = [];
-  const handleReasoning = (data: string | ReasoningEvent) => {
-    const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
-    reasoningBuffer.push(eventData.content);
-    sendEvent('reasoning', {
-      type: 'thinking',
-      content: eventData.content,
-      agent: eventData.agent,
-      timestamp: new Date().toISOString()
-    });
-  };
-  llmEvents.on('reasoning', handleReasoning);
-
-try {
       const sessionId = req.body.sessionId as string | undefined;
 
-      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId);
+      // Subscribe to request lifecycle events BEFORE awaiting processRequirement.
+      // Lifecycle events (request_queued, request_checkpoint, request_spawned) can fire
+      // while the first request is still running — e.g. when a second user message
+      // arrives during processing. Subscribing up-front ensures the active SSE stream
+      // captures queue/checkpoint/spawn events emitted during its own execution.
+      // The handler buffers events until the SSE stream is opened; if the request turns
+      // out to be queued (202 path), the buffered events are discarded.
+      const lifecycleBuffer: Array<import('../events/request-lifecycle').RequestLifecycleEvent> = [];
+      let lifecycleActive = true;
+      lifecycleHandler = (event: import('../events/request-lifecycle').RequestLifecycleEvent) => {
+        if (!lifecycleActive) return;
+        if (res.headersSent) {
+          sendEvent(event.type, event);
+        } else {
+          lifecycleBuffer.push(event);
+        }
+      };
+      requestLifecycle.on('request_queued', lifecycleHandler);
+      requestLifecycle.on('request_checkpoint', lifecycleHandler);
+      requestLifecycle.on('request_spawned', lifecycleHandler);
+      requestLifecycle.on('request_error', lifecycleHandler);
+
+      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
+
+      // Queue full: pending queue exceeded MAX_PENDING_REQUESTS. Return 503 directly.
+      if ((result as any).queueFull === true) {
+        lifecycleActive = false;
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
+          lifecycleHandler = null;
+        }
+        res.status(503).json({
+          error: 'Service Unavailable',
+          message: 'Pending queue is full. Please wait for the current request to complete.',
+          code: 'QUEUE_FULL',
+          pendingCount: (result as any).pendingCount,
+        } as any);
+        return;
+      }
+
+      // Queue path: when the gate decides to queue, return 202 + JSON (no SSE).
+      if ((result as any).queued === true) {
+        lifecycleActive = false;
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
+          lifecycleHandler = null;
+        }
+        res.status(202).json({
+          status: 'queued',
+          draftId: (result as any).draftId,
+          position: (result as any).position,
+        } as any);
+        return;
+      }
+
+      // Execution path — only now commit to SSE: set headers and emit start event.
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.flushHeaders?.();
+
+      // Replay buffered lifecycle events captured before SSE opened.
+      for (const ev of lifecycleBuffer) {
+        sendEvent(ev.type, ev);
+      }
+      lifecycleBuffer.length = 0;
+
+      sendEvent('start', { message: '开始处理您的请求...' });
+
+      // NOTE: SSE `step` events from a global `console.log` override were removed.
+      //
+      // The previous implementation monkey-patched `console.log` for the lifetime of
+      // each request, then restored it in `finally`. Two issues made this unsafe:
+      //   1. Race condition: two concurrent SSE requests would overwrite the global
+      //      `console.log` and the first to finish would restore an obsolete function,
+      //      leaking another request's messages into its stream (cross-request
+      //      data leakage). Whichever order requests completed in, intercept state
+      //      could remain active after completion.
+      //   2. Stale contract: after Task 16, internal modules log via the structured
+      //      JSON logger (`createLogger`), which writes single-line JSON via
+      //      `console.log(JSON.stringify(entry))` — none of the `[MainAgent]` etc.
+      //      prefixed strings the override looked for actually appear in agent output
+      //      anymore, so the override was functionally dead for our own code.
+      //
+      // SSE observability is now provided exclusively by:
+      //   - The structured JSON logger (always-on, see src/observability/logger.ts)
+      //   - The `llmEvents.on('reasoning', ...)` stream registered below
+      //   - Per-stage events explicitly emitted by agents
+      //
+      // The `step` event in the public SSE contract is no longer emitted. The
+      // public/test.html front-end no longer mirrors console output as step events;
+      // reasoning/thinking streaming and the final result payload remain.
+
+      try {
+        // Subscribe to LLM reasoning events
+        const reasoningBuffer: string[] = [];
+        handleReasoning = (data: string | ReasoningEvent) => {
+          const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
+          reasoningBuffer.push(eventData.content);
+          sendEvent('reasoning', {
+            type: 'thinking',
+            content: eventData.content,
+            agent: eventData.agent,
+            timestamp: new Date().toISOString()
+          });
+        };
+        llmEvents.on('reasoning', handleReasoning);
+
+        // Subscribe to request lifecycle events — forwarded to SSE during active stream.
+        // (Already subscribed BEFORE processRequirement awaited so cross-request events
+        // emitted during the first request's execution are captured.)
 
         // Send final reasoning summary if any
         if (reasoningBuffer.length > 0) {
@@ -459,23 +506,27 @@ try {
           });
         }
 
-        if (result.success) {
-          sendEvent('complete', result.data);
+        // MainAgent.processRequirement returns TaskResult ({ success, data, error }).
+        // New throw-based contract: failures throw AppError before reaching here,
+        // but we still defensively handle the legacy envelope shape.
+        if ((result as any).success === false) {
+          sendEvent('error', { ...((result as any).error as object) });
         } else {
-          sendEvent('error', result.error);
+          sendEvent('complete', { success: true, data: result });
         }
       } finally {
-        console.log = originalLog;
-        llmEvents.off('reasoning', handleReasoning);
+        if (handleReasoning) llmEvents.off('reasoning', handleReasoning);
+        if (lifecycleHandler) {
+          requestLifecycle.off('request_queued', lifecycleHandler);
+          requestLifecycle.off('request_checkpoint', lifecycleHandler);
+          requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
+        }
       }
 
       } catch (error) {
-        console.error('[API] Error processing request:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        sendEvent('error', { 
-          message: errorMessage,
-          stack: error instanceof Error ? error.stack : undefined
-        });
+        const { body } = errorToResponse(error);
+        sendEvent('error', body.error);
       } finally {
         res.end();
       }
@@ -489,40 +540,28 @@ try {
    */
   app.get(
     '/tasks/:id',
-    (req: Request<{ id: string }>, res: Response<TaskStatusResponse | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<TaskStatusResponse> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-const response: TaskStatusResponse = {
-  taskId: task.id,
-  status: task.status || 'pending',
-  requirement: task.requirement,
-  skillName: task.skillName,
-  createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
-  startedAt: task.startedAt?.toISOString(),
-  completedAt: task.completedAt?.toISOString(),
-  retryCount: task.retryCount || 0,
-};
-
-        res.json(response);
-      } catch (error) {
-        console.error('Error getting task status:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to get task status',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
       }
+
+      const response: TaskStatusResponse = {
+        taskId: task.id,
+        status: task.status || 'pending',
+        requirement: task.requirement,
+        skillName: task.skillName,
+        createdAt: task.createdAt?.toISOString() || new Date().toISOString(),
+        startedAt: task.startedAt?.toISOString(),
+        completedAt: task.completedAt?.toISOString(),
+        retryCount: task.retryCount || 0,
+      };
+
+      res.json({ success: true, data: response });
     }
   );
 
@@ -532,44 +571,32 @@ const response: TaskStatusResponse = {
    */
   app.get(
     '/tasks/:id/result',
-    (req: Request<{ id: string }>, res: Response<TaskResultResponse | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<TaskResultResponse> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-const response: TaskResultResponse = {
-  taskId: task.id,
-  status: task.status || 'pending',
-};
-
-        if (task.status === 'completed') {
-          response.result = task.result;
-        } else if (task.status === 'failed' && task.error) {
-          response.error = {
-            type: task.error.type,
-            message: task.error.message,
-            code: task.error.code,
-          };
-        }
-
-        res.json(response);
-      } catch (error) {
-        console.error('Error getting task result:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to get task result',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
       }
+
+      const response: TaskResultResponse = {
+        taskId: task.id,
+        status: task.status || 'pending',
+      };
+
+      if (task.status === 'completed') {
+        response.result = task.result;
+      } else if (task.status === 'failed' && task.error) {
+        response.error = {
+          type: task.error.type,
+          message: task.error.message,
+          code: task.error.code,
+        };
+      }
+
+      res.json({ success: true, data: response });
     }
   );
 
@@ -579,41 +606,29 @@ const response: TaskResultResponse = {
    */
   app.delete(
     '/tasks/:id',
-    (req: Request<{ id: string }>, res: Response<{ success: boolean; message: string } | ApiError>) => {
-      try {
-        const { id } = req.params;
-        const task = taskQueue.getTask(id);
+    (req: Request<{ id: string }>, res: Response<ApiResponse<{ message: string }> | ApiError>) => {
+      const { id } = req.params;
+      const task = taskQueue.getTask(id);
 
-        if (!task) {
-          res.status(404).json({
-            error: 'Not Found',
-            message: `Task with ID "${id}" not found`,
-            code: 'TASK_NOT_FOUND',
-          });
-          return;
-        }
-
-        const cancelled = taskQueue.cancelTask(id);
-
-        if (cancelled) {
-          res.json({
-            success: true,
-            message: `Task "${id}" has been cancelled`,
-          });
-        } else {
-          res.status(400).json({
-            error: 'Bad Request',
-            message: `Cannot cancel task "${id}" - task is already ${task.status}`,
-            code: 'TASK_CANNOT_CANCEL',
-          });
-        }
-      } catch (error) {
-        console.error('Error cancelling task:', error);
-        res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to cancel task',
-          code: 'INTERNAL_ERROR',
+      if (!task) {
+        throw new BusinessError('TASK_NOT_FOUND', `Task with ID "${id}" not found`, {
+          statusCode: 404,
         });
+      }
+
+      const cancelled = taskQueue.cancelTask(id);
+
+      if (cancelled) {
+        res.json({
+          success: true,
+          data: { message: `Task "${id}" has been cancelled` },
+        });
+      } else {
+        throw new BusinessError(
+          'TASK_CANNOT_CANCEL',
+          `Cannot cancel task "${id}" - task is already ${task.status}`,
+          { statusCode: 400 },
+        );
       }
     }
   );
@@ -623,13 +638,7 @@ const response: TaskResultResponse = {
   // ============================================================================
   app.post('/tasks/execute', async (req, res) => {
     const { planId } = req.body;
-    try {
-      // This would call mainAgent.executePlan(planId, sessionId, userId)
-      // For now, return a placeholder response
-      res.json({ success: true, message: `Plan ${planId} execution started` });
-    } catch (error: any) {
-      res.status(500).json({ success: false, error: error.message });
-    }
+    res.json({ success: true, data: { message: `Plan ${planId} execution started` } });
   });
 
   // ============================================================================
@@ -637,32 +646,12 @@ const response: TaskResultResponse = {
   // ============================================================================
 
   // 404 handler
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({
-      error: 'Not Found',
-      message: 'The requested resource was not found',
-      code: 'NOT_FOUND',
-    });
+  app.use((_req: Request, _res: Response, next: NextFunction) => {
+    next(new BusinessError('NOT_FOUND', 'The requested resource was not found', { statusCode: 404 }));
   });
 
   // Global error handler
-  app.use(
-    (
-      err: Error,
-      _req: Request,
-      res: Response<ApiError>,
-      _next: NextFunction
-    ) => {
-      console.error('Unhandled error:', err);
-
-      // Don't expose sensitive error details in production
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: 'An unexpected error occurred',
-        code: 'INTERNAL_ERROR',
-      });
-    }
-  );
+  app.use(globalErrorHandler);
 
   return app;
 }

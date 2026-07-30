@@ -2,6 +2,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { SystemSkill } from './types';
 import { resolveResource } from '../utils/app-root';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'SystemSkillLoader' });
 
 export type { SystemSkill, SystemSkillExecutor, SystemSkillResult } from './types';
 export { ExecutorRegistry } from './executor-registry';
@@ -37,16 +40,16 @@ export class SystemSkillLoader {
             this.skills.set(parsed.command, parsed);
           }
         } catch (err) {
-          console.warn(`[SystemSkillLoader] ⚠️ 加载系统技能失败: ${entry.name}: ${err}`);
+          log.warn('加载系统技能失败', { name: entry.name, error: err });
         }
       }
     } catch (err) {
-      console.warn(`[SystemSkillLoader] ⚠️ 扫描 system-skills 目录失败: ${err}`);
+      log.warn('扫描 system-skills 目录失败', { error: err });
     }
 
-    console.log(`[System] 系统技能已加载 (${this.skills.size}):`);
+    log.info('系统技能已加载', { count: this.skills.size });
     for (const [cmd, skill] of this.skills) {
-      console.log(`  /${cmd} - ${skill.description}${skill.adminOnly ? ' [admin]' : ''}`);
+      log.debug('系统技能', { command: cmd, description: skill.description, adminOnly: skill.adminOnly });
     }
 
     return this.skills;

@@ -3,6 +3,9 @@
  * P2-2: Hooks 生命周期系统
  */
 import { HookEvent, HookContext, HookHandler } from './types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'HookManager' });
 
 export class HookManager {
   private hooks: Map<HookEvent, HookHandler[]> = new Map();
@@ -54,7 +57,7 @@ export class HookManager {
         try {
           await handler(fullContext);
         } catch (error) {
-          console.error(`[Hook] ${event} handler error:`, error);
+          log.error('handler error', { event, error });
         }
       })
     );

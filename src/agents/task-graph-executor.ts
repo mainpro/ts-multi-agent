@@ -2,6 +2,8 @@ import { TaskQueue } from '../task-queue';
 import { ResultAggregator } from './result-aggregator';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
+import { BusinessError, LlmError, AppError, SkillError } from '../errors';
+import { LLMError } from '../llm';
 
 const log = createLogger({ module: 'TaskGraphExecutor' });
 import {
@@ -55,6 +57,10 @@ export class TaskGraphExecutor {
   constructor(
     private taskQueue: TaskQueue,
     private resultAggregator: ResultAggregator,
+    private options: {
+      /** Called after each task layer completes; awaited before next layer starts. */
+      onCheckpoint?: (info: { requestId: string; completedTaskIds: string[] }) => Promise<void>;
+    } = {},
   ) {}
 
   /**
@@ -244,6 +250,10 @@ export class TaskGraphExecutor {
       for (const { taskId, result, status } of layerResults) {
         const node = graph.nodes.find(n => n.taskId === taskId)!;
 
+        // Read task.error directly so original AppError (with code/type preserved) is available.
+        // `result?.error` is not reliable — TaskQueue only sets task.error, not task.result.error.
+        const taskRecord = this.taskQueue.getTask(taskId);
+
         if (status === 'completed' && result) {
           completedResults.set(taskId, result);
           allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
@@ -262,19 +272,34 @@ export class TaskGraphExecutor {
           failedTasks.push({
             taskId,
             skillName: node.skillName,
-            error: result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
+            // Prefer task.error (set by TaskQueue with original AppError code/type).
+            // Fall back to result?.error or hardcoded TASK_FAILED only if both unavailable.
+            error: taskRecord?.error || result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
           });
         } else {
           log.error(`❌ 任务 ${taskId} 状态异常: ${status}`);
           failedTasks.push({
             taskId,
             skillName: node.skillName,
-            error: { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
+            error: taskRecord?.error || { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
           });
         }
       }
 
       log.info(`✅ Layer ${layerIdx} 完成 (${layer.length}/${layer.length})`);
+
+      // Checkpoint hook: invoked between layers so the orchestrator can drain
+      // the pending request queue. Awaited so the next layer does not start
+      // until the gate decides whether to continue, merge, or stop.
+      if (this.options.onCheckpoint) {
+        const completedTaskIds = layerResults
+          .filter(r => r.status === 'completed')
+          .map(r => r.taskId);
+        await this.options.onCheckpoint({
+          requestId: 'session-active',  // overwritten by caller in Task 6
+          completedTaskIds,
+        });
+      }
     }
 
     log.info(`✅ TaskGraph 全部执行完成 (${allResults.length} 个任务)`);
@@ -309,8 +334,14 @@ export class TaskGraphExecutor {
         if (!serialized || serialized === 'null') {
           log.error(`[TaskGraphExecutor] ⚠️ taskGraph 序列化结果为空，跳过保存执行进度`);
         }
-      } catch (e) {
-        log.error(`[TaskGraphExecutor] ⚠️ taskGraph 序列化失败: ${(e as Error).message}，跳过保存执行进度`);
+      } catch (error) {
+        if (error instanceof LLMError) {
+          throw new LlmError(error.type, error.message, { cause: error });
+        }
+        if (error instanceof AppError) throw error;
+        throw new BusinessError('EXECUTION_INTERRUPTED',
+          error instanceof Error ? error.message : String(error),
+          { cause: error });
       }
 
       request.executionProgress = progressData;
@@ -326,15 +357,17 @@ export class TaskGraphExecutor {
 
     // 有任务失败
     if (layerResult.failedTasks.length > 0) {
-      return {
-        success: false,
-        error: layerResult.failedTasks[0].error,
-        data: {
-          planId: graph.id,
-          results: allResults,
-          failedTasks: layerResult.failedTasks,
-        } as any,
-      };
+      const firstFailure = layerResult.failedTasks[0];
+      // Preserve original AppError so the global error handler envelope
+      // (type/code/statusCode) reflects the upstream cause, not the wrapping layer.
+      if (firstFailure.error.originalError instanceof AppError) {
+        throw firstFailure.error.originalError;
+      }
+      throw new SkillError(
+        firstFailure.error.code || 'TASK_GRAPH_EXECUTION_FAILED',
+        firstFailure.error.message || 'Task graph execution failed',
+        { cause: firstFailure.error }
+      );
     }
 
     return {
@@ -363,7 +396,7 @@ export class TaskGraphExecutor {
     // 防御性检查：验证加载的进度数据有效性
     if (!graph || !Array.isArray(graph.layers) || !Array.isArray(graph.nodes)) {
       log.error('[TaskGraphExecutor] ⚠️ executionProgress.taskGraph 格式无效，无法恢复断点');
-      return { success: false, error: { type: 'FATAL', message: '执行进度损坏，无法恢复断点', code: 'CORRUPT_PROGRESS' } };
+      throw new BusinessError('CORRUPT_PROGRESS', '执行进度损坏，无法恢复断点');
     }
     if (!progress.completedResults || typeof progress.completedResults !== 'object') {
       log.warn('[TaskGraphExecutor] ⚠️ executionProgress.completedResults 格式异常，将从空结果开始');
@@ -419,9 +452,21 @@ export class TaskGraphExecutor {
         const onceResult = await this.onceTaskEvent(question.taskId);
         if (onceResult.status !== 'completed') {
           if (onceResult.status === 'failed') {
-            return { success: false, error: taskAfterReconstruct!.error || { type: 'FATAL', message: '任务执行失败', code: 'TASK_FAILED' } };
+            // After triggerProcess, the task error may have been repopulated by the worker.
+            // Read the latest value through a Task-typed local to avoid TS narrowing to `undefined`
+            // (we assigned undefined above intentionally to clear stale state).
+            const taskRef = taskAfterReconstruct as Task;
+            const failedError: TaskError | undefined = taskRef.error;
+            throw new SkillError(
+              failedError?.code || 'TASK_FAILED',
+              failedError?.message || '任务执行失败',
+              { cause: failedError },
+            );
           }
-          return { success: false, error: { type: 'FATAL', message: `任务状态异常: ${onceResult.status}`, code: `TASK_${onceResult.status.toUpperCase()}` } };
+          throw new SkillError(
+            `TASK_${onceResult.status.toUpperCase()}`,
+            `任务状态异常: ${onceResult.status}`,
+          );
         }
         taskAfterReconstruct!.result = onceResult.result;
 
@@ -464,7 +509,12 @@ export class TaskGraphExecutor {
     }
 
     if (layerResult.failedTasks.length > 0) {
-      return { success: false, error: layerResult.failedTasks[0].error };
+      const firstFailure = layerResult.failedTasks[0];
+      throw new SkillError(
+        firstFailure.error?.code || 'TASK_GRAPH_EXECUTION_FAILED',
+        firstFailure.error?.message || 'Task graph execution failed',
+        { cause: firstFailure.error },
+      );
     }
 
     // 所有层执行完毕 → 汇总结果

@@ -5,6 +5,10 @@
  * API 不可用时自动降级到关键词匹配。
  */
 
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'EmbeddingService' });
+
 export interface EmbeddingConfig {
   /** 向量维度 */
   dimension: number;
@@ -85,9 +89,9 @@ export class EmbeddingService {
     }
 
     if (this.isAvailable()) {
-      console.log(`[EmbeddingService] ✅ 已配置: model=${this.config.model}, dimension=${this.config.dimension}`);
+      log.info('已配置', { model: this.config.model, dimension: this.config.dimension });
     } else {
-      console.log(`[EmbeddingService] ⚠️ 未配置 API，将使用关键词匹配回退方案`);
+      log.warn('未配置 API，将使用关键词匹配回退方案');
     }
   }
 
@@ -118,7 +122,7 @@ export class EmbeddingService {
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
-        console.error(`[EmbeddingService] API 错误 ${response.status}: ${errorBody.substring(0, 200)}`);
+        log.error('API 错误', { status: response.status, body: errorBody.substring(0, 200) });
         return null;
       }
 
@@ -126,7 +130,7 @@ export class EmbeddingService {
       const embedding: number[] | undefined = data.data?.[0]?.embedding;
 
       if (!embedding || !Array.isArray(embedding) || embedding.length === 0) {
-        console.error('[EmbeddingService] API 返回了空的 embedding');
+        log.error('API 返回了空的 embedding');
         return null;
       }
 
@@ -134,7 +138,7 @@ export class EmbeddingService {
       return embedding;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[EmbeddingService] 请求失败: ${message}`);
+      log.error('请求失败', { message });
       return null;
     }
   }

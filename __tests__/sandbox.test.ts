@@ -41,6 +41,48 @@ async function testAvailability() {
 // 执行测试
 // ============================================================================
 async function testExecution() {
+  // 当 bwrap 不可用时，所有命令应被拒绝（安全策略）
+  if (!Sandbox.isBwrapAvailable()) {
+    await test('bwrap 不可用时命令应被拒绝', async () => {
+      const result = await Sandbox.execute('echo hello', os.tmpdir());
+      assert.strictEqual(result.exitCode, 126);
+      assert.strictEqual(result.sandboxed, false);
+      assert.ok(result.stderr.includes('Sandbox unavailable'));
+    });
+
+    await test('bwrap 不可用时 stderr 应包含安全提示', async () => {
+      const result = await Sandbox.execute('echo error >&2', os.tmpdir());
+      assert.strictEqual(result.exitCode, 126);
+      assert.ok(result.stderr.includes('refused for security'));
+    });
+
+    await test('bwrap 不可用时失败命令也应返回 126', async () => {
+      const result = await Sandbox.execute('exit 42', os.tmpdir());
+      assert.strictEqual(result.exitCode, 126);
+    });
+
+    await test('bwrap 不可用时超时命令应立即拒绝', async () => {
+      const start = Date.now();
+      const result = await Sandbox.execute('sleep 30', os.tmpdir(), { timeout: 1000 });
+      const elapsed = Date.now() - start;
+      assert.ok(elapsed < 1000, `拒绝应立即返回，实际耗时 ${elapsed}ms`);
+      assert.strictEqual(result.exitCode, 126);
+    });
+
+    await test('bwrap 不可用时环境变量不应传递', async () => {
+      const result = await Sandbox.execute('echo $TEST_SANDBOX_VAR', os.tmpdir(), {
+        env: { TEST_SANDBOX_VAR: 'sandbox_value' },
+      });
+      assert.strictEqual(result.exitCode, 126);
+      assert.ok(!result.stdout.includes('sandbox_value'));
+    });
+
+    await test('bwrap 不可用时 network 测试跳过', () => {
+      console.log('    (跳过：bwrap 不可用)');
+    });
+    return;
+  }
+
   await test('简单 echo 命令应正确返回 stdout', async () => {
     const result = await Sandbox.execute('echo hello', os.tmpdir());
     assert.strictEqual(result.exitCode, 0);
@@ -63,7 +105,6 @@ async function testExecution() {
     const result = await Sandbox.execute('sleep 30', os.tmpdir(), { timeout: 1000 });
     const elapsed = Date.now() - start;
     assert.ok(elapsed < 5000, `超时命令应在 5 秒内终止，实际耗时 ${elapsed}ms`);
-    // 超时后 exitCode 通常非零
     assert.ok(result.exitCode !== 0, `exitCode 应为非零，实际为 ${result.exitCode}`);
   });
 
@@ -76,16 +117,9 @@ async function testExecution() {
   });
 
   await test('不传 network 参数应默认禁用网络', async () => {
-    // 如果 bwrap 可用，默认 --unshare-net
-    // 如果 bwrap 不可用，此测试跳过
-    if (!Sandbox.isBwrapAvailable()) {
-      console.log('    (跳过：bwrap 不可用)');
-      return;
-    }
     const result = await Sandbox.execute('curl -s --connect-timeout 2 http://example.com || echo "no-network"', os.tmpdir(), {
       timeout: 5000,
     });
-    // 在无网络环境下 curl 应失败，但 echo 应执行
     assert.ok(result.stdout.includes('no-network') || result.exitCode !== 0);
   });
 }

@@ -10,6 +10,9 @@
  */
 
 import { Message, QuestionHistoryEntry } from '../types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'ConversationHelper' });
 
 export interface ConsistencyCheckResult {
   isConsistent: boolean;
@@ -119,12 +122,11 @@ export function syncQuestionHistoryToContext(
   const check = checkQuestionHistoryConsistency(messages, questionHistory);
 
   if (check.isConsistent) {
-    console.log(`[ConversationHelper] ✅ questionHistory 与 conversationContext 已同步 (${questionHistory.length} 对)`);
+    log.info('questionHistory 与 conversationContext 已同步', { pairCount: questionHistory.length });
     return messages;
   }
 
-  console.log(`[ConversationHelper] 🔧 同步 questionHistory 到 conversationContext:`);
-  console.log(check.details);
+  log.info('同步 questionHistory 到 conversationContext', { details: check.details });
 
   // 2. 创建新的消息数组
   const newMessages: Message[] = [...messages];
@@ -133,7 +135,7 @@ export function syncQuestionHistoryToContext(
   const qaPairs = buildQuestionAnswerPairs(check.missingInContext);
   if (qaPairs.length > 0) {
     newMessages.push(...qaPairs);
-    console.log(`[ConversationHelper] ✅ 已追加 ${qaPairs.length / 2} 条缺失的问答对到消息末尾`);
+    log.info('已追加缺失的问答对到消息末尾', { pairCount: qaPairs.length / 2 });
   }
 
   return newMessages;
@@ -206,7 +208,7 @@ export function buildResumedContext(
     });
   }
 
-  console.log(`[ConversationHelper] 📊 构建断点续执行上下文: ${messages.length} 条消息 (问答历史: ${questionHistory.length} 对)`);
+  log.info('构建断点续执行上下文', { messageCount: messages.length, pairCount: questionHistory.length });
 
   return messages;
 }

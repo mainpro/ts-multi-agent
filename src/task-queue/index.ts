@@ -1,5 +1,9 @@
 import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
+import { AppError } from '../errors';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'TaskQueue' });
 
 type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
@@ -212,7 +216,7 @@ export class TaskQueue {
       }
     }
 
-    console.log(`[TaskQueue] ✅ 重建任务 ${task.id} 并加入队列 (questionHistory: ${questionHistory.length}条)`);
+    log.info('重建任务并加入队列', { taskId: task.id, questionHistoryCount: questionHistory.length });
     return task;
   }
 
@@ -270,6 +274,27 @@ export class TaskQueue {
       code: "CANCELLED",
     });
 
+    return true;
+  }
+
+  /**
+   * Remove a pending task from the queue without marking it as failed.
+   * Used at checkpoint boundaries when a request is being closed and its
+   * unstarted tasks should not fire (they'll be re-planned by the merged R2).
+   * Returns true if the task was removed.
+   *
+   * Treats both 'pending' and undefined status as removable — tasks added via
+   * `addTask` directly may not have their status set yet.
+   */
+  removePendingTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      return false;
+    }
+    if (task.status !== undefined && task.status !== 'pending') {
+      return false;
+    }
+    this.tasks.delete(taskId);
     return true;
   }
 
@@ -429,20 +454,18 @@ export class TaskQueue {
     this.timeoutHandles.set(task.id, timeoutHandle);
 
     try {
-      console.log(`[TaskQueue] 🔄 开始执行任务: ${task.id}`);
+      log.info('开始执行任务', { taskId: task.id });
       const result = await this.executor(task, controller.signal);
-      console.log(`[TaskQueue] ✅ executor 返回成功: ${task.id}`);
+      log.info('executor 返回成功', { taskId: task.id });
 
       clearTimeout(timeoutHandle);
       this.timeoutHandles.delete(task.id);
 
       const executionTime = Date.now() - startTime;
-      console.log(
-        `[TaskQueue] Task ${task.id} completed in ${executionTime}ms`,
-      );
+      log.info('任务完成', { taskId: task.id, executionTime });
       this.completeTask(task.id, result, executionTime);
     } catch (error) {
-      console.log(`[TaskQueue] ❌ executor 抛出异常: ${task.id}`, error);
+      log.error('executor 抛出异常', { taskId: task.id, error });
       clearTimeout(timeoutHandle);
       this.timeoutHandles.delete(task.id);
 
@@ -452,20 +475,29 @@ export class TaskQueue {
         (error.name === "AbortError" || error.message.includes("timed out"));
 
       if (isTimeout) {
-        console.warn(
-          `[TaskQueue] Task ${task.id} timed out after ${executionTime}ms`,
-        );
+        log.warn('任务超时', { taskId: task.id, executionTime });
       } else {
-        console.warn(
-          `[TaskQueue] Task ${task.id} failed after ${executionTime}ms`,
-        );
+        log.warn('任务失败', { taskId: task.id, executionTime });
       }
 
-      const taskError: TaskError = {
-        type: "RETRYABLE",
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      };
+      // Preserve original AppError (type/code/statusCode) so downstream layers
+      // (TaskGraphExecutor + global error handler) can honor the invariant
+      // "thrown AppError → envelope with original type/code".
+      const taskError: TaskError =
+        error instanceof AppError
+          ? {
+              type: error.type,
+              code: error.code,
+              message: error.message,
+              statusCode: error.statusCode,
+              stack: error.stack,
+              originalError: error,
+            }
+          : {
+              type: "RETRYABLE",
+              message: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            };
       this.failTask(task.id, taskError, isTimeout);
     } finally {
       this.running.delete(task.id);
@@ -494,9 +526,7 @@ export class TaskQueue {
     const resultStr = JSON.stringify(result);
     const resultSize = resultStr.length;
     if (resultSize > this.MAX_RESULT_SIZE) {
-      console.warn(
-        `[TaskQueue] Task ${taskId} result exceeds size limit (${resultSize} bytes)`,
-      );
+      log.warn('任务结果超过大小限制', { taskId, resultSize });
       result = {
         warning: "Result truncated due to size limit",
         partialResult: resultStr.substring(0, 1000) + "...",
@@ -559,7 +589,7 @@ export class TaskQueue {
       // P3-4: 检查是否为弱依赖
       const isWeakDep = dependent.weakDependencies?.includes(failedTaskId);
       if (isWeakDep) {
-        console.log(`[TaskQueue] 任务 ${dependentId} 对 ${failedTaskId} 为弱依赖，跳过级联失败`);
+        log.info('弱依赖跳过级联失败', { dependentId, failedTaskId });
         continue;
       }
 

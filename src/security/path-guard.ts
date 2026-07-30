@@ -91,43 +91,81 @@ export class PathGuard {
   }
 
   /**
-   * 检查 bash 命令是否安全（基础检查）
+   * 允许的命令前缀白名单
+   *
+   * 白名单策略：只允许已知安全的命令前缀通过，而非试图用正则黑名单拦截所有危险命令。
+   * 黑名单天然不完整（可通过变量替换、别名、\r\n 绕过），白名单更安全。
+   */
+  private static readonly ALLOWED_COMMAND_PREFIXES: readonly string[] = [
+    'node scripts/',
+    'node script/',
+    'npm ',
+    'npx ',
+    'pnpm ',
+    'yarn ',
+    'bun ',
+    'ls ',
+    'cat ',
+    'echo ',
+    'pwd',
+    'mkdir ',
+    'cp ',
+    'mv ',
+    'touch ',
+    'head ',
+    'tail ',
+    'wc ',
+    'grep ',
+    'rg ',
+    'find ',
+    'git ',
+    'tsc ',
+    'tsx ',
+  ];
+
+  /**
+   * 检查 bash 命令是否安全（白名单策略）
+   *
+   * 采用白名单优先 + 黑名单兜底的双重防御：
+   * 1. 命令必须匹配白名单前缀（只允许已知安全命令）
+   * 2. 即使匹配白名单，仍检查是否包含危险模式（如命令替换、提权等）
    */
   static checkBashCommand(command: string): PathCheckResult {
-    // 预处理：去除多余空白字符（含制表符、换行符等），便于匹配
     const normalized = command.replace(/\s+/g, ' ').trim();
 
+    if (!normalized) {
+      return { safe: false, reason: '空命令' };
+    }
+
+    // 白名单检查：命令必须以允许的前缀开头
+    const isAllowed = this.ALLOWED_COMMAND_PREFIXES.some(prefix =>
+      normalized.startsWith(prefix) || normalized === prefix.trim()
+    );
+
+    if (!isAllowed) {
+      this.logger.warn('命令不在白名单中', { command: normalized });
+      return { safe: false, reason: `命令不在允许的白名单中: ${normalized.substring(0, 100)}` };
+    }
+
+    // 黑名单兜底：即使命令前缀合法，仍拦截危险模式
     const dangerousPatterns: RegExp[] = [
-      // 危险删除操作
-      /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+)?\/(?!\S)/,  // rm -rf /
-      /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+)?~(?!\S)/,     // rm -rf ~
-      /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+)?\$HOME(?!\S)/, // rm -rf $HOME
-      // 危险系统操作
-      /mkfs\./,
-      /dd\s+if=/,
-      />\s*\/dev\//,
-      /chmod\s+777/,
-      // 远程代码执行
-      /curl.*[|]\s*(ba)?sh/,
-      /wget.*[|]\s*(ba)?sh/,
-      // 提权操作
-      /(?:^|[^a-zA-Z])sudo\s+/,     // 禁止 sudo（用负向后查找排除文件名中的 sudo）
-      /(?:^|[^a-zA-Z])su\s+/,       // 禁止 su
-      // 动态代码执行
-      /(?<![a-zA-Z])eval\s*\(/,    // 禁止 eval（排除 evalfile 等）
-      /`[^`]+`/,                    // 禁止反引号命令替换
-      /\$\([^)]+\)/,                 // 禁止 $() 命令替换
-      // 危险网络工具
-      /\bnc\s+-/,                    // 禁止 netcat（需跟参数才拦截）
-      // 内联代码执行
-      /\bpython[23]?\s+-c\b/,        // 禁止内联 Python
-      /\bnode\s+-e\b/,              // 禁止内联 Node
+      /(?:^|[^a-zA-Z])sudo\s/,
+      /(?:^|[^a-zA-Z])su\s/,
+      /`[^`]+`/,
+      /\$\([^)]+\)/,
+      /\beval\s*\(/,
+      /\bpython[23]?\s+-c\b/,
+      /\bnode\s+-e\b/,
+      /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+)?\/(?!\S)/,
+      /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+)?~(?!\S)/,
+      /\bmkfs\./,
+      /\bdd\s+if=/,
     ];
 
     for (const pattern of dangerousPatterns) {
       if (pattern.test(normalized)) {
-        this.logger.warn('命令被拦截', { command, matchedPattern: pattern.source });
-        return { safe: false, reason: `危险命令模式被拦截: ${command}` };
+        this.logger.warn('命令包含危险模式', { command: normalized, matchedPattern: pattern.source });
+        return { safe: false, reason: `命令包含危险模式: ${normalized.substring(0, 100)}` };
       }
     }
 

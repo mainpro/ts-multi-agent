@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SubAgent, detectQuestion } from '../src/agents/sub-agent';
 import { SkillRegistry } from '../src/skill-registry';
-import { LLMClient } from '../src/llm';
+import { LLMClient, LLMError } from '../src/llm';
+import { LlmError, SkillError, BusinessError } from '../src/errors';
 import { Task, TaskResult, Skill } from '../src/types';
 
 // Mock LLMClient
@@ -73,12 +74,12 @@ describe('SubAgent', () => {
       };
 
       const result = await subAgent.execute(task);
-      
+
       expect(result.success).toBe(true);
       expect(result.data).toBeDefined();
     });
 
-    it('should handle missing skill name', async () => {
+    it('should throw SkillError for missing skill name', async () => {
       const task: Task = {
         id: 'test-task',
         requirement: 'Test requirement',
@@ -91,13 +92,16 @@ describe('SubAgent', () => {
         retryCount: 0
       };
 
-      const result = await subAgent.execute(task);
-      
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('MISSING_SKILL');
+      await expect(subAgent.execute(task)).rejects.toThrow(SkillError);
+      try {
+        await subAgent.execute(task);
+      } catch (err) {
+        expect(err).toBeInstanceOf(SkillError);
+        expect((err as SkillError).code).toBe('MISSING_SKILL');
+      }
     });
 
-    it('should handle non-existent skill', async () => {
+    it('should throw SkillError for non-existent skill', async () => {
       const task: Task = {
         id: 'test-task',
         requirement: 'Test requirement',
@@ -110,10 +114,13 @@ describe('SubAgent', () => {
         retryCount: 0
       };
 
-      const result = await subAgent.execute(task);
-      
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SKILL_NOT_FOUND');
+      await expect(subAgent.execute(task)).rejects.toThrow(SkillError);
+      try {
+        await subAgent.execute(task);
+      } catch (err) {
+        expect(err).toBeInstanceOf(SkillError);
+        expect((err as SkillError).code).toBe('SKILL_NOT_FOUND');
+      }
     });
 
     it('should handle execution errors', async () => {
@@ -129,53 +136,21 @@ describe('SubAgent', () => {
         retryCount: 0
       };
 
-      // Mock skillRegistry.loadFullSkill to throw an error
+      // Mock skillRegistry.loadFullSkill to throw a generic Error.
+      // mapSubAgentError converts non-LLM/non-business Errors to SkillError('EXECUTION_ERROR').
       const originalLoadFullSkill = skillRegistry.loadFullSkill;
       skillRegistry.loadFullSkill = async () => {
         throw new Error('Test error');
       };
 
-      const result = await subAgent.execute(task);
-      
-      expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-
-      // Restore original method
-      skillRegistry.loadFullSkill = originalLoadFullSkill;
-    });
-  });
-
-  describe('classifyError', () => {
-    it('should classify timeout error as RETRYABLE', () => {
-      const error = new Error('Timeout error');
-      const classifiedError = subAgent['classifyError'](error);
-      
-      expect(classifiedError.type).toBe('RETRYABLE');
-      expect(classifiedError.code).toBe('EXECUTION_ERROR');
-    });
-
-    it('should classify file not found error as FATAL', () => {
-      const error = new Error('File not found');
-      const classifiedError = subAgent['classifyError'](error);
-      
-      expect(classifiedError.type).toBe('FATAL');
-      expect(classifiedError.code).toBe('FILE_NOT_FOUND');
-    });
-
-    it('should classify permission error as FATAL', () => {
-      const error = new Error('Permission denied');
-      const classifiedError = subAgent['classifyError'](error);
-      
-      expect(classifiedError.type).toBe('FATAL');
-      expect(classifiedError.code).toBe('PERMISSION_DENIED');
-    });
-
-    it('should classify unknown error as RETRYABLE', () => {
-      const error = 'Unknown error';
-      const classifiedError = subAgent['classifyError'](error);
-      
-      expect(classifiedError.type).toBe('RETRYABLE');
-      expect(classifiedError.code).toBe('UNKNOWN_ERROR');
+      try {
+        await expect(subAgent.execute(task)).rejects.toMatchObject({
+          code: 'EXECUTION_ERROR',
+        });
+      } finally {
+        // Restore original method
+        skillRegistry.loadFullSkill = originalLoadFullSkill;
+      }
     });
   });
 
@@ -247,5 +222,58 @@ describe('SubAgent', () => {
       const result = detectQuestion('请确认是否继续执行此操作');
       expect(result).toBeDefined();
     });
+  });
+});
+
+describe('SubAgent AppError throw behavior', () => {
+  const baseTask: Task = {
+    id: 't1',
+    requirement: 'test',
+    status: 'pending',
+    dependencies: [],
+    dependents: [],
+    createdAt: new Date(),
+    retryCount: 0,
+  };
+
+  it('LLMError thrown by LLM is mapped to LlmError', async () => {
+    class FailingLLMClient extends MockLLMClient {
+      async generateWithTools(): Promise<{ content: string; toolCalls: any[] }> {
+        throw new LLMError('RATE_LIMIT', 'too many', 429);
+      }
+    }
+    const subAgent = new SubAgent(new MockSkillRegistry() as any, new FailingLLMClient() as any, undefined);
+    const task = { ...baseTask, skillName: 'test-skill', params: {} };
+    await expect(subAgent.execute(task)).rejects.toBeInstanceOf(LlmError);
+  });
+
+  it('non-LLM error is mapped to SkillError', async () => {
+    class FailingLLMClient extends MockLLMClient {
+      async generateWithTools(): Promise<{ content: string; toolCalls: any[] }> {
+        throw new Error('boom');
+      }
+    }
+    const subAgent = new SubAgent(new MockSkillRegistry() as any, new FailingLLMClient() as any, undefined);
+    const task = { ...baseTask, skillName: 'test-skill', params: {} };
+    await expect(subAgent.execute(task)).rejects.toBeInstanceOf(SkillError);
+  });
+
+  it('ENOENT error is mapped to BusinessError FILE_NOT_FOUND', async () => {
+    class FailingLLMClient extends MockLLMClient {
+      async generateWithTools(): Promise<{ content: string; toolCalls: any[] }> {
+        const e: any = new Error('ENOENT: no such file');
+        e.code = 'ENOENT';
+        throw e;
+      }
+    }
+    const subAgent = new SubAgent(new MockSkillRegistry() as any, new FailingLLMClient() as any, undefined);
+    const task = { ...baseTask, skillName: 'test-skill', params: {} };
+    try {
+      await subAgent.execute(task);
+      expect(true).toBe(false); // should have thrown
+    } catch (e: any) {
+      expect(e).toBeInstanceOf(BusinessError);
+      expect(e.code).toBe('FILE_NOT_FOUND');
+    }
   });
 });

@@ -10,7 +10,7 @@ import {
   syncQuestionHistoryToContext,
   buildResumedContext,
   validateResumedContext,
-} from '../src/memory/conversation-context-helper';
+} from '../src/agents/conversation-context-helper';
 import { Message, QuestionHistoryEntry } from '../src/types';
 
 describe('Conversation Context Helper', () => {

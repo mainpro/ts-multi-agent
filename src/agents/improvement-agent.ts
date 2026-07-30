@@ -2,6 +2,9 @@ import { existsSync, copyFileSync } from 'fs';
 import { ILLMClient } from '../llm';
 import { ImprovementStore } from '../improvements';
 import type { ImprovementEntry } from '../improvements';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'ImprovementAgent' });
 
 export interface ChangePlan {
   entryId: string;
@@ -105,7 +108,7 @@ ${changesText}
           }
         } catch {
         }
-        console.log(`[ImprovementAgent] 计划修改: ${change.file} (${change.type})`);
+        log.info('计划修改', { file: change.file, type: change.type });
       }
 
       return {

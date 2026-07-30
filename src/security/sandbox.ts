@@ -72,6 +72,9 @@ export class Sandbox {
 
   /**
    * 在沙箱中执行命令
+   *
+   * 安全策略：当 bwrap 不可用时，拒绝执行而非静默降级为无隔离执行。
+   * 这防止了在缺少沙箱保护的环境下运行不受信任的命令。
    */
   static async execute(command: string, workDir: string, options?: SandboxOptions): Promise<SandboxResult> {
     const env = options?.env ? { ...process.env, ...options.env } : process.env;
@@ -79,30 +82,19 @@ export class Sandbox {
     // 截断命令用于日志展示（避免过长）
     const displayCmd = command.length > 200 ? command.substring(0, 200) + '...' : command;
 
-    // 如果 bwrap 不可用，回退到直接执行
+    // bwrap 不可用时拒绝执行（不再静默降级）
     if (!this.isBwrapAvailable()) {
-      this.logger.warn('命令在无隔离环境下执行', {
+      this.logger.error('拒绝执行命令：沙箱不可用', {
         command: displayCmd,
         workDir,
-        shell,
-        reason: 'bubblewrap 不可用',
+        reason: 'bubblewrap 不可用，拒绝无隔离执行',
       });
-      try {
-        const { stdout, stderr } = await execFileAsync(shell, ['-c', command], {
-          cwd: workDir,
-          timeout: options?.timeout || 30000,
-          maxBuffer: 10 * 1024 * 1024,
-          env,
-        });
-        return { stdout, stderr, exitCode: 0, sandboxed: false };
-      } catch (error: any) {
-        return {
-          stdout: error.stdout || '',
-          stderr: error.stderr || error.message,
-          exitCode: error.status || 1,
-          sandboxed: false,
-        };
-      }
+      return {
+        stdout: '',
+        stderr: 'Sandbox unavailable: bubblewrap (bwrap) is not installed. Command execution is refused for security.',
+        exitCode: 126,
+        sandboxed: false,
+      };
     }
 
     const allowedDirs = options?.allowedDirs || [workDir];

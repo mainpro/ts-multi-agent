@@ -4,6 +4,9 @@ import * as path from 'path';
 import * as yaml from 'yaml';
 import type { Skill, SkillMetadata } from '../types';
 import { CONFIG } from '../types';
+import { createLogger } from '../observability/logger';
+
+const log = createLogger({ module: 'SkillRegistry' });
 
 /**
  * Internal cache entry for skill metadata and file path
@@ -292,16 +295,16 @@ export class SkillRegistry {
       this.watcher = watch(skillsDir, { recursive: true }, (_eventType, filename) => {
         if (!filename) return;
         if (filename.endsWith('SKILL.md') || filename.endsWith('skill.md')) {
-          console.log(`[SkillRegistry] 检测到技能文件变更: ${filename}`);
+          log.info('检测到技能文件变更', { filename });
           if (this.rescanDebounceTimer) clearTimeout(this.rescanDebounceTimer);
           this.rescanDebounceTimer = setTimeout(() => {
             this.rescanSkill(filename);
           }, 500);
         }
       });
-      console.log(`[SkillRegistry] 已启动技能目录监听: ${skillsDir}`);
+      log.info('已启动技能目录监听', { skillsDir });
     } catch (error) {
-      console.warn(`[SkillRegistry] 无法启动目录监听:`, error);
+      log.warn('无法启动目录监听', { error });
     }
   }
 
@@ -325,7 +328,7 @@ export class SkillRegistry {
     // 检查文件是否仍存在（可能被删除）
     const fileStat = await fs.stat(skillFilePath).catch(() => null);
     if (!fileStat || !fileStat.isFile()) {
-      console.log(`[SkillRegistry] 技能 ${skillName} 已移除`);
+      log.info('技能已移除', { skillName });
       return;
     }
 
@@ -337,9 +340,9 @@ export class SkillRegistry {
         skillDir,
         skillFilePath,
       });
-      console.log(`[SkillRegistry] 技能 ${metadata.name} 已重新加载`);
+      log.info('技能已重新加载', { name: metadata.name });
     } else {
-      console.warn(`[SkillRegistry] 技能 ${skillName} 重新加载失败：解析元数据出错`);
+      log.warn('技能重新加载失败：解析元数据出错', { skillName });
     }
   }
 }

@@ -1,6 +1,9 @@
 import * as dotenv from 'dotenv';
 import { resolveResource } from './utils/app-root';
+import { createLogger } from './observability/logger';
 dotenv.config({ path: resolveResource('.env') });
+
+const log = createLogger({ module: 'Bootstrap' });
 
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
@@ -8,7 +11,7 @@ import { LLMClient } from './llm';
 import { MainAgent, MainAgentDependencies } from './agents/main-agent';
 import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
-import { Task, TaskResult } from './types';
+import { Task } from './types';
 import { MemoryService } from './memory/memory-service';
 import { IntentRouter } from './routers';
 import { UserProfileService } from './user-profile';
@@ -52,7 +55,7 @@ async function bootstrap() {
       llmClient = new LLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
-      console.warn('⚠️  Warning: Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.\n');
+      log.warn('Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.', { error });
       process.exit(1);
     }
 
@@ -96,11 +99,9 @@ async function bootstrap() {
     // 6. Create Task Queue with SubAgent as executor
     console.log('📋 Initializing Task Queue...');
     taskQueue = new TaskQueue(async (task: Task): Promise<unknown> => {
-      const result: TaskResult = await subAgent.execute(task);
-      if (!result.success) {
-        throw new Error(result.error?.message || 'Task execution failed');
-      }
-      return result;
+      // SubAgent.execute now throws AppError directly (Task 8).
+      // We pass the error through unchanged so the API middleware can map it.
+      return await subAgent.execute(task);
     });
     console.log('✅ Task Queue initialized\n');
 
@@ -109,7 +110,7 @@ async function bootstrap() {
     const intentRouter = new IntentRouter(llmClient, skillRegistry);
     const userProfileService = new UserProfileService(DATA_DIR);
     const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
-    const sessionStore = new SessionStore();
+    const sessionStore = new SessionStore(100, DATA_DIR);
     const askAgent = new AskAgent(sessionStore, llmClient);
     const systemSkillLoader = new SystemSkillLoader();
     systemSkillLoader.loadAll();
@@ -158,7 +159,7 @@ async function bootstrap() {
     });
 
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    log.error('Failed to start server', { error });
     process.exit(1);
   }
 }
@@ -192,19 +193,19 @@ async function cleanupResources(): Promise<void> {
 
 // #3/#18: 优雅关闭函数
 async function gracefulShutdown(exitCode: number = 0): Promise<void> {
-  console.log('[Shutdown] Graceful shutdown initiated...');
+  log.info('Graceful shutdown initiated');
   await cleanupResources();
   process.exit(exitCode);
 }
 
 process.on('uncaughtException', async (error) => {
-  console.error('❌ Uncaught Exception:', error);
+  log.error('Uncaught Exception', { error });
   await gracefulShutdown(1);
 });
 
 // #3: 记录后让进程继续运行，但清理资源保持一致
 process.on('unhandledRejection', async (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  log.error('Unhandled Rejection', { promise, reason });
   await cleanupResources();
 });
 

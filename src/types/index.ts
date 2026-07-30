@@ -64,7 +64,7 @@ export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'suspe
 // ============================================================================
 
 /** 请求状态 */
-export type RequestStatus = 'pending' | 'processing' | 'waiting' | 'suspended' | 'completed' | 'failed';
+export type RequestStatus = 'pending' | 'processing' | 'waiting' | 'suspended' | 'completed' | 'failed' | 'checkpoint_reached';
 
 /** 询问来源 */
 export type QuestionSource = 'main_agent' | 'sub_agent';
@@ -94,9 +94,10 @@ export interface RequestTask {
   result: string | null;
   questions: QAEntry[];
   currentQuestion: QAEntry | null;
-  // 断点续执行上下文（仅内存，不持久化）
+  // 断点续执行上下文（持久化到 session.json，用于进程重启后恢复）
   conversationContext?: Task['conversationContext'];
   completedToolCalls?: CompletedToolCall[];
+  executionProgress?: string;
 }
 
 /** 请求 */
@@ -116,6 +117,21 @@ export interface Request {
   executionProgress?: ExecutionProgress;
 }
 
+/**
+ * Pending request: user message queued while a session has an active
+ * request. Drained at the next checkpoint and merged into a new request.
+ */
+export interface PendingRequest {
+  /** Client-generated draft ID for tracking; echoed back in SSE events. */
+  draftId: string;
+  /** Original (un-merged) user message. */
+  requirement: string;
+  /** ISO timestamp of when the message entered the queue. */
+  enqueuedAt: string;
+  /** Whether the message carried an image attachment. */
+  hasImage: boolean;
+}
+
 /** 会话 */
 export interface Session {
   sessionId: string;
@@ -124,6 +140,8 @@ export interface Session {
   updatedAt: string;
   requests: Request[];
   activeRequestId: string | null;
+  /** FIFO queue of user messages waiting to merge into a spawned request. */
+  pendingRequests: PendingRequest[];
 }
 
 /** RequestManager.handleUserInput 返回结果 */
@@ -161,10 +179,9 @@ export interface QuestionHistoryEntry {
  */
 export type ErrorType = 'RETRYABLE' | 'FATAL' | 'USER_ERROR' | 'SKILL_ERROR';
 
-/**
- * LLM error types for retry classification
- */
-export type LLMErrorType = 'RATE_LIMIT' | 'TIMEOUT' | 'INVALID_KEY' | 'API_ERROR' | 'NETWORK_ERROR' | 'CONTEXT_TOO_LONG' | 'OUTPUT_TOO_LONG';
+// Canonical LLMErrorType is exported from src/llm/index.ts (includes UNKNOWN_ERROR, CANCELLED, QUEUE_FULL).
+// Re-export here so legacy callers that imported from `../types` keep working.
+export type { LLMErrorType } from '../llm';
 
 /**
  * Task error information
@@ -176,8 +193,17 @@ export interface TaskError {
   message: string;
   /** Error code (optional) */
   code?: string;
+  /** HTTP status code preserved from upstream AppError (optional) */
+  statusCode?: number;
   /** Stack trace (optional, for debugging) */
   stack?: string;
+  /**
+   * Original AppError instance (if the upstream threw one).
+   * Used by TaskGraphExecutor to rethrow the original class so the global
+   * error handler preserves the envelope invariant (type/code preserved).
+   * @internal
+   */
+  originalError?: unknown;
 }
 
 /**
@@ -568,7 +594,9 @@ export const TaskErrorSchema = z.object({
   type: ErrorTypeSchema,
   message: z.string(),
   code: z.string().optional(),
+  statusCode: z.number().optional(),
   stack: z.string().optional(),
+  originalError: z.unknown().optional(),
 });
 
 /**

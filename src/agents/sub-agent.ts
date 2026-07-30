@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { SkillRegistry } from '../skill-registry';
-import { ILLMClient, llmEvents } from '../llm';
+import { ILLMClient, llmEvents, LLMError } from '../llm';
 import {
-  Task, TaskResult, TaskError, Skill, SkillExecutionResult,
+  Task, TaskResult, Skill, SkillExecutionResult,
   Message, CompletedToolCall, QuestionHistoryEntry,
 } from '../types';
+import { LlmError, SkillError, BusinessError, AppError } from '../errors';
 import { ToolRegistry, ToolContext, Tool } from '../tools';
 import type { AskUserArgs } from '../tools/ask-user-tool';
 import { buildSubAgentPrompt, SubAgentPromptOptions } from '../prompts';
@@ -140,37 +141,23 @@ export class SubAgent {
     llmEvents.setAgent('SubAgent');
 
     try {
-      console.log('[SubAgent] 任务ID: ' + task.id + ' 技能: ' + task.skillName);
-      console.log('[SubAgent] 用户ID: ' + task.userId);
-      if (task.params) {
-        console.log('[SubAgent] 已获取参数: ' + JSON.stringify({
-          taskId: task.id,
-          skillName: task.skillName,
-          paramKeys: task.params ? Object.keys(task.params) : [],
-        }));
-      }
+      SubAgent.log.debug('任务入口', { taskId: task.id, skillName: task.skillName, userId: task.userId, params: task.params ? Object.keys(task.params) : [] });
 
       // ===== v2: 断点续执行检测 =====
       const isResuming = !!(task.conversationContext && task.conversationContext.length > 0);
       if (isResuming) {
-        console.log(`[SubAgent] 🔄 断点续执行模式: 恢复 ${task.conversationContext!.length} 条对话上下文`);
+        SubAgent.log.info('断点续执行模式', { contextLength: task.conversationContext!.length });
       }
 
-      console.log(`[SubAgent] 📊 execute() 入口状态: isResuming=${isResuming}, conversationContext=${task.conversationContext?.length ?? 'null'}, questionHistory=${task.questionHistory?.length ?? 0}, latestUserAnswer="${(task.params as any)?.latestUserAnswer ?? '(无)'}"`);
+      SubAgent.log.debug('execute 入口状态', { isResuming, conversationContext: task.conversationContext?.length, questionHistory: task.questionHistory?.length, latestUserAnswer: (task.params as any)?.latestUserAnswer });
 
       if (!task.skillName) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: 'No skill assigned', code: 'MISSING_SKILL' },
-        };
+        throw new SkillError('MISSING_SKILL', 'No skill assigned');
       }
 
       const skill = await this.skillRegistry.loadFullSkill(task.skillName);
       if (!skill) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: 'Skill not found: ' + task.skillName, code: 'SKILL_NOT_FOUND' },
-        };
+        throw new SkillError('SKILL_NOT_FOUND', 'Skill not found: ' + task.skillName);
       }
 
       const result = await this.executeSkill(
@@ -207,10 +194,7 @@ export class SubAgent {
 
       // 防止 response 为空或 undefined 时返回无意义内容
       if (!cleanResult.response) {
-        return {
-          success: false,
-          error: { type: 'FATAL', message: '任务执行异常：未能生成有效回复', code: 'EMPTY_RESPONSE' },
-        };
+        throw new SkillError('EMPTY_RESPONSE', '任务执行异常：未能生成有效回复');
       }
 
       // ===== 发布执行结果到长期记忆 =====
@@ -219,7 +203,7 @@ export class SubAgent {
 
       return { success: true, data: cleanResult };
     } catch (error) {
-      return { success: false, error: this.classifyError(error) };
+      throw mapSubAgentError(error);
     } finally {
       llmEvents.setAgent(previousAgent);
     }
@@ -263,7 +247,7 @@ export class SubAgent {
           }
           if (profileEntries.length > 0) {
             contextParts.push('### 用户画像\n' + profileEntries.join('\n'));
-            console.log(`[SubAgent] 👤 已加载用户画像 (${profileEntries.length} 个字段)`);
+            SubAgent.log.info('已加载用户画像', { fieldsCount: profileEntries.length });
           }
         }
 
@@ -275,10 +259,10 @@ export class SubAgent {
           if (recalledResults.length > 0) {
             const memoryLines = recalledResults.map(r => `- ${r.content}`);
             contextParts.push('### 相关记忆\n' + memoryLines.join('\n'));
-            console.log(`[SubAgent] 🧠 已召回 ${recalledResults.length} 条相关记忆`);
+            SubAgent.log.info('已召回相关记忆', { count: recalledResults.length });
           }
         } catch (recallErr) {
-          console.warn('[SubAgent] ⚠️ 记忆召回失败，继续执行:', (recallErr as Error).message);
+          SubAgent.log.warn('记忆召回失败，继续执行', { error: (recallErr as Error).message });
         }
 
         // 3. 组装为统一的上下文文本
@@ -287,7 +271,7 @@ export class SubAgent {
         }
       }
     } catch (err) {
-      console.warn('[SubAgent] ⚠️ 上下文加载失败，继续执行:', (err as Error).message);
+      SubAgent.log.warn('上下文加载失败，继续执行', { error: (err as Error).message });
     }
 
     // ===== v2: 构建增强的 system prompt =====
@@ -345,16 +329,16 @@ export class SubAgent {
         skill.name
       );
 
-      console.log(`[SubAgent] 🔄 断点续执行模式启动`);
-      console.log(`[SubAgent] 📋 询问历史条数: ${questionHistory?.length || 0}`);
+      SubAgent.log.info('断点续执行模式启动');
+      SubAgent.log.debug('询问历史条数', { count: questionHistory?.length || 0 });
       if (questionHistory && questionHistory.length > 0) {
         questionHistory.forEach((qh, i) => {
-          console.log(`[SubAgent] 📋 询问历史[${i}]: Q="${qh.question.content.substring(0, 80)}..." A="${qh.answer}"`);
+          SubAgent.log.debug('询问历史', { index: i, question: qh.question.content.substring(0, 80), answer: qh.answer });
         });
       }
-      console.log(`[SubAgent] 📋 已完成工具调用数: ${completedToolCalls?.length || 0}`);
-      console.log(`[SubAgent] 📋 恢复对话上下文数: ${conversationContext.length}`);
-      console.log(`[SubAgent] 📋 latestUserAnswer: "${params?.latestUserAnswer || '(无)'}"`);
+      SubAgent.log.debug('已完成工具调用数', { count: completedToolCalls?.length || 0 });
+      SubAgent.log.debug('恢复对话上下文数', { count: conversationContext.length });
+      SubAgent.log.debug('latestUserAnswer', { value: params?.latestUserAnswer || '(无)' });
 
       // 使用优化后的上下文构建函数
       messages = buildResumedContext(
@@ -370,7 +354,7 @@ export class SubAgent {
       // 验证上下文完整性
       const validation = validateResumedContext(messages, questionHistory || []);
       if (!validation.valid) {
-        console.warn(`[SubAgent] ⚠️ 上下文验证警告:`, validation.issues);
+        SubAgent.log.warn('上下文验证警告', { issues: validation.issues });
         // 尝试修复：同步 questionHistory
         messages = syncQuestionHistoryToContext(messages, questionHistory || []);
       }
@@ -383,11 +367,11 @@ export class SubAgent {
           content: `[用户回复] ${latestAnswer}\n\n请根据以上对话上下文和用户的最新回复，继续执行任务。不要重复已经完成的步骤。`,
         });
 
-        console.log(`[SubAgent] 📥 已追加用户最新回复到对话上下文: "${latestAnswer}"`);
+        SubAgent.log.info('已追加用户最新回复到对话上下文', { answer: latestAnswer });
       }
     } else {
       // 首次执行：使用标准流程
-      console.log(`[SubAgent] 🆕 首次执行模式`);
+      SubAgent.log.info('首次执行模式');
       messages = [];
       if (systemPrompt) {
         messages.push({ role: 'system', content: systemPrompt });
@@ -395,10 +379,10 @@ export class SubAgent {
       messages.push({ role: 'user', content: requirement });
     }
 
-    console.log(`[SubAgent] 📊 发送给LLM: messages=${messages.length}条, 分支=${(conversationContext && conversationContext.length > 0) ? '断点续执行' : '首次执行'}`);
+    SubAgent.log.info('发送给LLM', { messageCount: messages.length, branch: (conversationContext && conversationContext.length > 0) ? '断点续执行' : '首次执行' });
     messages.forEach((m, i) => {
       const preview = typeof m.content === 'string' ? m.content.substring(0, 120).replace(/\n/g, '\\n') : `(non-string: ${typeof m.content})`;
-      console.log(`[SubAgent] 📊 msg[${i}]: role=${m.role} len=${typeof m.content === 'string' ? m.content.length : '?'} preview="${preview}..."`);
+      SubAgent.log.debug('消息预览', { index: i, role: m.role, length: typeof m.content === 'string' ? m.content.length : '?', preview });
     });
 
     // ===== v2: 跟踪工具调用 =====
@@ -418,8 +402,8 @@ export class SubAgent {
       tools,
       async (toolCall) => {
         const toolStartTime = Date.now();
-        console.log(`[SubAgent] 🔧 调用工具: ${toolCall.name} (开始于 ${new Date().toISOString()})`);
-        console.log(`[SubAgent] 📥 工具参数: ${JSON.stringify(toolCall.arguments)}`);
+        SubAgent.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
+        SubAgent.log.debug('工具参数', { args: toolCall.arguments });
 
         SubAgent.log.info('tool.call', {
           traceId: taskId,
@@ -450,8 +434,8 @@ export class SubAgent {
               ? toolResult.data
               : JSON.stringify(toolResult.data, null, 2);
             const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
-            console.log(`[SubAgent] ✅ 工具执行成功: ${toolCall.name} (耗时 ${toolDuration}ms)`);
-            console.log(`[SubAgent] 📤 工具返回: ${dataPreview}`);
+            SubAgent.log.info('工具执行成功', { toolName: toolCall.name, duration: toolDuration });
+            SubAgent.log.debug('工具返回', { preview: dataPreview });
 
             SubAgent.log.info('tool.result', {
               traceId: taskId,
@@ -470,8 +454,8 @@ export class SubAgent {
               const codeMatch = toolData.match(/"code"\s*:\s*(\d+)/);
               if (codeMatch && codeMatch[1] !== '200') {
                 const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
-                console.log(`[SubAgent] 🚫 ${errMsg}`);
-                console.log(`[SubAgent] 🚫 接口返回: ${dataPreview}`);
+                SubAgent.log.warn('接口调用失败', { code: codeMatch[1] });
+                SubAgent.log.debug('接口返回', { preview: dataPreview });
                 throw new Error(errMsg);
               }
             }
@@ -513,8 +497,8 @@ export class SubAgent {
             return data;
           } else {
             const toolDuration = Date.now() - toolStartTime;
-            console.log(`[SubAgent] ❌ 工具执行失败: ${toolCall.name} (耗时 ${toolDuration}ms)`);
-            console.log(`[SubAgent] ❌ 失败原因: ${toolResult.error}`);
+            SubAgent.log.info('工具执行失败', { toolName: toolCall.name, duration: toolDuration });
+            SubAgent.log.debug('失败原因', { error: toolResult.error });
 
             SubAgent.log.error('tool.result', {
               traceId: taskId,
@@ -540,7 +524,7 @@ export class SubAgent {
           }
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          console.log(`[SubAgent] 工具执行异常: ${errorMsg}`);
+          SubAgent.log.warn('工具执行异常', { error: errorMsg });
 
           SubAgent.log.error('tool.exception', {
             traceId: taskId,
@@ -585,7 +569,7 @@ export class SubAgent {
       // P0: 预检查 — 如果 ask_user 询问的信息已在 params 中，自动回答
       if (args.paramName && params && params[args.paramName] !== undefined && params[args.paramName] !== null && params[args.paramName] !== '') {
         const existingValue = String(params[args.paramName]);
-        console.log(`[SubAgent] 🔄 ask_user 预检查: paramName="${args.paramName}" 已在 params 中 (value="${existingValue}")，跳过询问`);
+        SubAgent.log.info('ask_user 预检查: 已在 params 中，跳过询问', { paramName: args.paramName, existingValue });
 
         return {
           response: `[系统自动填充] 根据已知信息，${args.paramName} = ${existingValue}`,
@@ -595,7 +579,7 @@ export class SubAgent {
         };
       }
 
-      console.log(`[SubAgent] 🔄 检测到 ask_user 工具调用，返回 waiting_user_input 状态`);
+      SubAgent.log.info('检测到 ask_user 工具调用，返回 waiting_user_input 状态');
 
       return {
         response: args.question,
@@ -622,7 +606,7 @@ export class SubAgent {
     // 轨道 2: 文本检测（兼容旧技能）
     const question = detectQuestion(response, result.toolCalls);
     if (question) {
-      console.log(`[SubAgent] 🔄 检测到询问用户意图（文本检测），返回 waiting_user_input 状态`);
+      SubAgent.log.info('检测到询问用户意图（文本检测），返回 waiting_user_input 状态');
       return {
         response,
         status: 'waiting_user_input',
@@ -649,20 +633,30 @@ export class SubAgent {
       _executionProgress: response,
     };
   }
+}
 
-  private classifyError(error: unknown): TaskError {
-    if (error instanceof Error) {
-      if (error.message.includes('timeout') || error.message.includes('timed out')) {
-        return { type: 'RETRYABLE', message: 'Task timed out', code: 'TIMEOUT' };
-      }
-      if (error.message.includes('not found') || error.message.includes('ENOENT')) {
-        return { type: 'FATAL', message: error.message, code: 'FILE_NOT_FOUND' };
-      }
-      if (/permission/i.test(error.message) || error.message.includes('EACCES')) {
-        return { type: 'FATAL', message: 'Permission denied: ' + error.message, code: 'PERMISSION_DENIED' };
-      }
-      return { type: 'RETRYABLE', message: error.message, code: 'EXECUTION_ERROR' };
-    }
-    return { type: 'RETRYABLE', message: String(error), code: 'UNKNOWN_ERROR' };
+/**
+ * Map any error thrown inside SubAgent to an AppError.
+ * - LLMError → LlmError (preserves LLMErrorType classification)
+ * - AppError → re-throw as-is
+ * - Error with ENOENT/EACCES → BusinessError with appropriate code
+ * - Other Error → SkillError
+ */
+function mapSubAgentError(error: unknown): never {
+  if (error instanceof LLMError) {
+    throw new LlmError(error.type, error.message, { cause: error, statusCode: error.statusCode });
   }
+  if (error instanceof AppError) {
+    throw error;
+  }
+  if (error instanceof Error) {
+    if (error.message.includes('ENOENT') || /\bnot found\b/i.test(error.message)) {
+      throw new BusinessError('FILE_NOT_FOUND', error.message, { cause: error });
+    }
+    if (error.message.includes('EACCES') || /permission/i.test(error.message)) {
+      throw new BusinessError('PERMISSION_DENIED', error.message, { cause: error });
+    }
+    throw new SkillError('EXECUTION_ERROR', error.message, { cause: error });
+  }
+  throw new SkillError('UNKNOWN_ERROR', String(error));
 }

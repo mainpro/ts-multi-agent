@@ -1,8 +1,10 @@
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
-import { ErrorRecoveryManager } from './error-recovery';
 import type { ILLMClient } from './interfaces';
+import { createLogger } from '../observability/logger';
 export type { ILLMClient } from './interfaces';
+
+const log = createLogger({ module: 'LLM' });
 
 /**
  * 安全地拼接 base URL 和路径，处理末尾斜杠问题
@@ -252,7 +254,6 @@ export class LLMClient implements ILLMClient {
   private maxRetries: number;
   private provider: LLMProvider;
   private capabilities: ProviderCapabilities;
-  private errorRecoveryManager: ErrorRecoveryManager;
   
   
   // Semaphore for limiting concurrent LLM requests
@@ -299,11 +300,6 @@ export class LLMClient implements ILLMClient {
         `${this.provider} API key environment variable is not set`
       );
     }
-
-    // 初始化错误恢复管理器(不再依赖 AutoCompactService,CONTEXT_TOO_LONG 改为简单截断)
-    this.errorRecoveryManager = new ErrorRecoveryManager();
-
-
   }
   
   /**
@@ -474,20 +470,6 @@ export class LLMClient implements ILLMClient {
   }
 
   /**
-   * Calculate delay for exponential backoff
-   * @param attempt - Current attempt number (0-indexed)
-   * @returns Delay in milliseconds
-   */
-  private getRetryDelay(attempt: number): number {
-    // Exponential backoff with jitter for rate limit errors
-    // Base delay: 2s, 4s, 8s for attempts 0, 1, 2
-    const baseDelay = Math.pow(2, attempt + 1) * 1000;
-    // Add jitter (0-500ms) to avoid thundering herd
-    const jitter = Math.random() * 500;
-    return baseDelay + jitter;
-  }
-
-  /**
    * Sleep for a given duration
    * @param ms - Milliseconds to sleep
    */
@@ -507,22 +489,62 @@ export class LLMClient implements ILLMClient {
   }
 
   /**
-   * Make a request to the GLM API with timeout and retry logic
-   * @param messages - Array of messages for the conversation
-   * @param responseFormat - Optional response format (e.g., for JSON mode)
-   * @returns API response
+   * 判断错误是否可重试
    */
-  private async makeRequest(
-    messages: Message[],
-    responseFormat?: { type: 'json_object' },
+  private isRetryable(error: LLMError): boolean {
+    if (error.type === 'INVALID_KEY' || error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') {
+      return false;
+    }
+    const retryableTypes = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
+    return retryableTypes.includes(error.type) ||
+      (error.type === 'API_ERROR' && error.statusCode !== undefined && error.statusCode >= 500);
+  }
+
+  /**
+   * 构建请求 headers（统一所有 provider 的认证逻辑）
+   */
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.apiKey}`,
+    };
+
+    // 海尔 API 可能需要的额外 headers
+    if (this.provider === 'haier' && process.env.HAIER_EXTRA_HEADERS) {
+      const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
+      extraHeaders.forEach(h => {
+        const [key, value] = h.split(':');
+        if (key && value) headers[key.trim()] = value.trim();
+      });
+    }
+
+    return headers;
+  }
+
+  /**
+   * 统一的 fetch + 重试原语
+   *
+   * 封装了所有三个请求方法共享的逻辑：
+   * - 信号量（acquireSlot/releaseSlot）
+   * - 内部超时 + 外部 AbortSignal 转发
+   * - 错误分类 + 可重试性判断
+   * - 指数退避重试
+   *
+   * @param requestBody - 已构建的请求体
+   * @param signal - 可选的外部取消信号
+   * @returns fetch Response（已确认 response.ok）
+   */
+  private async fetchWithRetry(
+    requestBody: Record<string, unknown>,
     signal?: AbortSignal
-  ): Promise<GLMResponse> {
+  ): Promise<Response> {
     let lastError: LLMError | undefined;
 
-    // 检查外部 signal 是否已经 abort
     if (signal?.aborted) {
       throw new LLMError('CANCELLED', 'Request cancelled by external signal');
     }
+
+    const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       const controller = new AbortController();
@@ -530,66 +552,31 @@ export class LLMClient implements ILLMClient {
       let onExternalAbort: (() => void) | undefined;
 
       try {
-        console.log(`[LLM] 请求 attempt ${attempt + 1}/${this.maxRetries}`);
+        log.debug('请求 attempt', { attempt: attempt + 1, maxRetries: this.maxRetries });
 
         // 内部超时
-        timeoutId = setTimeout(() => {
-          console.log('LLM request timeout');
-          controller.abort();
-        }, this.timeoutMs);
+        timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
-        // 外部 signal → 转发到内部 controller（清理在 finally 中）
+        // 外部 signal → 转发到内部 controller
         if (signal) {
           onExternalAbort = () => controller.abort();
           signal.addEventListener('abort', onExternalAbort);
         }
 
-        const requestBody = this.buildRequestBody(messages, { responseFormat });
-
-        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
-        console.log('Sending LLM request to:', apiUrl);
-        console.log('Request body:', JSON.stringify(requestBody, null, 2));
-
-        // Acquire slot for concurrent request limiting
         await this.acquireSlot();
 
-        // 构建请求 headers
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
+        const headers = this.buildHeaders();
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
 
-        // 根据 provider 设置认证方式
-        if (this.provider === 'haier') {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-          // 海尔 API 可能需要的额外 headers
-          if (process.env.HAIER_EXTRA_HEADERS) {
-            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
-            extraHeaders.forEach(h => {
-              const [key, value] = h.split(':');
-              if (key && value) headers[key.trim()] = value.trim();
-            });
-          }
-        } else {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-        }
-
-        const response = await fetch(
-          apiUrl,
-          {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-
-          }
-        );
-
+        // 清除内部超时（响应已到达）
         if (timeoutId) clearTimeout(timeoutId);
         timeoutId = undefined;
 
-        console.log('LLM request response status:', response.status);
-
-        // 先检查 HTTP 状态码，避免对非 JSON 响应调用 .json()
         if (!response.ok) {
           const errorText = await response.text().catch(() => '');
           throw this.classifyError(response.status, {
@@ -597,30 +584,11 @@ export class LLMClient implements ILLMClient {
           });
         }
 
-        const data = (await response.json()) as GLMResponse;
-        console.log('LLM request response data:', JSON.stringify(data, null, 2));
-
-        // Check for API error in response body
-        if (data.error) {
-          console.log('LLM API error:', data.error);
-          throw this.classifyError(response.status, {
-            message: data.error.message,
-            code: data.error.code,
-          });
-        }
-
-        console.log('LLM request successful');
-        return data;
+        return response;
       } catch (error) {
-        console.log('LLM request error:', error);
-
-        // 区分外部取消、内部超时（含流式读取超时）、其他错误
         const errObj = error instanceof Error ? error : null;
         const isExternalAbort = signal?.aborted && errObj?.name === 'AbortError';
-        const isInternalTimeout = !signal?.aborted && (
-          errObj?.name === 'AbortError' ||
-          (errObj?.message?.includes('流式读取超时'))
-        );
+        const isInternalTimeout = !signal?.aborted && errObj?.name === 'AbortError';
 
         if (isExternalAbort) {
           throw new LLMError('CANCELLED', 'Request cancelled by external signal');
@@ -628,35 +596,8 @@ export class LLMClient implements ILLMClient {
 
         if (isInternalTimeout) {
           lastError = new LLMError('TIMEOUT', `Request timeout after ${this.timeoutMs}ms`);
-          if (attempt < this.maxRetries - 1) {
-            const delay = this.getRetryDelay(attempt);
-            console.log(`Request timeout, retrying in ${delay}ms`);
-            await this.sleep(delay);
-          }
-          continue;
-        }
-
-        if (error instanceof LLMError) {
+        } else if (error instanceof LLMError) {
           lastError = error;
-
-          if (error.type === 'INVALID_KEY') {
-            console.log('Invalid API key, throwing error');
-            throw error;
-          }
-          if (error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') throw error;
-
-          // 尝试错误恢复
-          if (this.errorRecoveryManager && attempt < this.maxRetries - 1) {
-            const recoveryActions = this.errorRecoveryManager.getRecoveryActions(error, { messages });
-            for (const action of recoveryActions) {
-              console.log(`Attempting recovery: ${action.description}`);
-              const success = await action.execute();
-              if (success) {
-                console.log(`Recovery successful: ${action.strategy}`);
-                break;
-              }
-            }
-          }
         } else if (errObj) {
           lastError = new LLMError(
             'NETWORK_ERROR',
@@ -668,9 +609,14 @@ export class LLMClient implements ILLMClient {
           lastError = new LLMError('UNKNOWN_ERROR', 'Unknown error occurred', undefined, error);
         }
 
+        // 不可重试的错误直接抛出
+        if (!this.isRetryable(lastError)) {
+          throw lastError;
+        }
+
         if (attempt < this.maxRetries - 1) {
-          const delay = this.getRetryDelay(attempt);
-          console.log(`Waiting ${delay}ms before retrying`);
+          const delay = this.getBackoffDelay(attempt, lastError.type);
+          log.info('后重试', { delay, errorType: lastError.type });
           await this.sleep(delay);
         }
       } finally {
@@ -678,13 +624,132 @@ export class LLMClient implements ILLMClient {
         if (onExternalAbort && signal) {
           signal.removeEventListener('abort', onExternalAbort);
         }
-        // Release slot for concurrent request limiting
         this.releaseSlot();
       }
     }
 
-    console.log('All retry attempts failed');
     throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
+  }
+
+  /**
+   * 读取 SSE 流并提取 reasoning + content
+   *
+   * 封装了流式响应的解析逻辑：
+   * - 逐行解析 data: 前缀的 SSE 事件
+   * - 提取 reasoning_content / reasoning / thinking 字段
+   * - 每次 read 独立超时（防止流式传输中途卡住）
+   * - 发送 reasoning 事件到 LLMEventEmitter
+   */
+  private async readSSEStream(
+    response: Response,
+    signal?: AbortSignal
+  ): Promise<{ reasoning: string; content: string }> {
+    if (!response.body) {
+      throw new LLMError('API_ERROR', 'No response body');
+    }
+
+    let reasoning = '';
+    let content = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const readTimeoutMs = 60000;
+
+    while (true) {
+      const readController = new AbortController();
+      const readTimeoutId = setTimeout(() => readController.abort(), readTimeoutMs);
+      let onReadAbort: (() => void) | undefined;
+
+      let readResult: { done: boolean; value?: Uint8Array };
+      try {
+        onReadAbort = () => readController.abort();
+        signal?.addEventListener('abort', onReadAbort);
+
+        readResult = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            readController.signal.addEventListener('abort', () => {
+              reject(new Error(`流式读取超时 (${readTimeoutMs}ms)，LLM 可能已停止发送数据`));
+            });
+          }),
+        ]);
+      } finally {
+        clearTimeout(readTimeoutId);
+        if (onReadAbort && signal) {
+          signal.removeEventListener('abort', onReadAbort);
+        }
+      }
+      if (readResult.done) break;
+
+      buffer += decoder.decode(readResult.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') continue;
+
+        try {
+          const chunk = JSON.parse(data);
+          const delta = chunk.choices?.[0]?.delta;
+          if (!delta) continue;
+
+          if (delta.reasoning_content) {
+            reasoning += delta.reasoning_content;
+            llmEvents.emit('reasoning', delta.reasoning_content);
+          } else if (delta.reasoning) {
+            reasoning += delta.reasoning;
+            llmEvents.emit('reasoning', delta.reasoning);
+          } else if (delta.thinking) {
+            reasoning += delta.thinking;
+            llmEvents.emit('reasoning', delta.thinking);
+          }
+
+          if (delta.content) {
+            content += delta.content;
+          }
+        } catch {
+        }
+      }
+    }
+
+    log.info('流式请求完成', { reasoningLength: reasoning.length, contentLength: content.length });
+
+    if (!content && !reasoning) {
+      throw new LLMError('API_ERROR', `Empty response from LLM (reasoning: ${reasoning.length}, content: ${content.length})`);
+    }
+
+    return { reasoning, content };
+  }
+
+  /**
+   * Make a non-streaming request to the LLM API
+   * @param messages - Array of messages for the conversation
+   * @param responseFormat - Optional response format (e.g., for JSON mode)
+   * @param signal - Optional external abort signal
+   * @returns API response
+   */
+  private async makeRequest(
+    messages: Message[],
+    responseFormat?: { type: 'json_object' },
+    signal?: AbortSignal
+  ): Promise<GLMResponse> {
+    const requestBody = this.buildRequestBody(messages, { responseFormat });
+    const response = await this.fetchWithRetry(requestBody, signal);
+
+    const data = (await response.json()) as GLMResponse;
+    log.debug('LLM request response data', { data: JSON.stringify(data, null, 2) });
+
+    if (data.error) {
+      throw this.classifyError(response.status, {
+        message: data.error.message,
+        code: data.error.code,
+      });
+    }
+
+    return data;
   }
 
   /**
@@ -700,16 +765,10 @@ export class LLMClient implements ILLMClient {
     const messages: Message[] = [];
 
     if (systemPrompt) {
-      messages.push({
-        role: 'system',
-        content: systemPrompt,
-      });
+      messages.push({ role: 'system', content: systemPrompt });
     }
 
-    messages.push({
-      role: 'user',
-      content: prompt,
-    });
+    messages.push({ role: 'user', content: prompt });
 
     const response = await this.makeRequest(messages);
 
@@ -718,12 +777,11 @@ export class LLMClient implements ILLMClient {
     }
 
     const message = response.choices[0].message;
-    
-    // Emit reasoning_content if present
+
     if (message.reasoning_content) {
       llmEvents.emit('reasoning', message.reasoning_content);
     }
-    
+
     return message.content || message.reasoning_content || '';
   }
 
@@ -765,12 +823,11 @@ export class LLMClient implements ILLMClient {
       const parsed = JSON.parse(content);
       return schema.parse(parsed);
     } catch (parseError) {
-      // LLM 常见问题：字符串值内部包含未转义的双引号（如 "用户输入"你好""）
-      // 尝试修复：将字段值内部的 ASCII 双引号替换为中文引号
+      // LLM 常见问题：字符串值内部包含未转义的双引号
       try {
         const repaired = repairUnescapedQuotes(content);
         const parsed = JSON.parse(repaired);
-        console.warn('[LLM] JSON 修复成功（原内容包含未转义双引号）');
+        log.warn('JSON 修复成功（原内容包含未转义双引号）');
         return schema.parse(parsed);
       } catch {
         // 修复后仍失败，抛出原始错误
@@ -778,231 +835,38 @@ export class LLMClient implements ILLMClient {
       const errMsg = parseError instanceof Error
         ? `${parseError.name}: ${parseError.message}`
         : String(parseError);
-      console.error('[LLM] Schema validation failed. Content:', content.substring(0, 500));
-      console.error('[LLM] Parse error:', errMsg);
+      log.error('Schema validation failed', { content: content.substring(0, 500) });
+      log.error('Parse error', { errMsg });
       throw new LLMError('API_ERROR', 'Schema validation failed: ' + errMsg);
     }
   }
 
+  /**
+   * Make a streaming request to the LLM API
+   * @param messages - Array of messages for the conversation
+   * @param signal - Optional external abort signal
+   * @returns Extracted reasoning and content from the stream
+   */
   private async makeStreamRequest(
     messages: Message[],
     signal?: AbortSignal
   ): Promise<{ reasoning: string; content: string }> {
-    let lastError: LLMError | undefined;
-
-    // 检查外部 signal 是否已经 abort
-    if (signal?.aborted) {
-      throw new LLMError('CANCELLED', 'Request cancelled by external signal');
-    }
-
     // 总超时计时器（5 分钟），防止整个重试过程无限等待
     const totalTimeoutController = new AbortController();
     const totalTimeoutId = setTimeout(() => totalTimeoutController.abort(), 300000);
     const onTotalTimeoutAbort = () => totalTimeoutController.abort();
     signal?.addEventListener('abort', onTotalTimeoutAbort);
 
-    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
-      const controller = new AbortController();
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      let onExternalAbort: (() => void) | undefined;
-      let onTotalAbort: (() => void) | undefined;
-
-      try {
-        console.log(`[LLM] 流式请求 attempt ${attempt + 1}/${this.maxRetries}`);
-
-        // 内部超时
-        timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-
-        // 外部 signal → 转发到内部 controller（清理在 finally 中）
-        if (signal) {
-          onExternalAbort = () => controller.abort();
-          signal.addEventListener('abort', onExternalAbort);
-        }
-
-        // 总超时 → 转发到内部 controller
-        onTotalAbort = () => controller.abort();
-        totalTimeoutController.signal.addEventListener('abort', onTotalAbort);
-
-        const requestBody = this.buildRequestBody(messages, { stream: true });
-
-        // Acquire slot for concurrent request limiting
-        await this.acquireSlot();
-
-        // 构建请求 headers
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-
-        // 根据 provider 设置认证方式
-        if (this.provider === 'haier') {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-          // 海尔 API 可能需要的额外 headers
-          if (process.env.HAIER_EXTRA_HEADERS) {
-            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
-            extraHeaders.forEach(h => {
-              const [key, value] = h.split(':');
-              if (key && value) headers[key.trim()] = value.trim();
-            });
-          }
-        } else {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-        }
-
-        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        // 清除初始连接超时，改为每次 read 独立超时
-        if (timeoutId) clearTimeout(timeoutId);
-        timeoutId = undefined;
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '');
-          throw this.classifyError(response.status, { message: errorText });
-        }
-
-        if (!response.body) {
-          throw new LLMError('API_ERROR', 'No response body');
-        }
-
-        let reasoning = '';
-        let content = '';
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        const readTimeoutMs = 60000; // 单次 read 超时 60 秒（防止流式传输中途卡住）
-
-        while (true) {
-          // 为每次 read 设置独立超时，防止流式传输中途卡住导致无限等待
-          const readController = new AbortController();
-          const readTimeoutId = setTimeout(() => readController.abort(), readTimeoutMs);
-          let onReadAbort: (() => void) | undefined;
-
-          let readResult: { done: boolean; value?: Uint8Array };
-          try {
-            onReadAbort = () => readController.abort();
-            signal?.addEventListener('abort', onReadAbort);
-
-            readResult = await Promise.race([
-              reader.read(),
-              // 如果 read 超时，通过 abort signal 取消
-              new Promise<never>((_, reject) => {
-                readController.signal.addEventListener('abort', () => {
-                  reject(new Error(`流式读取超时 (${readTimeoutMs}ms)，LLM 可能已停止发送数据`));
-                });
-              }),
-            ]);
-          } finally {
-            clearTimeout(readTimeoutId);
-            if (onReadAbort && signal) {
-              signal.removeEventListener('abort', onReadAbort);
-            }
-          }
-          if (readResult.done) break;
-
-          buffer += decoder.decode(readResult.value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const data = trimmed.slice(6);
-            if (data === '[DONE]') continue;
-
-            try {
-              const chunk = JSON.parse(data);
-              const delta = chunk.choices?.[0]?.delta;
-              if (!delta) continue;
-
-              if (delta.reasoning_content) {
-                reasoning += delta.reasoning_content;
-                llmEvents.emit('reasoning', delta.reasoning_content);
-              } else if (delta.reasoning) {
-                reasoning += delta.reasoning;
-                llmEvents.emit('reasoning', delta.reasoning);
-              } else if (delta.thinking) {
-                reasoning += delta.thinking;
-                llmEvents.emit('reasoning', delta.thinking);
-              }
-
-              if (delta.content) {
-                content += delta.content;
-              }
-            } catch {
-            }
-          }
-        }
-
-        console.log(`[LLM] 流式请求完成, reasoning: ${reasoning.length} chars, content: ${content.length} chars`);
-        
-        if (!content && !reasoning) {
-          throw new LLMError('API_ERROR', `Empty response from LLM (reasoning: ${reasoning.length}, content: ${content.length})`);
-        }
-        
-        return { reasoning, content };
-
-      } catch (error) {
-        console.log('[LLM] 流式请求错误:', error);
-
-        // 区分外部取消、内部超时、其他错误
-        const errObj = error instanceof Error ? error : null;
-        const isExternalAbort = signal?.aborted && errObj?.name === 'AbortError';
-        const isInternalTimeout = !signal?.aborted && errObj?.name === 'AbortError';
-
-        if (isExternalAbort) {
-          throw new LLMError('CANCELLED', 'Request cancelled by external signal');
-        }
-
-        if (isInternalTimeout) {
-          lastError = new LLMError('TIMEOUT', `LLM 流式请求超时 (${this.timeoutMs}ms)`);
-          if (attempt < this.maxRetries - 1) {
-            const delay = this.getBackoffDelay(attempt, 'TIMEOUT');
-            console.log(`[LLM] ⏱️ 流式请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
-            await this.sleep(delay);
-          }
-          continue;
-        }
-
-        if (error instanceof LLMError) {
-          lastError = error;
-          if (error.type === 'INVALID_KEY') throw error;
-          if (error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') throw error;
-          const retryableErrors = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
-          const isRetryable = retryableErrors.includes(error.type) ||
-            (error.type === 'API_ERROR' && error.statusCode && error.statusCode >= 500);
-          if (!isRetryable) throw error;
-        } else {
-          lastError = new LLMError('NETWORK_ERROR', error instanceof Error ? error.message : 'Unknown error');
-        }
-
-        if (attempt < this.maxRetries - 1) {
-          const delay = this.getBackoffDelay(attempt, lastError?.type);
-          console.log(`[LLM] ${delay}ms 后重试`);
-          await this.sleep(delay);
-        }
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (onExternalAbort && signal) {
-          signal.removeEventListener('abort', onExternalAbort);
-        }
-        totalTimeoutController.signal.removeEventListener('abort', onTotalAbort!);
-        // Release slot for concurrent request limiting
-        this.releaseSlot();
+    try {
+      const requestBody = this.buildRequestBody(messages, { stream: true });
+      const response = await this.fetchWithRetry(requestBody, signal);
+      return await this.readSSEStream(response, signal);
+    } finally {
+      clearTimeout(totalTimeoutId);
+      if (signal) {
+        signal.removeEventListener('abort', onTotalTimeoutAbort);
       }
     }
-
-    // 清理总超时
-    clearTimeout(totalTimeoutId);
-    if (signal) {
-      signal.removeEventListener('abort', onTotalTimeoutAbort);
-    }
-
-    throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
   }
 
   /**
@@ -1022,7 +886,6 @@ export class LLMClient implements ILLMClient {
     signal?: AbortSignal,
     concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean
   ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }> {
-    // 使用传入的 messages（可能包含断点恢复的上下文）
     const trackedMessages = [...messages];
 
     const toolCallsResults: ToolCallResult[] = [];
@@ -1030,17 +893,16 @@ export class LLMClient implements ILLMClient {
     let iteration = 0;
 
     while (maxIterations-- > 0) {
-      // 检查外部是否已取消，避免浪费一轮 LLM 请求
       if (signal?.aborted) {
         throw new LLMError('CANCELLED', 'Tool calling loop cancelled by external signal');
       }
 
       iteration++;
-      console.log(`[LLM] [Tracked] 🔄 第 ${iteration} 轮工具调用循环开始 (${new Date().toISOString()})`);
+      log.debug('工具调用循环开始', { iteration, timestamp: new Date().toISOString() });
       const llmStartTime = Date.now();
       const result = await this.makeToolRequestStream(trackedMessages, tools, signal);
       const llmDuration = Date.now() - llmStartTime;
-      console.log(`[LLM] [Tracked] ⏱️ LLM 响应耗时 ${llmDuration}ms`);
+      log.debug('LLM 响应耗时', { duration: llmDuration });
 
       if (!result.message) {
         throw new LLMError('API_ERROR', 'No message in response');
@@ -1048,11 +910,11 @@ export class LLMClient implements ILLMClient {
 
       const message = result.message;
 
-      console.log('[LLM] [Tracked] Response message.content:', message.content?.substring(0, 200));
-      console.log('[LLM] [Tracked] Response message.tool_calls:', message.tool_calls?.length);
+      log.debug('Response message.content', { content: message.content?.substring(0, 200) });
+      log.debug('Response message.tool_calls', { count: message.tool_calls?.length });
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
-        console.log('[LLM] [Tracked] No tool_calls in response, returning content directly');
+        log.debug('No tool_calls in response, returning content directly');
 
         // NOTE: 必须在返回前将 assistant 回复加入 trackedMessages，
         // 否则纯对话技能的 conversationContext 会丢失 assistant 的提问，
@@ -1069,7 +931,7 @@ export class LLMClient implements ILLMClient {
         };
       }
 
-      console.log('[LLM] [Tracked] Has tool_calls, will execute them');
+      log.debug('Has tool_calls, will execute them');
 
       // 添加 assistant 消息（含 tool_calls）到跟踪数组
       trackedMessages.push({
@@ -1100,7 +962,7 @@ export class LLMClient implements ILLMClient {
 
       // Execute safe calls in parallel
       if (safeCalls.length > 0) {
-        console.log(`[LLM] [Tracked] P1-2: 并行执行 ${safeCalls.length} 个并发安全工具调用`);
+        log.debug('P1-2: 并行执行并发安全工具调用', { count: safeCalls.length });
         const safeResults = await Promise.allSettled(
           safeCalls.map(async (toolCall) => {
             const toolName = toolCall.function.name;
@@ -1111,16 +973,16 @@ export class LLMClient implements ILLMClient {
               toolArgs = {};
             }
 
-            console.log(`[LLM] [Tracked] 执行工具 (并行): ${toolName}`, toolArgs);
+            log.debug('执行工具 (并行)', { toolName, toolArgs });
 
             let toolResult: string;
             try {
               const execStart = Date.now();
               toolResult = await toolExecutor({ name: toolName, arguments: toolArgs });
               const execDuration = Date.now() - execStart;
-              console.log(`[LLM] [Tracked] ✅ 并行工具完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
+              log.debug('并行工具完成', { toolName, duration: execDuration, resultLength: toolResult.length });
             } catch (execError) {
-              console.error('[LLM] [Tracked] 工具执行失败:', execError);
+              log.error('工具执行失败', { error: execError });
               toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
             }
 
@@ -1142,8 +1004,7 @@ export class LLMClient implements ILLMClient {
               tool_call_id: toolCall.id,
             });
           } else {
-            console.error('[LLM] [Tracked] 并行工具调用失败:', result.reason);
-            // 补充 tool response，避免 LLM API 因缺少 tool_call_id 对应的响应而报错
+            log.error('并行工具调用失败', { reason: result.reason });
             const failedIndex = safeResults.indexOf(result);
             if (failedIndex >= 0 && safeCalls[failedIndex]) {
               const errorMsg = `工具执行失败: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`;
@@ -1165,11 +1026,11 @@ export class LLMClient implements ILLMClient {
         try {
           toolArgs = JSON.parse(toolCall.function.arguments);
         } catch {
-          console.error('[LLM] [Tracked] 工具参数 JSON 解析失败:', toolCall.function.arguments);
+          log.error('工具参数 JSON 解析失败', { arguments: toolCall.function.arguments });
           toolArgs = {};
         }
 
-        console.log(`[LLM] [Tracked] 执行工具 (串行): ${toolName}`, toolArgs);
+        log.debug('执行工具 (串行)', { toolName, toolArgs });
 
         let toolResult: string;
         try {
@@ -1179,9 +1040,9 @@ export class LLMClient implements ILLMClient {
             arguments: toolArgs,
           });
           const execDuration = Date.now() - execStart;
-          console.log(`[LLM] [Tracked] ✅ 工具执行完成: ${toolName} (耗时 ${execDuration}ms, 结果 ${toolResult.length} 字符)`);
+          log.debug('工具执行完成', { toolName, duration: execDuration, resultLength: toolResult.length });
         } catch (execError) {
-          console.error('[LLM] [Tracked] 工具执行失败:', execError);
+          log.error('工具执行失败', { error: execError });
           toolResult = `工具执行错误: ${execError instanceof Error ? execError.message : 'Unknown error'}`;
         }
 
@@ -1202,162 +1063,51 @@ export class LLMClient implements ILLMClient {
     throw new LLMError('API_ERROR', 'Max tool call iterations reached');
   }
 
+  /**
+   * Make a non-streaming tool-calling request to the LLM API
+   * @param messages - Array of messages for the conversation
+   * @param tools - Available tool definitions
+   * @param signal - Optional external abort signal
+   * @returns Parsed message with tool_calls and reasoning
+   */
   private async makeToolRequestStream(
     messages: Message[],
     tools: ToolDefinition[],
     signal?: AbortSignal
   ): Promise<{ message: Message; reasoning: string }> {
-    let lastError: LLMError | undefined;
+    const requestBody = this.buildRequestBody(messages, { tools, stream: false });
+    const response = await this.fetchWithRetry(requestBody, signal);
 
-    // 检查外部 signal 是否已经 abort
-    if (signal?.aborted) {
-      throw new LLMError('CANCELLED', 'Request cancelled by external signal');
+    const data = await response.json() as GLMResponse;
+    const choice = data.choices?.[0];
+
+    if (!choice?.message) {
+      throw new LLMError('API_ERROR', 'No message in response');
     }
 
-    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
-      const controller = new AbortController();
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      let onExternalAbort: (() => void) | undefined;
+    const message = choice.message;
+    const reasoning = message.reasoning_content || message.reasoning || '';
 
-      try {
-        console.log(`[LLM] 工具调用请求 attempt ${attempt + 1}/${this.maxRetries}`);
+    if (reasoning) {
+      llmEvents.emit('reasoning', reasoning);
+    }
 
-        // 内部超时
-        timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    log.info('工具调用请求完成', { reasoningLength: reasoning.length, contentLength: (message.content || '').length, toolCallsCount: message.tool_calls?.length || 0 });
 
-        // 外部 signal → 转发到内部 controller（清理在 finally 中）
-        if (signal) {
-          onExternalAbort = () => controller.abort();
-          signal.addEventListener('abort', onExternalAbort);
-        }
-
-        const requestBody = this.buildRequestBody(messages, { tools, stream: false });
-
-        // Acquire slot for concurrent request limiting
-        await this.acquireSlot();
-
-        // 构建请求 headers
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-
-        // 根据 provider 设置认证方式
-        if (this.provider === 'haier') {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-          // 海尔 API 可能需要的额外 headers
-          if (process.env.HAIER_EXTRA_HEADERS) {
-            const extraHeaders = process.env.HAIER_EXTRA_HEADERS.split(',');
-            extraHeaders.forEach(h => {
-              const [key, value] = h.split(':');
-              if (key && value) headers[key.trim()] = value.trim();
-            });
-          }
-        } else {
-          headers['Authorization'] = `Bearer ${this.apiKey}`;
-        }
-
-        const apiUrl = buildApiUrl(this.baseUrl, '/chat/completions');
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        if (timeoutId) clearTimeout(timeoutId);
-        timeoutId = undefined;
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '');
-          throw this.classifyError(response.status, { message: errorText });
-        }
-
-        const data = await response.json() as GLMResponse;
-        const choice = data.choices?.[0];
-
-        if (!choice?.message) {
-          throw new LLMError('API_ERROR', 'No message in response');
-        }
-
-        const message = choice.message;
-        const reasoning = message.reasoning_content || message.reasoning || '';
-
-        if (reasoning) {
-          llmEvents.emit('reasoning', reasoning);
-        }
-
-        console.log(`[LLM] 工具调用请求完成, reasoning: ${reasoning.length} chars, content: ${(message.content || '').length} chars, tool_calls: ${message.tool_calls?.length || 0}`);
-
-        return {
-          message: {
-            role: 'assistant',
-            content: message.content || '',
-            tool_calls: message.tool_calls?.map(tc => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              },
-            })),
+    return {
+      message: {
+        role: 'assistant',
+        content: message.content || '',
+        tool_calls: message.tool_calls?.map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments,
           },
-          reasoning,
-        };
-      } catch (error) {
-        console.log('[LLM] 工具调用请求错误:', error);
-
-        // 区分外部取消、内部超时、其他错误
-        const errObj = error instanceof Error ? error : null;
-        const isExternalAbort = signal?.aborted && errObj?.name === 'AbortError';
-        const isInternalTimeout = !signal?.aborted && errObj?.name === 'AbortError';
-
-        if (isExternalAbort) {
-          // 外部取消（如 TaskQueue 超时），不重试，直接抛出
-          throw new LLMError('CANCELLED', 'Request cancelled by external signal');
-        }
-
-        if (isInternalTimeout) {
-          lastError = new LLMError('TIMEOUT', `LLM 请求超时 (${this.timeoutMs}ms)`);
-          if (attempt < this.maxRetries - 1) {
-            const delay = this.getBackoffDelay(attempt, 'TIMEOUT');
-            console.log(`[LLM] ⏱️ 请求超时，${delay}ms 后重试 (attempt ${attempt + 1}/${this.maxRetries})`);
-            await this.sleep(delay);
-          }
-          continue;
-        }
-
-        if (error instanceof LLMError) {
-          lastError = error;
-          if (error.type === 'INVALID_KEY' || error.type === 'CANCELLED' || error.type === 'QUEUE_FULL') {
-            throw error;
-          }
-          // 与 makeRequest 保持一致：RATE_LIMIT/TIMEOUT/NETWORK_ERROR/SERVER 可重试，其余抛错
-          const retryableErrors = ['RATE_LIMIT', 'TIMEOUT', 'NETWORK_ERROR'];
-          const isRetryable = retryableErrors.includes(error.type) || error.type.includes('SERVER');
-          if (!isRetryable) throw error;
-        } else {
-          lastError = new LLMError(
-            'NETWORK_ERROR',
-            error instanceof Error ? error.message : 'Unknown error'
-          );
-        }
-
-        if (attempt < this.maxRetries - 1) {
-          const delay = this.getBackoffDelay(attempt, lastError?.type);
-          console.log(`[LLM] ${delay}ms 后重试`);
-          await this.sleep(delay);
-        }
-      } finally {
-        // 清理：防止内存泄漏
-        if (timeoutId) clearTimeout(timeoutId);
-        if (onExternalAbort && signal) {
-          signal.removeEventListener('abort', onExternalAbort);
-        }
-        // Release slot for concurrent request limiting
-        this.releaseSlot();
-      }
-    }
-
-    throw lastError || new LLMError('UNKNOWN_ERROR', 'Request failed after all retries');
+        })),
+      },
+      reasoning,
+    };
   }
 }

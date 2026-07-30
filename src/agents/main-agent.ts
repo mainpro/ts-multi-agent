@@ -25,6 +25,9 @@ import { fireAndForget } from "../utils/fire-and-forget";
 import { createLogger } from '../observability/logger';
 import { TaskGraphExecutor } from "./task-graph-executor";
 import { ResultAggregator } from "./result-aggregator";
+import { SessionGate, QueueFullError } from "./session-gate";
+import { requestLifecycle } from "../events/request-lifecycle";
+import { BusinessError, AppError } from '../errors';
 
 /**
  * MainAgent 依赖注入接口
@@ -61,6 +64,7 @@ export class MainAgent {
   private executorRegistry: ExecutorRegistry;
   private taskGraphExecutor: TaskGraphExecutor;
   private resultAggregator: ResultAggregator;
+  private gate: SessionGate;
 
   constructor(deps: MainAgentDependencies) {
     const {
@@ -89,7 +93,11 @@ export class MainAgent {
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
     );
-    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator);
+    this.gate = new SessionGate(sessionStore);
+    // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.
+    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator, {
+      onCheckpoint: (info) => this.onTaskGraphCheckpoint(info),
+    });
   }
 
   async processRequirement(
@@ -97,117 +105,158 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean },
-  ): Promise<TaskResult> {
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; requestOverride?: Request },
+  ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
-    try {
-      console.log(`[MainAgent] 📥 收到用户请求: "${requirement}"`);
-
-      // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
-      if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
+    // Gate: if the session already has an active request, queue this one.
+    // Skip when the caller is the queue/merge pipeline itself (spawnMergedRequest)
+    // — the merged R2 is already the active request by the time it runs, so the
+    // gate would queue it again as a self-enqueue.
+    if (!options?.skipGate) {
+      const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const decision = await this.gate.decide(userId, effectiveSessionId, {
+        draftId, requirement, hasImage: !!imageAttachment,
+      });
+      if (decision.type === 'queue') {
+        const enqueuedAt = new Date().toISOString();
         try {
-          // 优先从 L4 历史恢复(更纯粹)
-          const l4 = this.memoryService.getL4();
-          const historyEntries = await l4.listEntries(userId, sessionId);
-          if (historyEntries.length > 0) {
-            sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
+          const { position } = await this.gate.enqueue(userId, effectiveSessionId, {
+            draftId, requirement, enqueuedAt, hasImage: !!imageAttachment,
+          });
+          requestLifecycle.emit({ type: 'request_queued', draftId, position, enqueuedAt });
+          return { success: true, queued: true, draftId, position, data: undefined as any };
+        } catch (enqueueErr) {
+          if (enqueueErr instanceof QueueFullError) {
+            return {
+              success: false,
+              queueFull: true,
+              pendingCount: enqueueErr.pendingCount,
+              draftId,
+              data: undefined as any,
+            };
           }
-        } catch (error) {
-          console.warn(`[MainAgent] ⚠️ 恢复会话上下文失败:`, error);
+          throw enqueueErr;
         }
       }
+      if (decision.type === 'continue_waiting') {
+        // Fall through to existing AskAgent.handleUserInput path which routes to continueRequest.
+      }
+    }
 
-      // L1 + L4 同步写入(替代旧的双写)
+    // Track last seen session for checkpoint callback
+    (this as any)._lastSeenUserId = userId;
+    (this as any)._lastSeenSessionId = effectiveSessionId;
+    (this as any)._lastSeenActiveRequestId = await this.sessionIdForCheckpoint(effectiveSessionId);
+
+    // Top-level: no catch — let AppError propagate to API middleware.
+    // (Known failures throw AppError explicitly in inner methods.)
+    MainAgent.log.info('收到用户请求', { requirement });
+
+    // ========== 步骤 0: 恢复会话上下文（服务重启后从 L4 历史恢复） ==========
+    if (sessionId && !sessionContextService.hasActiveContext(sessionId)) {
       try {
-        await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
-      } catch (e) { console.error('[MainAgent] Failed to save user message to memory:', e); }
-
-      // ========== 步骤 1: 图片分析 ==========
-      if (imageAttachment) {
-        console.log(`[MainAgent] 📎 附件: ${imageAttachment.originalName || "unnamed"} (${imageAttachment.mimeType})`);
-        try {
-          const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
-          const visionClient = new VisionLLMClient();
-          const visionResult = await visionClient.analyzeImage(
-            imageAttachment.data.toString("base64"),
-            imageAttachment.mimeType,
-          );
-          console.log(`[MainAgent] ✅ 视觉分析完成: ${visionResult.system || "未知系统"}`);
-          requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
-        } catch (visionError) {
-          console.error(`[MainAgent] ❌ 视觉分析失败:`, visionError);
+        // 优先从 L4 历史恢复(更纯粹)
+        const l4 = this.memoryService.getL4();
+        const historyEntries = await l4.listEntries(userId, sessionId);
+        if (historyEntries.length > 0) {
+          sessionContextService.restoreFromHistory(sessionId, userId, historyEntries);
         }
+      } catch (error) {
+        MainAgent.log.warn('恢复会话上下文失败', { error });
       }
+    }
 
-      // ========== 步骤 1.5: 系统命令拦截 ==========
-      if (SystemSkillLoader.isSystemCommand(requirement)) {
-        const cmdName = SystemSkillLoader.extractCommandName(requirement);
-        const systemSkill = this.systemSkillLoader.getCommand(cmdName);
+    // L1 + L4 同步写入(替代旧的双写)
+    try {
+      await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
+    } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
-        if (!systemSkill) {
-          return {
-            success: false,
-            error: {
-              type: 'FATAL',
-              message: `未知系统命令 /${cmdName}，可用命令: ${this.systemSkillLoader.getAllCommands().join(', ')}`,
-              code: 'UNKNOWN_COMMAND',
-            },
-          };
-        }
+    // ========== 步骤 1: 图片分析 ==========
+    if (imageAttachment) {
+      MainAgent.log.info('附件信息', { originalName: imageAttachment.originalName, mimeType: imageAttachment.mimeType });
+      try {
+        const VisionLLMClient = (await import("./vision-client.js")).VisionLLMClient;
+        const visionClient = new VisionLLMClient();
+        const visionResult = await visionClient.analyzeImage(
+          imageAttachment.data.toString("base64"),
+          imageAttachment.mimeType,
+        );
+        MainAgent.log.info('视觉分析完成', { system: visionResult.system });
+        requirement = `${requirement}\n\n[图片分析结果]\n系统: ${visionResult.system || "未知"}\n错误类型: ${visionResult.errorType || "未知"}\n描述: ${visionResult.description}\n建议操作: ${visionResult.suggestedAction || "无"}`;
+      } catch (visionError) {
+        MainAgent.log.error('视觉分析失败', { error: visionError });
+      }
+    }
 
-        const executor = this.executorRegistry.getExecutor(systemSkill.executor, this.llm);
-        if (!executor) {
-          return {
-            success: false,
-            error: {
-              type: 'FATAL',
-              message: `执行器类型 "${systemSkill.executor}" 未注册`,
-              code: 'EXECUTOR_NOT_FOUND',
-            },
-          };
-        }
+    // ========== 步骤 1.5: 系统命令拦截 ==========
+    if (SystemSkillLoader.isSystemCommand(requirement)) {
+      const cmdName = SystemSkillLoader.extractCommandName(requirement);
+      const systemSkill = this.systemSkillLoader.getCommand(cmdName);
 
-        console.log(`[MainAgent] 🛠️ 执行系统命令: /${cmdName} (执行器: ${systemSkill.executor})`);
-        const result = await executor.execute(systemSkill, { requirement });
-
+      if (!systemSkill) {
         return {
-          success: result.success,
-          data: result.success ? { response: result.message || '执行完成', data: result.data } : undefined,
-          error: result.success ? undefined : { type: 'FATAL' as const, message: result.error || '执行失败', code: 'EXECUTION_ERROR' },
+          success: false,
+          error: {
+            type: 'FATAL',
+            message: `未知系统命令 /${cmdName}，可用命令: ${this.systemSkillLoader.getAllCommands().join(', ')}`,
+            code: 'UNKNOWN_COMMAND',
+          },
         };
       }
 
-      // ========== 步骤 2: AskAgent 处理用户输入 ==========
-      const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
-      console.log(`[MainAgent] 📊 AskAgent 结果: ${handleResult.type}`);
-
-      switch (handleResult.type) {
-        case 'continue':
-          // 用户回复了等待的问题，继续执行
-          return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
-
-        case 'new_request':
-          // 新请求，走正常流程
-          return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
-
-        default:
-          return {
-            success: false,
-            error: { type: 'FATAL', message: '未知的处理结果类型', code: 'UNKNOWN_HANDLE_RESULT' },
-          };
+      const executor = this.executorRegistry.getExecutor(systemSkill.executor, this.llm);
+      if (!executor) {
+        return {
+          success: false,
+          error: {
+            type: 'FATAL',
+            message: `执行器类型 "${systemSkill.executor}" 未注册`,
+            code: 'EXECUTOR_NOT_FOUND',
+          },
+        };
       }
-    } catch (error) {
-      console.error("Error processing requirement:", error);
+
+      MainAgent.log.info('执行系统命令', { cmdName, executor: systemSkill.executor });
+      const result = await executor.execute(systemSkill, { requirement });
+
       return {
-        success: false,
-        error: {
-          type: "FATAL",
-          message: error instanceof Error ? error.message : "Unknown error",
-          code: "PROCESSING_ERROR",
-        },
+        success: result.success,
+        data: result.success ? { response: result.message || '执行完成', data: result.data } : undefined,
+        error: result.success ? undefined : { type: 'FATAL' as const, message: result.error || '执行失败', code: 'EXECUTION_ERROR' },
       };
     }
+
+    // ========== 步骤 2: AskAgent 处理用户输入 ==========
+    // requestOverride: when the caller already created a Request (e.g. spawnMergedRequest
+    // pre-creating R2 with merged content), skip askAgent.handleUserInput's createRequest
+    // step and use the provided request directly. Without this, the merged flow would
+    // create a duplicate R3 and orphan R2.
+    const handleResult = options?.requestOverride
+      ? { type: 'new_request' as const, request: options.requestOverride }
+      : await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
+    MainAgent.log.info('AskAgent 结果', { type: handleResult.type });
+
+    switch (handleResult.type) {
+      case 'continue':
+        // 用户回复了等待的问题，继续执行
+        return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
+
+      case 'new_request':
+        // 新请求，走正常流程
+        return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
+
+      case 'recall_prompt':
+      case 'no_action':
+        return {
+          success: false,
+          error: { type: 'FATAL', message: '未知的处理结果类型', code: 'UNKNOWN_HANDLE_RESULT' },
+        };
+    }
+    // Exhaustiveness check: if a new HandleResult.type variant is added,
+    // TypeScript will fail compilation here.
+    const _exhaustive: never = handleResult;
+    void _exhaustive;
   }
 
   /**
@@ -283,8 +332,9 @@ export class MainAgent {
         requestStatus: activeRequest?.status || null,
       };
     } catch (error) {
-      console.error('[MainAgent] 获取会话历史失败:', error);
-      return { exists: false, messages: [], activeRequestId: null, requestStatus: null };
+      MainAgent.log.error('[MainAgent] 获取会话历史失败', { error });
+      if (error instanceof AppError) throw error;
+      throw new BusinessError('SESSION_HISTORY_FAILED', 'Failed to load session history', { cause: error });
     }
   }
 
@@ -297,22 +347,19 @@ export class MainAgent {
     request: Request,
     question: QAEntry
   ): Promise<TaskResult> {
-    console.log(`[MainAgent] 🔄 继续执行请求: ${request.requestId}`);
-    console.log(`[MainAgent] 📝 问题: "${question.content.substring(0, 60)}..."`);
-    console.log(`[MainAgent] 📝 回答: "${question.answer}"`);
-    console.log(`[MainAgent] 📝 question.taskId="${question.taskId || '(null)'}" question.source="${question.source || '?'}"`);
+    MainAgent.log.info('继续执行请求', { requestId: request.requestId, question: question.content, answer: question.answer, taskId: question.taskId, source: question.source });
 
     // 找到关联的任务（如果有）
     const taskEntry = question.taskId
       ? request.tasks.find(t => t.taskId === question.taskId)
       : null;
 
-    console.log(`[MainAgent] 📝 taskEntry=${taskEntry ? taskEntry.taskId : 'NULL'}, request.tasks=[${request.tasks.map(t => `${t.taskId}(status=${t.status})`).join(', ')}]`);
+    MainAgent.log.info('任务关联', { taskEntryId: taskEntry?.taskId, requestTasks: request.tasks.map(t => `${t.taskId}(status=${t.status})`).join(', ') });
 
     if (taskEntry) {
       // 检查是否有断点续传的执行进度
       if (request.executionProgress) {
-        console.log(`[MainAgent] 📌 检测到执行进度，从断点恢复 (Layer ${request.executionProgress.currentLayerIndex})`);
+        MainAgent.log.info('检测到执行进度，从断点恢复', { layerIndex: request.executionProgress.currentLayerIndex });
         return this.resumeFromBreakpoint(userId, sessionId, request, question);
       }
 
@@ -321,7 +368,7 @@ export class MainAgent {
       if (!task) {
         // TaskQueue 是内存的，服务器重启后队列为空。
         // 从 SessionStore 持久化数据重建 Task 对象并恢复执行。
-        console.warn(`[MainAgent] ⚠️ 任务 ${taskEntry.taskId} 在 TaskQueue 中不存在，从持久化数据重建`);
+        MainAgent.log.warn('任务在 TaskQueue 中不存在，从持久化数据重建', { taskId: taskEntry.taskId });
 
         const answers = (taskEntry.questions || [])
           .filter((q: QAEntry) => q.answer)
@@ -342,7 +389,7 @@ export class MainAgent {
         if (paramName && question.answer) {
           reconstructed.params = reconstructed.params || {};
           reconstructed.params[paramName] = question.answer;
-          console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+          MainAgent.log.info('自动填充参数', { paramName, value: question.answer });
         }
 
         // 从已回答问题构建 conversationSummary
@@ -355,7 +402,7 @@ export class MainAgent {
           reconstructed.params.conversationSummary = conversationSummary;
         }
 
-        console.log(`[MainAgent] 📝 任务已重建并继续: ${taskEntry.taskId}`);
+        MainAgent.log.info('任务已重建并继续', { taskId: taskEntry.taskId });
         return this.pollTaskCompletion(reconstructed.id, userId, sessionId, request);
       }
 
@@ -364,7 +411,7 @@ export class MainAgent {
       if (paramName && question.answer) {
         task.params = task.params || {};
         task.params[paramName] = question.answer;
-        console.log(`[MainAgent] ✅ 自动填充参数 ${paramName} = ${question.answer}`);
+        MainAgent.log.info('自动填充参数', { paramName, value: question.answer });
       }
 
       // 添加询问历史到 task（用于子智能体 prompt）
@@ -399,20 +446,23 @@ export class MainAgent {
       task.result = undefined;
       task.error = undefined;
 
-      console.log(`[MainAgent] 📝 任务已准备继续: ${taskEntry.taskId} (询问历史: ${task.questionHistory.length}条)`);
+      MainAgent.log.info('任务已准备继续', { taskId: taskEntry.taskId, questionHistoryCount: task.questionHistory.length });
 
       const ctxLen = task.conversationContext?.length ?? 0;
-      console.log(`[MainAgent] 📝 conversationContext entries: ${ctxLen}, completedToolCalls: ${task.completedToolCalls?.length ?? 0}`);
+      MainAgent.log.info('任务上下文状态', { conversationContextEntries: ctxLen, completedToolCalls: task.completedToolCalls?.length ?? 0 });
 
       this.taskQueue.triggerProcess();
       return this.pollTaskCompletion(taskEntry.taskId, userId, sessionId, request);
     }
 
     // 主智能体自己的询问（如 confirm_system），需要重新识别意图并派发任务
-    // 将回答作为上下文追加到需求中
-    console.log(`[MainAgent] 💬 主智能体询问已回答，重新识别意图: "${question.content.substring(0, 40)}..." → "${question.answer}"`);
-    const enrichedRequirement = `之前的对话：\n问：${question.content}\n答：${question.answer}\n\n现在请继续处理：${request.content}`;
-    return this.processNormalRequirement(enrichedRequirement, userId, sessionId, request, undefined, undefined, 1);
+    // 将用户回答保存到记忆，然后直接传递原始需求 — 避免在 enrichedRequirement 中
+    // 重复 Q&A（historyPrompt 会从记忆中加载完整对话上下文，包括本次问答）
+    MainAgent.log.info('主智能体询问已回答，重新识别意图', { question: question.content.substring(0, 40), answer: question.answer });
+    try {
+      await this.memoryService.saveUserMessage(userId, sessionId, question.answer || '');
+    } catch (e) { MainAgent.log.error('保存用户回答到记忆失败', { error: e }); }
+    return this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1);
   }
 
   /**
@@ -425,6 +475,220 @@ export class MainAgent {
     question: QAEntry,
   ): Promise<TaskResult> {
     return this.taskGraphExecutor.resumeFromBreakpoint(userId, sessionId, request, question);
+  }
+
+  /** Look up the active request ID for the given session — used by onTaskGraphCheckpoint. */
+  private async sessionIdForCheckpoint(sessionId: string): Promise<string | null> {
+    const session = await this.sessionStore.loadSession(
+      (this as any)._lastSeenUserId,
+      sessionId,
+    );
+    return session.activeRequestId;
+  }
+
+  /**
+   * Checkpoint callback wired into TaskGraphExecutor. Invoked between task
+   * graph layers. If the session has pending requests, drain them and spawn
+   * a new merged request. The current request is marked 'checkpoint_reached'.
+   *
+   * The `info.requestId` from TaskGraphExecutor is a placeholder ('session-active')
+   * that the executor doesn't have access to; we resolve the real current request
+   * from `session.activeRequestId` instead.
+   */
+  private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<void> {
+    // Locate the session this layer belongs to. We rely on _lastSeen* fields
+    // populated at the start of processRequirement.
+    const userId = (this as any)._lastSeenUserId as string | undefined;
+    const sessionId = (this as any)._lastSeenSessionId as string | undefined;
+    if (!userId || !sessionId) {
+      return; // No session context — skip checkpoint.
+    }
+
+    const session = await this.sessionStore.loadSession(userId, sessionId);
+    if (session.pendingRequests.length === 0) {
+      return; // Nothing to drain.
+    }
+
+    // Mark current request as checkpoint_reached
+    const currentReq = session.requests.find(r => r.requestId === session.activeRequestId);
+    if (currentReq) {
+      currentReq.status = 'checkpoint_reached';
+      currentReq.updatedAt = new Date().toISOString();
+    }
+    session.activeRequestId = null;
+    await this.sessionStore.saveSession(userId, sessionId, session);
+
+    // Clean up R1's pending tasks from TaskQueue. They will be re-planned by R2.
+    // Tasks already completed (in info.completedTaskIds) are left alone — only
+    // unstarted tasks are removed. This prevents stale side effects from firing
+    // after R1 is closed.
+    if (currentReq) {
+      const completedSet = new Set(info.completedTaskIds);
+      let removed = 0;
+      for (const task of currentReq.tasks) {
+        if (!completedSet.has(task.taskId) && task.status !== 'completed') {
+          if (this.taskQueue.removePendingTask(task.taskId)) removed++;
+        }
+      }
+      if (removed > 0) {
+        MainAgent.log.info('checkpoint: removed R1 unstarted tasks', {
+          requestId: currentReq.requestId,
+          removed,
+          completed: info.completedTaskIds.length,
+        });
+      }
+    }
+
+    // Emit checkpoint event with the real current requestId
+    requestLifecycle.emit({
+      type: 'request_checkpoint',
+      requestId: currentReq?.requestId ?? info.requestId,
+      checkpointAt: new Date().toISOString(),
+      pendingCount: session.pendingRequests.length,
+      completedTaskCount: info.completedTaskIds.length,
+    });
+
+    // Spawn merged
+    await this.spawnMergedRequest(userId, sessionId, currentReq?.requestId ?? '', session.pendingRequests);
+  }
+
+  /**
+   * Drain pending requests, build merged requirement, create a new Request,
+   * emit request_spawned, and trigger processRequirement on the merged content.
+   */
+  private async spawnMergedRequest(
+    userId: string,
+    sessionId: string,
+    parentRequestId: string,
+    _pendingRequests: import('../types').PendingRequest[],
+  ): Promise<void> {
+    const drained = await this.gate.drain(userId, sessionId);
+    if (drained.length === 0) return;
+
+    const session = await this.sessionStore.loadSession(userId, sessionId);
+    const parent = session.requests.find(r => r.requestId === parentRequestId);
+    const parentContent = parent?.content ?? '';
+
+    const mergedRequirement =
+      parentContent +
+      '\n\n---\n\n' +
+      drained.map(p => p.requirement).join('\n\n---\n\n');
+
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    session.requests.push({
+      requestId,
+      content: mergedRequirement,
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      suspendedAt: null,
+      suspendedReason: null,
+      questions: [],
+      currentQuestion: null,
+      tasks: [],
+      result: null,
+    });
+    session.activeRequestId = requestId;
+    await this.sessionStore.saveSession(userId, sessionId, session);
+
+    requestLifecycle.emit({
+      type: 'request_spawned',
+      requestId,
+      parentRequestId,
+      draftIds: drained.map(d => d.draftId),
+      requirementPreview: mergedRequirement.substring(0, 200),
+    });
+
+    // Track last seen session for checkpoint callback
+    (this as any)._lastSeenUserId = userId;
+    (this as any)._lastSeenSessionId = sessionId;
+    (this as any)._lastSeenActiveRequestId = requestId;
+
+    // Fire-and-forget: process the merged requirement.
+    // skipGate: this is the merged R2, already the active request — the gate would
+    // otherwise treat it as a fresh pending submission and self-enqueue it.
+    // requestOverride: pass the pre-created R2 so processRequirement skips askAgent's
+    // createRequest step (which would otherwise create a duplicate R3).
+    //
+    // The result/rejection both flow through `handleMergedCompletion`, which:
+    //   - emits a `request_error` lifecycle event when R2 failed (so the original
+    //     SSE stream receives the error even though its handler already returned 202)
+    //   - clears session.activeRequestId so the session is ready for the next input
+    //   - logs structured error info for ops visibility
+    void this.processRequirement(mergedRequirement, undefined, userId, sessionId, {
+      skipGate: true,
+      requestOverride: session.requests[session.requests.length - 1],
+    })
+      .then(
+        (result) => this.handleMergedCompletion(userId, sessionId, requestId, parentRequestId, result, null),
+        (err) => this.handleMergedCompletion(userId, sessionId, requestId, parentRequestId, null, err),
+      );
+  }
+
+  /**
+   * Handle R2 completion (success or failure). Emits a `request_error` event so
+   * the original SSE stream learns about R2's failure, and clears
+   * activeRequestId so the session is ready for the next input.
+   */
+  private async handleMergedCompletion(
+    userId: string,
+    sessionId: string,
+    r2RequestId: string,
+    parentRequestId: string,
+    result: (TaskResult & { queued?: boolean; queueFull?: boolean; draftId?: string; position?: number }) | null,
+    rejection: unknown,
+  ): Promise<void> {
+    // Distinguish: did R2 throw, or did it return a failure result?
+    const failure = rejection
+      ? { type: 'FATAL' as const, message: rejection instanceof Error ? rejection.message : String(rejection) }
+      : (result && (result as any).success === false)
+        ? (result as any).error ?? { type: 'FATAL' as const, message: 'unknown failure' }
+        : null;
+
+    if (!failure) {
+      return; // R2 succeeded — normal completion path already wrote the session.
+    }
+
+    MainAgent.log.error('合并请求处理失败', {
+      parentRequestId,
+      newRequestId: r2RequestId,
+      userId,
+      sessionId,
+      error: failure.message,
+      type: failure.type,
+      code: (failure as any).code,
+      stack: rejection instanceof Error ? rejection.stack : undefined,
+    });
+
+    // Mark R2 as failed in session store
+    try {
+      const session = await this.sessionStore.loadSession(userId, sessionId);
+      const r2 = session.requests.find(r => r.requestId === r2RequestId);
+      if (r2) {
+        r2.status = 'failed';
+        r2.result = failure.message;
+        r2.updatedAt = new Date().toISOString();
+      }
+      if (session.activeRequestId === r2RequestId) {
+        session.activeRequestId = null;
+      }
+      await this.sessionStore.saveSession(userId, sessionId, session);
+    } catch (sessionErr) {
+      MainAgent.log.error('记录 R2 失败状态失败', { error: sessionErr });
+    }
+
+    // Emit lifecycle event so the API forwards it to the original SSE stream
+    requestLifecycle.emit({
+      type: 'request_error',
+      requestId: r2RequestId,
+      parentRequestId,
+      error: {
+        type: failure.type,
+        code: (failure as any).code,
+        message: failure.message,
+      },
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
@@ -441,7 +705,7 @@ export class MainAgent {
   ): Promise<TaskResult> {
     // 递归深度限制，防止无限递归
     if (depth > 3) {
-      console.error(`[MainAgent] ❌ 递归深度超过限制 (${depth} > 3)，终止处理`);
+      MainAgent.log.error('递归深度超过限制', { depth });
       return {
         success: false,
         error: { type: 'FATAL', message: '请求处理递归深度超过限制，请简化您的需求后重试', code: 'MAX_RECURSION_DEPTH' },
@@ -461,7 +725,7 @@ export class MainAgent {
         this.sessionStore.loadSession(userId, sessionId),
         this.dynamicContextBuilder.build(requirement, userId, sessionId),
       ]);
-      console.log(`[MainAgent] 👤 用户画像: ${JSON.stringify(Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)))}`);
+      MainAgent.log.debug('用户画像', { profile: Object.fromEntries(Object.entries(userProfile).filter(([, v]) => v !== undefined && v !== null)) });
 
       // ========== 召回相关记忆 ==========
       let recalledContext = '';
@@ -476,14 +740,14 @@ export class MainAgent {
           });
           recalledContext = '\n[相关记忆]\n' + lines.join('\n');
         }
-      } catch (e) { console.error('[MainAgent] Failed to recall memory:', e); }
+      } catch (e) { MainAgent.log.error('召回记忆失败', { error: e }); }
 
       // ========== 加载活跃任务（防止重复分派）==========
       const activeTasksInSession = request.tasks.filter(t =>
         t.status !== 'completed' && t.status !== 'failed'
       );
       if (activeTasksInSession.length > 0) {
-        console.log(`[MainAgent] 📋 活跃任务: ${activeTasksInSession.length}个`);
+        MainAgent.log.info('活跃任务', { count: activeTasksInSession.length });
       }
 
       // 删除 AutoCompactService 依赖:buildContextPrompt 已 slice(-50),足够压缩
@@ -500,7 +764,7 @@ export class MainAgent {
       const sessionPrompt = buildSessionPrompt(session);
       if (sessionPrompt) {
         enrichedRequirement = sessionPrompt + "\n\n" + enrichedRequirement;
-        console.log(`[MainAgent] 📑 Session 上下文已注入`);
+        MainAgent.log.info('Session 上下文已注入');
       }
 
       if (dynamicContext) {
@@ -508,7 +772,7 @@ export class MainAgent {
       }
 
       // ========== 意图路由 ==========
-      console.log(`[MainAgent] 🔄 正在分类用户意图...`);
+      MainAgent.log.info('正在分类用户意图');
 
       await hookManager.emit(HookEvent.BEFORE_INTENT_CLASSIFY, {
         userId, sessionId, data: { requirement }
@@ -533,7 +797,7 @@ export class MainAgent {
             usageCount: (r.metadata!.usageCount as number) || 0,
             lastSuccess: (r.metadata!.success as boolean) ?? true,
           }));
-      } catch (e) { console.error('[MainAgent] Failed to recall procedural memory:', e); }
+      } catch (e) { MainAgent.log.error('召回过程性记忆失败', { error: e }); }
 
       const intentResult = await this.intentRouter.classify(
         requirement, userProfile, recentHistory, sessionId, proceduralExperience, userId,
@@ -543,7 +807,7 @@ export class MainAgent {
         userId, sessionId, data: { intent: intentResult.intent, confidence: intentResult.confidence, tasks: intentResult.tasks }
       });
 
-      console.log(`[MainAgent] 📊 意图分类: ${intentResult.intent} (置信度: ${intentResult.confidence})`);
+      MainAgent.log.info('意图分类结果', { intent: intentResult.intent, confidence: intentResult.confidence });
 
       if (intentResult.intent !== "skill_task") {
         return this.handleNonSkillIntent(intentResult, sessionId, request, userId);
@@ -581,7 +845,7 @@ export class MainAgent {
         assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
         try {
           await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-        } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+        } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
         // 请求级摘要(异步,失败不阻塞)
         fireAndForget(
@@ -628,7 +892,7 @@ export class MainAgent {
         }
       }
 
-      console.log(`[MainAgent] ✅ 规划完成 - 共 ${plan.tasks.length} 个任务`);
+      MainAgent.log.info('规划完成', { taskCount: plan.tasks.length });
 
       if (options?.planMode && plan) {
         return {
@@ -663,7 +927,7 @@ export class MainAgent {
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);
       }
 
-      console.log(`[MainAgent] 🔄 构建 TaskGraph 并执行`);
+      MainAgent.log.info('构建 TaskGraph 并执行');
 
       await hookManager.emit(HookEvent.BEFORE_TASK_EXECUTE, {
         userId, sessionId, data: { planId: plan.id, tasks: plan.tasks }
@@ -690,22 +954,31 @@ export class MainAgent {
         const skillResult = waitingResult?.result?.data;
 
         if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
-          console.log(`[MainAgent] 🔄 检测到子任务 ${waitingTaskId} 需要用户输入`);
+          MainAgent.log.info('检测到子任务需要用户输入', { waitingTaskId });
 
           const qaEntry = this.resultAggregator.createQAEntry(skillResult!, waitingTaskId, waitingResult?.skillName || null);
 
           // 子智能体询问只放到任务级 questions，不放请求级
+          // 同时保存断点续执行上下文（conversationContext 等），确保进程重启后可恢复
+          const waitingTask = request.tasks.find(t => t.taskId === waitingTaskId);
           await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, waitingTaskId, {
             currentQuestion: qaEntry,
             status: 'waiting',
-            questions: [...(request.tasks.find(t => t.taskId === waitingTaskId)?.questions || []), qaEntry],
+            questions: [...(waitingTask?.questions || []), qaEntry],
+            conversationContext: waitingTask?.conversationContext,
+            completedToolCalls: waitingTask?.completedToolCalls,
+            executionProgress: waitingTask?.executionProgress,
           });
+
+          // waiting 状态是断点关键点，立即刷盘（不走防抖），防止崩溃丢失上下文
+          const session = await this.sessionStore.loadSession(userId, sessionId);
+          await this.sessionStore.flushToDisk(userId, sessionId, session);
 
           try {
             await this.memoryService.saveAssistantMessage(userId, sessionId, qaEntry.content, {
               skillName: qaEntry.skillName || undefined,
             });
-          } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+          } catch (e) { MainAgent.log.error('保存助手消息到记忆失败', { error: e }); }
 
           return {
             success: true,
@@ -733,7 +1006,7 @@ export class MainAgent {
 
       if (taskList.length === 1) {
         // 单任务：直接使用子智能体的结果，无需额外汇总
-        console.log(`[MainAgent] ✅ 单任务完成，跳过汇总，直接使用子智能体结果`);
+        MainAgent.log.info('单任务完成，跳过汇总，直接使用子智能体结果');
         finalResponse = taskList[0].response;
         if (!finalResponse) {
           finalResponse = JSON.stringify(result.data);
@@ -762,7 +1035,7 @@ export class MainAgent {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse, {
           skillName: taskList[0]?.skillName || undefined,
         });
-      } catch (e) { console.error('[MainAgent] Failed to save assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存助手消息到记忆失败', { error: e }); }
       // 请求级摘要(异步,失败不阻塞) — 替代旧 semanticExtractor.extract
       fireAndForget(
         this.memoryService.summarizeRequest({
@@ -787,19 +1060,19 @@ export class MainAgent {
         },
       };
     } catch (error) {
-      console.error("Error processing normal requirement:", error);
+      MainAgent.log.error('处理普通需求失败', { error });
       await this.sessionStore.failRequest(userId, sessionId, request.requestId, error instanceof Error ? error.message : 'Unknown error');
-      return {
-        success: false,
-        error: { type: "FATAL", message: error instanceof Error ? error.message : "Unknown error", code: "PROCESSING_ERROR" },
-      };
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new BusinessError('PROCESSING_FAILED', error instanceof Error ? error.message : 'Unknown error', { cause: error });
     } finally {
       // 回滚 L1 最后一条消息(如果未生成 assistantResponse)
       if (!assistantResponse) {
         try {
           await this.memoryService.popLastAssistantMessage(userId, sessionId);
         } catch (e) {
-          console.error('[MainAgent] Failed to pop last assistant message:', e);
+          MainAgent.log.error('移除最后助手消息失败', { error: e });
         }
       }
     }
@@ -815,7 +1088,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "您好！有什么可以帮助您的吗？";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
       // 请求级摘要
       fireAndForget(
@@ -833,7 +1106,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "请问您说的是哪个系统？";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
 
       // 主智能体询问 → 记录到请求的 questions 中
       if (intentResult.question) {
@@ -869,7 +1142,7 @@ export class MainAgent {
       assistantResponse = intentResult.question?.content || "抱歉，这个问题超出了我的处理范围。";
       try {
         await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-      } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+      } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
       await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
       // 请求级摘要
       fireAndForget(
@@ -887,7 +1160,7 @@ export class MainAgent {
     assistantResponse = intentResult.question?.content || "抱歉，我暂时无法理解您的需求，请换个方式描述或联系人工客服。";
     try {
       await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
-    } catch (e) { console.error('[MainAgent] Failed to save non-skill assistant message to memory:', e); }
+    } catch (e) { MainAgent.log.error('保存非技能助手消息到记忆失败', { error: e }); }
     await this.sessionStore.completeRequest(userId, sessionId, request.requestId, assistantResponse);
     // 请求级摘要
     fireAndForget(
@@ -997,7 +1270,7 @@ export class MainAgent {
   ): Promise<void> {
     const mentionedSystem = this.userProfileService.inferSystemFromText(enrichedRequirement);
     if (mentionedSystem && !userProfile.commonSystems.includes(mentionedSystem)) {
-      console.log(`[MainAgent] 📝 更新用户画像: 新增系统 ${mentionedSystem}`);
+      MainAgent.log.info('更新用户画像: 新增系统', { system: mentionedSystem });
       await this.userProfileService.updateProfile(userId, {
         commonSystems: [...userProfile.commonSystems, mentionedSystem],
         conversationCount: userProfile.conversationCount + 1,
