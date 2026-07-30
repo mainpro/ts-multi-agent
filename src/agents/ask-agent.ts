@@ -1,5 +1,6 @@
 import { ILLMClient } from '../llm';
 import { SessionStore } from '../memory/session-store';
+import { TaskQueue } from '../task-queue';
 import { QAEntry, ContinuationResult, HandleResult, Request } from '../types';
 import { createLogger } from '../observability/logger';
 
@@ -32,7 +33,12 @@ export class AskAgent {
   private static readonly log = createLogger({ module: 'AskAgent' });
   constructor(
     private sessionStore: SessionStore,
-    private llm: ILLMClient
+    private llm: ILLMClient,
+    /**
+     * 可选:挂起请求时用于清理 TaskQueue 中残留的 pending 任务。
+     * 不传则仅清理 session 状态(向后兼容测试和老调用方)。
+     */
+    private taskQueue?: TaskQueue,
   ) {}
 
   /**
@@ -70,6 +76,26 @@ export class AskAgent {
       // 用户切换话题 → 挂起当前请求，创建新请求
       AskAgent.log.info('用户切换话题，挂起请求', { requestId: waitingRequest.requestId });
       await this.sessionStore.suspendRequest(userId, sessionId, waitingRequest.requestId, '用户发起了新请求');
+
+      // P1-2 修复:清理 TaskQueue 中该请求残留的 pending 任务。
+      // 挂起仅更新 session 状态,但 TaskQueue 里的任务对象可能仍是 'pending' /
+      // 'completed-with-waiting-result',如果不清理,后续可能误执行或状态错乱。
+      if (this.taskQueue) {
+        const session = await this.sessionStore.loadSession(userId, sessionId);
+        const suspendedReq = session.requests.find(r => r.requestId === waitingRequest.requestId);
+        if (suspendedReq) {
+          let removed = 0;
+          for (const task of suspendedReq.tasks) {
+            if (this.taskQueue.removePendingTask(task.taskId)) removed++;
+          }
+          if (removed > 0) {
+            AskAgent.log.info('挂起时清理残留 pending 任务', {
+              requestId: waitingRequest.requestId,
+              removed,
+            });
+          }
+        }
+      }
     }
 
     // 2. 创建新请求

@@ -144,10 +144,8 @@ export class MainAgent {
       }
     }
 
-    // Track last seen session for checkpoint callback
-    (this as any)._lastSeenUserId = userId;
-    (this as any)._lastSeenSessionId = effectiveSessionId;
-    (this as any)._lastSeenActiveRequestId = await this.sessionIdForCheckpoint(effectiveSessionId);
+    // userId/sessionId 由 TaskGraphExecutor 通过 onCheckpoint info 透传,
+    // 不再需要实例级 _lastSeen* 共享字段(避免多 session 并发时上下文覆盖)。
 
     // Top-level: no catch — let AppError propagate to API middleware.
     // (Known failures throw AppError explicitly in inner methods.)
@@ -477,15 +475,6 @@ export class MainAgent {
     return this.taskGraphExecutor.resumeFromBreakpoint(userId, sessionId, request, question);
   }
 
-  /** Look up the active request ID for the given session — used by onTaskGraphCheckpoint. */
-  private async sessionIdForCheckpoint(sessionId: string): Promise<string | null> {
-    const session = await this.sessionStore.loadSession(
-      (this as any)._lastSeenUserId,
-      sessionId,
-    );
-    return session.activeRequestId;
-  }
-
   /**
    * Checkpoint callback wired into TaskGraphExecutor. Invoked between task
    * graph layers. If the session has pending requests, drain them and spawn
@@ -499,11 +488,13 @@ export class MainAgent {
    * 立即中断后续 layer(否则 R1 与 R2 并发执行,产生竞争写 session 且 R1 永远停在
    * checkpoint_reached)。无 pending 时返回 undefined,保持原行为(R1 继续执行)。
    */
-  private async onTaskGraphCheckpoint(info: { requestId: string; completedTaskIds: string[] }): Promise<{ shouldStop?: boolean } | void> {
-    // Locate the session this layer belongs to. We rely on _lastSeen* fields
-    // populated at the start of processRequirement.
-    const userId = (this as any)._lastSeenUserId as string | undefined;
-    const sessionId = (this as any)._lastSeenSessionId as string | undefined;
+  private async onTaskGraphCheckpoint(info: {
+    userId: string;
+    sessionId: string;
+    requestId: string;
+    completedTaskIds: string[];
+  }): Promise<{ shouldStop?: boolean } | void> {
+    const { userId, sessionId } = info;
     if (!userId || !sessionId) {
       return undefined; // No session context — skip checkpoint.
     }
@@ -606,11 +597,6 @@ export class MainAgent {
       draftIds: drained.map(d => d.draftId),
       requirementPreview: mergedRequirement.substring(0, 200),
     });
-
-    // Track last seen session for checkpoint callback
-    (this as any)._lastSeenUserId = userId;
-    (this as any)._lastSeenSessionId = sessionId;
-    (this as any)._lastSeenActiveRequestId = requestId;
 
     // Fire-and-forget: process the merged requirement.
     // skipGate: this is the merged R2, already the active request — the gate would

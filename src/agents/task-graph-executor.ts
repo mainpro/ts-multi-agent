@@ -70,8 +70,16 @@ export class TaskGraphExecutor {
        * 返回 `{ shouldStop: true }` 时,executeLayers 立即中断后续层执行 —— 用于多任务合并
        * 流程:R1 在 checkpoint 让位给 R2 后,后续 layer 不再执行,避免并发写 session。
        * 返回 void / undefined 时,保持原行为(继续执行下一层)。
+       *
+       * `userId` / `sessionId` 由 executeLayers 透传,主智能体据此定位 session,无需依赖
+       * 实例级共享字段(避免多 session 并发时上下文覆盖)。
        */
-      onCheckpoint?: (info: { requestId: string; completedTaskIds: string[] }) => Promise<{ shouldStop?: boolean } | void>;
+      onCheckpoint?: (info: {
+        userId: string;
+        sessionId: string;
+        requestId: string;
+        completedTaskIds: string[];
+      }) => Promise<{ shouldStop?: boolean } | void>;
     } = {},
   ) {}
 
@@ -312,6 +320,8 @@ export class TaskGraphExecutor {
           .filter(r => r.status === 'completed')
           .map(r => r.taskId);
         const checkpointResult = await this.options.onCheckpoint({
+          userId,
+          sessionId,
           requestId: 'session-active',  // overwritten by caller in Task 6
           completedTaskIds,
         });

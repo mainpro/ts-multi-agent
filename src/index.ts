@@ -111,7 +111,7 @@ async function bootstrap() {
     const userProfileService = new UserProfileService(DATA_DIR);
     const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
     const sessionStore = new SessionStore(100, DATA_DIR);
-    const askAgent = new AskAgent(sessionStore, llmClient);
+    const askAgent = new AskAgent(sessionStore, llmClient, taskQueue);
     const systemSkillLoader = new SystemSkillLoader();
     systemSkillLoader.loadAll();
     const executorRegistry = new ExecutorRegistry();
