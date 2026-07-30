@@ -277,6 +277,27 @@ export class TaskQueue {
     return true;
   }
 
+  /**
+   * Remove a pending task from the queue without marking it as failed.
+   * Used at checkpoint boundaries when a request is being closed and its
+   * unstarted tasks should not fire (they'll be re-planned by the merged R2).
+   * Returns true if the task was removed.
+   *
+   * Treats both 'pending' and undefined status as removable — tasks added via
+   * `addTask` directly may not have their status set yet.
+   */
+  removePendingTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      return false;
+    }
+    if (task.status !== undefined && task.status !== 'pending') {
+      return false;
+    }
+    this.tasks.delete(taskId);
+    return true;
+  }
+
   clear(): void {
     this.stopCleanupInterval();
 

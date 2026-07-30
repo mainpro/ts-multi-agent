@@ -71,7 +71,10 @@ export class SessionGate {
       throw new QueueFullError(session.pendingRequests.length);
     }
     session.pendingRequests.push(draft);
-    await this.sessionStore.saveSession(userId, sessionId, session);
+    // Sync write: pending queues must survive process crashes (we'd lose the
+    // user's input otherwise). Use flushToDisk directly, bypassing the
+    // 100ms debounce of saveSession.
+    await this.sessionStore.flushToDisk(userId, sessionId, session);
     log.info('enqueued pending request', { draftId: draft.draftId, position: session.pendingRequests.length });
     return { position: session.pendingRequests.length };
   }
@@ -80,7 +83,10 @@ export class SessionGate {
     const session = await this.sessionStore.loadSession(userId, sessionId);
     const drained = [...session.pendingRequests];
     session.pendingRequests = [];
-    await this.sessionStore.saveSession(userId, sessionId, session);
+    // Sync write: at the checkpoint, pending has just been drained into R2. If
+    // we crash before the next debounce flush, the queue would round-trip
+    // pending → R2 → pending, causing R2 to be re-merged unexpectedly.
+    await this.sessionStore.flushToDisk(userId, sessionId, session);
     return drained;
   }
 }

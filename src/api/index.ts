@@ -398,6 +398,7 @@ app.post(
       requestLifecycle.on('request_queued', lifecycleHandler);
       requestLifecycle.on('request_checkpoint', lifecycleHandler);
       requestLifecycle.on('request_spawned', lifecycleHandler);
+      requestLifecycle.on('request_error', lifecycleHandler);
 
       const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
@@ -408,6 +409,7 @@ app.post(
           requestLifecycle.off('request_queued', lifecycleHandler);
           requestLifecycle.off('request_checkpoint', lifecycleHandler);
           requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
           lifecycleHandler = null;
         }
         res.status(503).json({
@@ -426,6 +428,7 @@ app.post(
           requestLifecycle.off('request_queued', lifecycleHandler);
           requestLifecycle.off('request_checkpoint', lifecycleHandler);
           requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
           lifecycleHandler = null;
         }
         res.status(202).json({
@@ -517,6 +520,7 @@ app.post(
           requestLifecycle.off('request_queued', lifecycleHandler);
           requestLifecycle.off('request_checkpoint', lifecycleHandler);
           requestLifecycle.off('request_spawned', lifecycleHandler);
+          requestLifecycle.off('request_error', lifecycleHandler);
         }
       }
 

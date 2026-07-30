@@ -32,6 +32,17 @@ export type RequestLifecycleEvent =
       parentRequestId: string;
       draftIds: string[];
       requirementPreview: string;
+    }
+  | {
+      type: 'request_error';
+      requestId: string;           // the request that failed (R2 in merge flow)
+      parentRequestId?: string;    // present when failure is in a merged/spawned request
+      error: {
+        type: 'FATAL' | 'USER_ERROR' | string;
+        code?: string;
+        message: string;
+      };
+      timestamp: string;
     };
 
 export type RequestLifecycleEventType = RequestLifecycleEvent['type'];

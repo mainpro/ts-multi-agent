@@ -105,7 +105,7 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean },
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; requestOverride?: Request },
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
@@ -228,7 +228,13 @@ export class MainAgent {
     }
 
     // ========== 步骤 2: AskAgent 处理用户输入 ==========
-    const handleResult = await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
+    // requestOverride: when the caller already created a Request (e.g. spawnMergedRequest
+    // pre-creating R2 with merged content), skip askAgent.handleUserInput's createRequest
+    // step and use the provided request directly. Without this, the merged flow would
+    // create a duplicate R3 and orphan R2.
+    const handleResult = options?.requestOverride
+      ? { type: 'new_request' as const, request: options.requestOverride }
+      : await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
     MainAgent.log.info('AskAgent 结果', { type: handleResult.type });
 
     switch (handleResult.type) {
@@ -512,6 +518,27 @@ export class MainAgent {
     session.activeRequestId = null;
     await this.sessionStore.saveSession(userId, sessionId, session);
 
+    // Clean up R1's pending tasks from TaskQueue. They will be re-planned by R2.
+    // Tasks already completed (in info.completedTaskIds) are left alone — only
+    // unstarted tasks are removed. This prevents stale side effects from firing
+    // after R1 is closed.
+    if (currentReq) {
+      const completedSet = new Set(info.completedTaskIds);
+      let removed = 0;
+      for (const task of currentReq.tasks) {
+        if (!completedSet.has(task.taskId) && task.status !== 'completed') {
+          if (this.taskQueue.removePendingTask(task.taskId)) removed++;
+        }
+      }
+      if (removed > 0) {
+        MainAgent.log.info('checkpoint: removed R1 unstarted tasks', {
+          requestId: currentReq.requestId,
+          removed,
+          completed: info.completedTaskIds.length,
+        });
+      }
+    }
+
     // Emit checkpoint event with the real current requestId
     requestLifecycle.emit({
       type: 'request_checkpoint',
@@ -580,18 +607,87 @@ export class MainAgent {
     // Fire-and-forget: process the merged requirement.
     // skipGate: this is the merged R2, already the active request — the gate would
     // otherwise treat it as a fresh pending submission and self-enqueue it.
-    // Catch rejections so R2 errors don't become unhandled promise rejections.
-    // The original SSE connection can't receive these (it's already closing 202),
-    // so we log via structured logger; full SSE-error propagation is a follow-up.
-    void this.processRequirement(mergedRequirement, undefined, userId, sessionId, { skipGate: true }).catch((err) => {
-      MainAgent.log.error('合并请求处理失败', {
-        parentRequestId,
-        newRequestId: requestId,
-        userId,
-        sessionId,
-        error: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack : undefined,
-      });
+    // requestOverride: pass the pre-created R2 so processRequirement skips askAgent's
+    // createRequest step (which would otherwise create a duplicate R3).
+    //
+    // The result/rejection both flow through `handleMergedCompletion`, which:
+    //   - emits a `request_error` lifecycle event when R2 failed (so the original
+    //     SSE stream receives the error even though its handler already returned 202)
+    //   - clears session.activeRequestId so the session is ready for the next input
+    //   - logs structured error info for ops visibility
+    void this.processRequirement(mergedRequirement, undefined, userId, sessionId, {
+      skipGate: true,
+      requestOverride: session.requests[session.requests.length - 1],
+    })
+      .then(
+        (result) => this.handleMergedCompletion(userId, sessionId, requestId, parentRequestId, result, null),
+        (err) => this.handleMergedCompletion(userId, sessionId, requestId, parentRequestId, null, err),
+      );
+  }
+
+  /**
+   * Handle R2 completion (success or failure). Emits a `request_error` event so
+   * the original SSE stream learns about R2's failure, and clears
+   * activeRequestId so the session is ready for the next input.
+   */
+  private async handleMergedCompletion(
+    userId: string,
+    sessionId: string,
+    r2RequestId: string,
+    parentRequestId: string,
+    result: (TaskResult & { queued?: boolean; queueFull?: boolean; draftId?: string; position?: number }) | null,
+    rejection: unknown,
+  ): Promise<void> {
+    // Distinguish: did R2 throw, or did it return a failure result?
+    const failure = rejection
+      ? { type: 'FATAL' as const, message: rejection instanceof Error ? rejection.message : String(rejection) }
+      : (result && (result as any).success === false)
+        ? (result as any).error ?? { type: 'FATAL' as const, message: 'unknown failure' }
+        : null;
+
+    if (!failure) {
+      return; // R2 succeeded — normal completion path already wrote the session.
+    }
+
+    MainAgent.log.error('合并请求处理失败', {
+      parentRequestId,
+      newRequestId: r2RequestId,
+      userId,
+      sessionId,
+      error: failure.message,
+      type: failure.type,
+      code: (failure as any).code,
+      stack: rejection instanceof Error ? rejection.stack : undefined,
+    });
+
+    // Mark R2 as failed in session store
+    try {
+      const session = await this.sessionStore.loadSession(userId, sessionId);
+      const r2 = session.requests.find(r => r.requestId === r2RequestId);
+      if (r2) {
+        r2.status = 'failed';
+        r2.result = failure.message;
+        r2.updatedAt = new Date().toISOString();
+      }
+      if (session.activeRequestId === r2RequestId) {
+        session.activeRequestId = null;
+      }
+      await this.sessionStore.saveSession(userId, sessionId, session);
+    } catch (sessionErr) {
+      MainAgent.log.error('记录 R2 失败状态失败', { error: sessionErr });
+    }
+
+    // Emit lifecycle event so the API forwards it to the original SSE stream
+    requestLifecycle.emit({
+      type: 'request_error',
+      requestId: r2RequestId,
+      parentRequestId,
+      error: {
+        type: failure.type,
+        code: (failure as any).code,
+        message: failure.message,
+      },
+      timestamp: new Date().toISOString(),
     });
   }
 
