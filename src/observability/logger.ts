@@ -1,7 +1,13 @@
 /**
  * 结构化日志
  * P2-1: 结构化日志与指标
+ *
+ * 自动从 AsyncLocalStorage 注入 traceId(若 RequestContext 中存在),
+ * 无需在每个 log 调用点显式传递。运维可通过 `grep traceId=xxx`
+ * 串联单次请求跨模块的全链路日志。
  */
+
+import { RequestContext } from '../context/request-context';
 
 export enum LogLevel {
   DEBUG = 'debug',
@@ -35,12 +41,17 @@ class Logger {
   private log(level: LogLevel, message: string, data?: Record<string, any>): void {
     if (!this.shouldLog(level)) return;
 
+    // 从 RequestContext 注入 traceId(若有),保证全链路日志可串联
+    const ctxTraceId = RequestContext.getStore()?.traceId;
+    const traceContext = ctxTraceId ? { traceId: ctxTraceId } : {};
+
     const entry: LogEntry = {
       level,
       timestamp: new Date().toISOString(),
       module: this.context.module || 'unknown',
       message,
       ...this.context,
+      ...traceContext,
       ...data,
     };
 

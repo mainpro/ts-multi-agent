@@ -330,9 +330,12 @@ app.post(
     const { requirement } = req.body;
     const userId = req.body.userId || 'default';
     const accessToken = extractAccessToken(req);
+    // 在 API 入口生成 traceId,贯穿整条调用链的所有日志
+    // 格式与 requestId 一致(req-{ts}-{rand}),便于业务 ID 与日志 ID 对齐
+    const traceId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    // 使用 RequestContext 包裹整个请求处理，使 accessToken 可在整条调用链中访问
-    return RequestContext.run({ accessToken }, async () => {
+    // 使用 RequestContext 包裹整个请求处理，使 accessToken / traceId 可在整条调用链中访问
+    return RequestContext.run({ accessToken, traceId }, async () => {
     let imageAttachment: ImageAttachment | undefined;
 
     // 检查 JSON body 中的 base64 图片
@@ -477,7 +480,7 @@ app.post(
       }
       taskBuffer.length = 0;
 
-      sendEvent('start', { message: '开始处理您的请求...' });
+      sendEvent('start', { message: '开始处理您的请求...', traceId });
 
       // NOTE: SSE `step` events from a global `console.log` override were removed.
       //
