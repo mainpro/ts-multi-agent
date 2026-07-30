@@ -266,6 +266,16 @@ export class MainAgent {
     messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string; type?: string }>;
     activeRequestId: string | null;
     requestStatus: string | null;
+    /**
+     * 每个 request 的 executionProgress(若有),用于复盘完整 DAG。
+     * Key 是 requestId,值含 taskGraph/layers/completedResults。
+     * 与 traceId 配合可在 DevTools 中串联多任务全链路。
+     */
+    executionProgress?: Record<string, {
+      currentLayerIndex: number;
+      totalLayers: number;
+      taskGraph: { id: string; layers: string[][]; nodes: Array<{ taskId: string; content: string; skillName: string | null }> };
+    }>;
   }> {
     try {
       const session = await this.sessionStore.loadSession(userId, sessionId);
@@ -324,11 +334,32 @@ export class MainAgent {
 
       const activeRequest = session.requests.find(r => r.requestId === session.activeRequestId);
 
+      // 汇总 executionProgress(每个 request 一份,若有)
+      const executionProgress: Record<string, any> = {};
+      for (const req of session.requests) {
+        if (req.executionProgress?.taskGraph) {
+          executionProgress[req.requestId] = {
+            currentLayerIndex: req.executionProgress.currentLayerIndex,
+            totalLayers: req.executionProgress.taskGraph.layers.length,
+            taskGraph: {
+              id: req.executionProgress.taskGraph.id,
+              layers: req.executionProgress.taskGraph.layers,
+              nodes: req.executionProgress.taskGraph.nodes.map(n => ({
+                taskId: n.taskId,
+                content: n.content,
+                skillName: n.skillName,
+              })),
+            },
+          };
+        }
+      }
+
       return {
         exists: true,
         messages,
         activeRequestId: session.activeRequestId,
         requestStatus: activeRequest?.status || null,
+        executionProgress: Object.keys(executionProgress).length > 0 ? executionProgress : undefined,
       };
     } catch (error) {
       MainAgent.log.error('[MainAgent] 获取会话历史失败', { error });
@@ -952,6 +983,28 @@ export class MainAgent {
       });
 
       await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
+
+      // 持久化 executionProgress(成功完成态,wating 路径由 task-graph-executor.ts 单独处理)
+      // 让运维复盘时可通过 request.executionProgress.taskGraph 重建完整 DAG
+      // currentLayerIndex = graph.layers.length 表示所有 layer 已完成
+      const resultDataForProgress = result.data as any;
+      const taskResultsForProgress = resultDataForProgress?.results || [];
+      if (!resultDataForProgress?.mergedAway && taskResultsForProgress.length > 0) {
+        try {
+          const completedResultsMap: Record<string, any> = {};
+          for (const tr of taskResultsForProgress) {
+            completedResultsMap[tr.taskId] = tr.result;
+          }
+          await this.sessionStore.saveExecutionProgress(userId, sessionId, request.requestId, {
+            currentLayerIndex: graph.layers.length,
+            completedResults: completedResultsMap,
+            taskGraph: graph,
+          });
+        } catch (progressErr) {
+          // progress 持久化失败不影响主流程
+          MainAgent.log.warn('executionProgress 持久化失败', { error: progressErr });
+        }
+      }
 
       // 检查是否有任务需要等待用户输入
       const resultData = result.data as any;

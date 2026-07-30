@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Session, Request, QAEntry, RequestTask } from '../types';
+import { Session, Request, QAEntry, RequestTask, ExecutionProgress } from '../types';
 import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'SessionStore' });
@@ -394,6 +394,35 @@ export class SessionStore {
 
     await this.saveSession(userId, sessionId, session);
     log.info('完成请求', { requestId, status: request.status });
+  }
+
+  /**
+   * 持久化 executionProgress 到完成态
+   *
+   * 不仅 waiting 状态,success/failure 完成态也保存完整 DAG 快照,
+   * 这样运维复盘时可以通过 `request.executionProgress.taskGraph`
+   * 重建完整的多任务拓扑,与 traceId 配合定位任意失败 task 的根因。
+   *
+   * 立即刷盘(不走防抖),完成态是断点关键点。
+   */
+  async saveExecutionProgress(
+    userId: string,
+    sessionId: string,
+    requestId: string,
+    progress: ExecutionProgress,
+  ): Promise<void> {
+    const session = await this.loadSession(userId, sessionId);
+    const request = session.requests.find(r => r.requestId === requestId);
+    if (!request) return;
+
+    request.executionProgress = progress;
+    request.updatedAt = new Date().toISOString();
+    await this.flushToDisk(userId, sessionId, session);
+    log.info('持久化 executionProgress', {
+      requestId,
+      currentLayerIndex: progress.currentLayerIndex,
+      taskGraphNodes: progress.taskGraph?.nodes?.length ?? 0,
+    });
   }
 
   /**
