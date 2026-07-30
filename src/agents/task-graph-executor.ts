@@ -282,8 +282,15 @@ export class TaskGraphExecutor {
 
           // 检查是否需要用户输入
           const skillData = getSkillData(result);
-          if (skillData?.status === 'waiting_user_input' && skillData.question) {
-            log.info(`⏸️ 任务 ${taskId} 等待用户输入，暂停后续层级执行`);
+          // P2-2 修复:即使 question 缺失也按 waiting 处理,
+          // 让上层(main-agent)有机会识别并兜底(question 缺失通常为子智能体 bug)。
+          // 旧逻辑要求 question 必须存在,导致 question 缺失时 waitingTaskId 不设置,
+          // 上层会 fall through 到 completeRequest,造成 request.status='completed'
+          // 与 task.status='waiting' 状态不一致。
+          if (skillData?.status === 'waiting_user_input') {
+            log.info(`⏸️ 任务 ${taskId} 等待用户输入，暂停后续层级执行`, {
+              hasQuestion: !!skillData.question,
+            });
             return { allResults, waitingTaskId: taskId, failedTasks, done: false };
           }
         } else if (status === 'failed') {

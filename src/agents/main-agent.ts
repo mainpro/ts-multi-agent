@@ -821,7 +821,11 @@ export class MainAgent {
       const tasksWithoutSkill = tasks.filter(t => !t.skillName);
       const hasTransferRequest = !!tasksWithoutSkill.find(t => t.intent === 'unclear');
 
-      if (tasksWithSkill.length > 0) {
+      // P2-1 修复:如果请求中包含 unclear 任务,整条请求转人工(不执行 skill 任务)
+      // 旧行为:执行 skill 任务 + 在回复前加 "转人工" 前缀 → 用户看到一半结果一半转人工,语义混乱
+      const shouldTransferToHuman = tasksWithSkill.length === 0 || hasTransferRequest;
+
+      if (tasksWithSkill.length > 0 && !hasTransferRequest) {
         const firstTask = tasksWithSkill[0];
         sessionContextService.updateContext(sessionId, {
           currentSkill: firstTask.skillName!,
@@ -833,9 +837,9 @@ export class MainAgent {
 
       // ========== 任务规划与执行 ==========
       let plan: TaskPlan;
-      const tasksToExecute = tasksWithSkill;
+      const tasksToExecute = hasTransferRequest ? [] : tasksWithSkill;
 
-      if (tasksToExecute.length === 0) {
+      if (shouldTransferToHuman) {
         assistantResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。';
         try {
           await this.memoryService.saveAssistantMessage(userId, sessionId, assistantResponse);
@@ -847,7 +851,7 @@ export class MainAgent {
             userId, sessionId, requestId: request.requestId,
             userMessage: requirement, assistantMessage: assistantResponse,
           }),
-          'summarizeRequest (no-skill)',
+          'summarizeRequest (no-skill / hasTransferRequest)',
           (err) => MainAgent.log.error('请求摘要生成失败', { error: err }),
         );
         return { success: true, data: { message: assistantResponse, type: 'unclear' } };
@@ -968,10 +972,25 @@ export class MainAgent {
         const waitingResult = taskResults.find((tr: any) => tr.taskId === waitingTaskId);
         const skillResult = waitingResult?.result?.data;
 
-        if (skillResult?.status === 'waiting_user_input' && skillResult.question) {
-          MainAgent.log.info('检测到子任务需要用户输入', { waitingTaskId });
+        if (skillResult?.status === 'waiting_user_input') {
+          // P2-2 防御:即使 question 缺失,也按 waiting 处理(不进入 completeRequest 路径),
+          // 避免 request.status='completed' 与 task.status='waiting' 状态不一致。
+          // 缺失 question 通常是子智能体 bug,我们用占位文本兜底,避免请求卡死或状态错乱。
+          if (!skillResult.question) {
+            MainAgent.log.error('子任务 waiting_user_input 但 question 缺失,使用占位文本', {
+              waitingTaskId,
+              skillResult,
+            });
+          }
 
-          const qaEntry = this.resultAggregator.createQAEntry(skillResult!, waitingTaskId, waitingResult?.skillName || null);
+          const effectiveQuestion = skillResult.question ?? {
+            content: '(子任务请求输入但未提供问题内容)',
+            metadata: undefined,
+          };
+          const effectiveSkillData = { ...skillResult, question: effectiveQuestion };
+          const qaEntry = this.resultAggregator.createQAEntry(effectiveSkillData, waitingTaskId, waitingResult?.skillName || null);
+
+          MainAgent.log.info('检测到子任务需要用户输入', { waitingTaskId, hasQuestion: !!skillResult.question });
 
           // 子智能体询问只放到任务级 questions，不放请求级
           // 同时保存断点续执行上下文（conversationContext 等），确保进程重启后可恢复
@@ -1041,9 +1060,8 @@ export class MainAgent {
         isCompleted = summary.completed;
       }
 
-      if (hasTransferRequest) {
-        finalResponse = '抱歉，这个问题暂时超出了我的处理范围，我帮您转给人工客服处理。\n\n' + finalResponse;
-      }
+      // P2-1 修复:hasTransferRequest 已在前面短路返回,这里不再拼接 "转人工" 前缀
+      // (旧行为会同时返回 skill 结果和转人工前缀,语义混乱)
 
       assistantResponse = finalResponse;
       try {
@@ -1068,7 +1086,7 @@ export class MainAgent {
         success: result.success,
         data: {
           results: taskList,
-          type: hasTransferRequest ? 'unclear' : 'skill_task',
+          type: 'skill_task',
           requestId: request.requestId,
           completed: isCompleted,
           summary: finalResponse,
