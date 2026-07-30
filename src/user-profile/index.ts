@@ -45,7 +45,14 @@ export class UserProfileService {
       }
 
       const content = await fs.readFile(this.profilePath, 'utf-8');
-      const profiles = JSON.parse(content) as Record<string, UserProfile>;
+      // 文件存在但内容为空 / 解析失败(并发 saveProfile 可能产生竞态)
+      // → 静默回退默认 profile,不打印 error 日志(避免误导)
+      let profiles: Record<string, UserProfile>;
+      try {
+        profiles = content.trim() ? JSON.parse(content) : {};
+      } catch {
+        profiles = {};
+      }
 
       if (profiles[userId]) {
         return profiles[userId];

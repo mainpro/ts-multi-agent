@@ -420,6 +420,26 @@ app.post(
       const offTaskFailed = taskEvents.on('task_failed', taskListener);
       const offTaskWaiting = taskEvents.on('task_waiting', taskListener);
 
+      // 订阅 LLM reasoning 事件 —— 必须在 processRequirement 之前订阅,
+      // 否则 processRequirement 期间 emit 的 reasoning 会被错过(导致前端思考气泡为空)。
+      // reasoningBuffer 在 flushHeaders 之前暂存事件,之后按序重放。
+      const reasoningBuffer: Array<{ content: string; agent: 'MainAgent' | 'SubAgent' }> = [];
+      let reasoningActive = true;
+      handleReasoning = (data: string | ReasoningEvent) => {
+        if (!reasoningActive) return;
+        const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
+        reasoningBuffer.push({ content: eventData.content, agent: eventData.agent });
+        if (res.headersSent) {
+          sendEvent('reasoning', {
+            type: 'thinking',
+            content: eventData.content,
+            agent: eventData.agent,
+            timestamp: new Date().toISOString()
+          });
+        }
+      };
+      llmEvents.on('reasoning', handleReasoning);
+
       const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
       // Queue full: pending queue exceeded MAX_PENDING_REQUESTS. Return 503 directly.
@@ -433,6 +453,7 @@ app.post(
           lifecycleHandler = null;
         }
         offTaskStarted(); offTaskCompleted(); offTaskFailed(); offTaskWaiting();
+        if (handleReasoning) { llmEvents.off('reasoning', handleReasoning); reasoningActive = false; }
         res.status(503).json({
           error: 'Service Unavailable',
           message: 'Pending queue is full. Please wait for the current request to complete.',
@@ -453,6 +474,7 @@ app.post(
           lifecycleHandler = null;
         }
         offTaskStarted(); offTaskCompleted(); offTaskFailed(); offTaskWaiting();
+        if (handleReasoning) { llmEvents.off('reasoning', handleReasoning); reasoningActive = false; }
         res.status(202).json({
           status: 'queued',
           draftId: (result as any).draftId,
@@ -479,6 +501,17 @@ app.post(
         sendEvent(ev.type, ev);
       }
       taskBuffer.length = 0;
+
+      // Replay buffered reasoning events captured before SSE opened.
+      for (const ev of reasoningBuffer) {
+        sendEvent('reasoning', {
+          type: 'thinking',
+          content: ev.content,
+          agent: ev.agent,
+          timestamp: new Date().toISOString()
+        });
+      }
+      reasoningBuffer.length = 0;
 
       sendEvent('start', { message: '开始处理您的请求...', traceId });
 
@@ -507,32 +540,15 @@ app.post(
       // reasoning/thinking streaming and the final result payload remain.
 
       try {
-        // Subscribe to LLM reasoning events
-        const reasoningBuffer: string[] = [];
-        handleReasoning = (data: string | ReasoningEvent) => {
-          const eventData = typeof data === 'string' ? { content: data, agent: 'MainAgent' as const } : data;
-          reasoningBuffer.push(eventData.content);
-          sendEvent('reasoning', {
-            type: 'thinking',
-            content: eventData.content,
-            agent: eventData.agent,
-            timestamp: new Date().toISOString()
-          });
-        };
-        llmEvents.on('reasoning', handleReasoning);
-
-        // Subscribe to request lifecycle events — forwarded to SSE during active stream.
-        // (Already subscribed BEFORE processRequirement awaited so cross-request events
-        // emitted during the first request's execution are captured.)
-
-        // Send final reasoning summary if any
-        if (reasoningBuffer.length > 0) {
-          sendEvent('reasoning_complete', {
-            type: 'thinking_complete',
-            totalChunks: reasoningBuffer.length,
-            timestamp: new Date().toISOString()
-          });
+        // Send final reasoning summary if any (buffer 已重放,这里只发 summary)
+        if (reasoningBuffer.length === 0) {
+          // 全部在 flushHeaders 之后到达,需要按已发送数计
+          // 因为 buffer 已重放完且清空,这里不再处理
         }
+        sendEvent('reasoning_complete', {
+          type: 'thinking_complete',
+          timestamp: new Date().toISOString()
+        });
 
         // MainAgent.processRequirement returns TaskResult ({ success, data, error }).
         // New throw-based contract: failures throw AppError before reaching here,
@@ -544,6 +560,7 @@ app.post(
         }
       } finally {
         if (handleReasoning) llmEvents.off('reasoning', handleReasoning);
+        reasoningActive = false;
         if (lifecycleHandler) {
           requestLifecycle.off('request_queued', lifecycleHandler);
           requestLifecycle.off('request_checkpoint', lifecycleHandler);
