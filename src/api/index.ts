@@ -380,6 +380,8 @@ app.post(
     let lifecycleHandler: ((event: import('../events/request-lifecycle').RequestLifecycleEvent) => void) | null = null;
 
     try {
+      const sessionId = req.body.sessionId as string | undefined;
+
       // Subscribe to request lifecycle events BEFORE awaiting processRequirement.
       // Lifecycle events (request_queued, request_checkpoint, request_spawned) can fire
       // while the first request is still running — e.g. when a second user message
@@ -438,16 +440,10 @@ app.post(
       };
       llmEvents.on('reasoning', handleReasoning);
 
-      // 第一阶段:gate 决策(fast,~ms) —— 在慢的 LLM 调用之前完成,
-      // 让 queueFull/queued 能立即返回 JSON,避免后续慢路径拖到前端超时。
-      const effectiveSessionId = (req.body.sessionId as string | undefined) || userId;
-      const gateResult = await mainAgent.gateCheck(
-        userId, effectiveSessionId, requirement, !!imageAttachment,
-        { draftId: req.body.draftId },
-      );
+      const result = await mainAgent.processRequirement(requirement, imageAttachment, userId, sessionId || userId, { draftId: req.body.draftId });
 
       // Queue full: pending queue exceeded MAX_PENDING_REQUESTS. Return 503 directly.
-      if (gateResult.type === 'queue_full') {
+      if ((result as any).queueFull === true) {
         lifecycleActive = false;
         if (lifecycleHandler) {
           requestLifecycle.off('request_queued', lifecycleHandler);
@@ -462,13 +458,13 @@ app.post(
           error: 'Service Unavailable',
           message: 'Pending queue is full. Please wait for the current request to complete.',
           code: 'QUEUE_FULL',
-          pendingCount: gateResult.pendingCount,
+          pendingCount: (result as any).pendingCount,
         } as any);
         return;
       }
 
       // Queue path: when the gate decides to queue, return 202 + JSON (no SSE).
-      if (gateResult.type === 'queued') {
+      if ((result as any).queued === true) {
         lifecycleActive = false;
         if (lifecycleHandler) {
           requestLifecycle.off('request_queued', lifecycleHandler);
@@ -481,22 +477,18 @@ app.post(
         if (handleReasoning) { llmEvents.off('reasoning', handleReasoning); reasoningActive = false; }
         res.status(202).json({
           status: 'queued',
-          draftId: gateResult.draftId,
-          position: gateResult.position,
+          draftId: (result as any).draftId,
+          position: (result as any).position,
         } as any);
         return;
       }
 
-      // Proceed (or continue_waiting): gate 通过 → 立即 flush SSE headers,
-      // 这样 processRequirement 期间的 LLM 流式 reasoning 能实时推到前端,
-      // 不再因为 IntentRouter 的同步 LLM 调用导致 50s 黑屏。
+      // Execution path — only now commit to SSE: set headers and emit start event.
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.flushHeaders?.();
-
-      sendEvent('start', { message: '开始处理您的请求...', traceId });
 
       // Replay buffered lifecycle events captured before SSE opened.
       for (const ev of lifecycleBuffer) {
@@ -521,13 +513,7 @@ app.post(
       }
       reasoningBuffer.length = 0;
 
-      // 现在调 processRequirement —— gateChecked: true 避免重复 gate 决策
-      // (gateCheck 后的 race window 内可能有新请求,但 processRequirement 内的
-      // 后续 gate 已被跳过,符合设计意图:commit to proceed path).
-      const result = await mainAgent.processRequirement(
-        requirement, imageAttachment, userId, effectiveSessionId,
-        { draftId: req.body.draftId, gateChecked: true },
-      );
+      sendEvent('start', { message: '开始处理您的请求...', traceId });
 
       // NOTE: SSE `step` events from a global `console.log` override were removed.
       //

@@ -101,61 +101,12 @@ export class MainAgent {
     });
   }
 
-  /**
-   * 提前执行 gate 决策,API 层可借此判断是否需要 SSE 流。
-   * 若返回 queueFull/queued,调用方应直接返回 JSON 状态码(503/202),不发 SSE。
-   * 若返回 proceed,调用方可以立即 flushHeaders + emit start,然后再调 processRequirement
-   * (此时 LLM 流式 reasoning 能实时通过 SSE 推到前端,不再黑屏)。
-   *
-   * 与 processRequirement 内的 gate 逻辑保持一致(都委托给 this.gate)。
-   */
-  async gateCheck(
-    userId: string,
-    sessionId: string,
-    requirement: string,
-    hasImage: boolean,
-    options?: { skipGate?: boolean; draftId?: string },
-  ): Promise<
-    | { type: 'proceed' }
-    | { type: 'queue_full'; pendingCount: number; draftId: string }
-    | { type: 'queued'; draftId: string; position: number }
-    | { type: 'continue_waiting' }
-  > {
-    if (options?.skipGate) {
-      return { type: 'proceed' };
-    }
-    const effectiveSessionId = sessionId || userId;
-    const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const decision = await this.gate.decide(userId, effectiveSessionId, {
-      draftId, requirement, hasImage,
-    });
-    if (decision.type === 'queue') {
-      const enqueuedAt = new Date().toISOString();
-      try {
-        const { position } = await this.gate.enqueue(userId, effectiveSessionId, {
-          draftId, requirement, enqueuedAt, hasImage,
-        });
-        requestLifecycle.emit({ type: 'request_queued', draftId, position, enqueuedAt });
-        return { type: 'queued', draftId, position };
-      } catch (enqueueErr) {
-        if (enqueueErr instanceof QueueFullError) {
-          return { type: 'queue_full', pendingCount: enqueueErr.pendingCount, draftId };
-        }
-        throw enqueueErr;
-      }
-    }
-    if (decision.type === 'continue_waiting') {
-      return { type: 'continue_waiting' };
-    }
-    return { type: 'proceed' };
-  }
-
   async processRequirement(
     requirement: string,
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request },
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; requestOverride?: Request },
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
@@ -163,10 +114,7 @@ export class MainAgent {
     // Skip when the caller is the queue/merge pipeline itself (spawnMergedRequest)
     // — the merged R2 is already the active request by the time it runs, so the
     // gate would queue it again as a self-enqueue.
-    // Also skip when gateChecked=true — API layer has already run gateCheck() and
-    // committed to the proceed path (SSE headers already flushed). Re-running
-    // here would race against any newly-arrived requests.
-    if (!options?.skipGate && !options?.gateChecked) {
+    if (!options?.skipGate) {
       const draftId = options?.draftId ?? `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const decision = await this.gate.decide(userId, effectiveSessionId, {
         draftId, requirement, hasImage: !!imageAttachment,

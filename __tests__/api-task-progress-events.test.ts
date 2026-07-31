@@ -30,7 +30,6 @@ describe('API SSE task_* 事件 (per-task progress)', () => {
   beforeEach(() => {
     // 默认 mock: processRequirement 内部不发射任何 task 事件,测试可覆盖
     mockMainAgent = {
-      gateCheck: async () => ({ type: 'proceed' as const }),
       processRequirement: async () => ({ success: true, data: { type: 'skill_task' } }),
     };
   });
