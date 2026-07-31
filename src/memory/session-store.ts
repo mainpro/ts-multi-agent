@@ -388,7 +388,20 @@ export class SessionStore {
       request.status = 'completed';
     }
 
-    if (request.status === 'completed' && session.activeRequestId === requestId) {
+    // 关键修复:activeRequestId 必须清掉。syncRequestStatus 可能因为
+    // session.tasks 永远是 pending(TaskGraphExecutor 没回写 task 状态)
+    // 推出 status='processing',导致下面 `status === 'completed'` 检查失败、
+    // activeRequestId 一直指向已完成的 request,后续请求被 gate 永远拦截。
+    // completeRequest 被调用本身就是"请求已完成"的明确信号,不管 derived status
+    // 是什么都应该清掉 activeRequestId。
+    if (session.activeRequestId === requestId) {
+      if (request.status !== 'completed') {
+        log.warn('completeRequest: derived status 不是 completed,强制清理 activeRequestId', {
+          requestId,
+          derivedStatus: request.status,
+          taskStatuses: request.tasks.map(t => t.status),
+        });
+      }
       session.activeRequestId = null;
     }
 
