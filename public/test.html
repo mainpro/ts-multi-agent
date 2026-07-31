@@ -926,7 +926,9 @@ async function loadHistory() {
   try {
     const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/history?userId=${encodeURIComponent(userId)}`);
     if (!res.ok) return;
-    const data = await res.json();
+    const json = await res.json();
+    // API 响应包装在 { success, data } 中,这里 unwrap 拿到真正的 history
+    const data = json.data || json;
 
     if (!data.exists || !data.messages || data.messages.length === 0) return;
 

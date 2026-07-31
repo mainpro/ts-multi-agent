@@ -96,7 +96,7 @@ export class MainAgent {
     );
     this.gate = new SessionGate(sessionStore);
     // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.
-    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator, {
+    this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator, sessionStore, {
       onCheckpoint: (info) => this.onTaskGraphCheckpoint(info),
     });
   }

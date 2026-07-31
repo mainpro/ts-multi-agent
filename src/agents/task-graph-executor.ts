@@ -1,6 +1,7 @@
 import { TaskQueue } from '../task-queue';
 import { ResultAggregator } from './result-aggregator';
 import { getSkillData } from '../types';
+import { SessionStore } from '../memory/session-store';
 import { createLogger } from '../observability/logger';
 import { BusinessError, LlmError, AppError, SkillError } from '../errors';
 import { LLMError } from '../llm';
@@ -64,6 +65,7 @@ export class TaskGraphExecutor {
   constructor(
     private taskQueue: TaskQueue,
     private resultAggregator: ResultAggregator,
+    private sessionStore: SessionStore,
     private options: {
       /**
        * Called after each task layer completes; awaited before next layer starts.
@@ -356,6 +358,32 @@ export class TaskGraphExecutor {
     const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
 
     const layerResult = await this.executeLayers(graph, sessionId, userId, 0, completedResults, allResults);
+
+    // P3-1 修复:把每个 task 的执行结果回写到 session.tasks,
+    // 避免 syncRequestStatus 看到 task=pending 推出 status='processing',
+    // 进而导致 completeRequest 清不掉 activeRequestId(产生"卡死会话"假象)。
+    // 失败的任务同样回写,确保 syncRequestStatus 能推出 'completed' / 'failed'。
+    for (const tr of allResults) {
+      try {
+        await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, tr.taskId, {
+          status: 'completed',
+          result: getSkillData(tr.result)?.response || null,
+        });
+      } catch (e) {
+        log.warn('回写 task 状态失败', { taskId: tr.taskId, error: e });
+      }
+    }
+    for (const ft of layerResult.failedTasks) {
+      try {
+        // RequestTask 没有 error 字段,这里只更新 status(失败详情由
+        // executeLayers 抛出的 SkillError 承载 + 日志记录)
+        await this.sessionStore.updateTaskInRequest(userId, sessionId, request.requestId, ft.taskId, {
+          status: 'failed',
+        });
+      } catch (e) {
+        log.warn('回写 failed task 状态失败', { taskId: ft.taskId, error: e });
+      }
+    }
 
     // P0 闭环修复:R1 在 checkpoint 让位给 R2,跳过后续 layer。
     // 不保存 executionProgress(因为 R1 不再是 active),通过 mergedAway 标记让

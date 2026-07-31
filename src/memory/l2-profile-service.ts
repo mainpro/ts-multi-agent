@@ -67,7 +67,14 @@ export class L2ProfileService {
       }
 
       const content = await fs.readFile(this.profilePath, 'utf-8');
-      const profiles = JSON.parse(content) as Record<string, L2UserProfile>;
+      // 文件存在但内容为空 / 解析失败(并发 saveProfile 可能产生竞态)
+      // → 静默回退空 profiles,不打印 error 日志(避免误导)
+      let profiles: Record<string, L2UserProfile>;
+      try {
+        profiles = content.trim() ? JSON.parse(content) : {};
+      } catch {
+        profiles = {};
+      }
 
       if (profiles[userId]) {
         // 旧数据兼容:自动补 extensions 字段为空对象(便于后续 updateExtensions 深度 merge)
