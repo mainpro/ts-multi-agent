@@ -111,6 +111,13 @@ async function bootstrap() {
     const userProfileService = new UserProfileService(DATA_DIR);
     const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
     const sessionStore = new SessionStore(100, DATA_DIR);
+
+    // 启动清理:进程崩溃/重启后,session.json 中可能残留 activeRequestId 指向 'processing' request,
+    // 但 TaskQueue(内存)已清空 → 新请求永远被 gate 拦截。先扫一遍修正。
+    console.log('🧹 Cleaning up stale sessions (recovery from previous process crash)...');
+    const cleanupResult = await sessionStore.cleanupStaleSessions();
+    console.log(`✅ Cleaned ${cleanupResult.cleaned} stale session(s)\n`);
+
     const askAgent = new AskAgent(sessionStore, llmClient, taskQueue);
     const systemSkillLoader = new SystemSkillLoader();
     systemSkillLoader.loadAll();

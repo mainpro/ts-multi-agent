@@ -24,6 +24,16 @@ const log = createLogger({ module: 'SessionGate' });
  */
 export const MAX_PENDING_REQUESTS = 10;
 
+/**
+ * 'processing' request 在没有更新的情况下被视为陈旧的时间阈值。
+ * 超过此时间的 'processing' active request 视为已被中断(进程崩溃后无清理),
+ * gate 按 fresh 处理放行,避免卡死整个 session。
+ *
+ * 启动清理 (SessionStore.cleanupStaleSessions) 会持久化修正这种状态;
+ * 这里只是短期 fallback,避免重启后第一次请求被错误拦截。
+ */
+export const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
+
 export class QueueFullError extends Error {
   constructor(public readonly pendingCount: number) {
     super(`Pending queue full (${pendingCount}/${MAX_PENDING_REQUESTS})`);
@@ -56,7 +66,21 @@ export class SessionGate {
     if (activeRequest.status === 'waiting') {
       return { type: 'continue_waiting', activeRequest };
     }
-    // processing / suspended / checkpoint_reached / failed — queue
+    // Stale 'processing' 检测:进程崩溃后,activeRequestId 可能指向 'processing' request,
+    // 但服务器已重启,实际没有人在跑。超过阈值按 fresh 处理(不主动清 session,
+    // 启动清理 cleanupStaleSessions 负责持久化修正)。
+    if (activeRequest.status === 'processing') {
+      const lastUpdate = new Date(activeRequest.updatedAt).getTime();
+      if (Date.now() - lastUpdate > STALE_PROCESSING_MS) {
+        log.warn('检测到陈旧 processing active request,按 fresh 处理', {
+          requestId: activeRequest.requestId,
+          staleMs: Date.now() - lastUpdate,
+          thresholdMs: STALE_PROCESSING_MS,
+        });
+        return { type: 'fresh' };
+      }
+    }
+    // processing (未超阈值) / suspended / checkpoint_reached / failed — queue
     return { type: 'queue', activeRequest, pending: [...session.pendingRequests] };
   }
 

@@ -455,6 +455,74 @@ export class SessionStore {
   }
 
   /**
+   * 启动时清理陈旧 session
+   *
+   * 触发场景:
+   *  - 进程崩溃 / 被 kill / dev server 重启
+   *  - activeRequestId 指向 'processing' request,但 TaskQueue(内存)已被清空
+   *  - 如果不清,新请求会被 gate 永远拦截(decision.type === 'queue')
+   *
+   * 清理策略:
+   *  - dangling activeRequestId(指向不存在的 request)→ 直接清 null
+   *  - 'processing' request 在启动时必然是中断的(进程刚启动,旧 processing 不可能还在跑)
+   *    → 标记为 'failed',清 activeRequestId
+   *
+   * 不会动 'waiting' / 'suspended' / 'checkpoint_reached',这些是合法的中间态。
+   */
+  async cleanupStaleSessions(): Promise<{
+    cleaned: number;
+    details: Array<{ sessionId: string; requestId: string; action: string }>;
+  }> {
+    const details: Array<{ sessionId: string; requestId: string; action: string }> = [];
+    const memoryDir = path.join(this.dataDir, 'memory');
+    if (!await fs.stat(memoryDir).catch(() => null)) {
+      return { cleaned: 0, details };
+    }
+
+    const userDirs = await fs.readdir(memoryDir, { withFileTypes: true });
+    for (const userDir of userDirs) {
+      if (!userDir.isDirectory()) continue;
+      const userId = userDir.name;
+      const sessionDir = path.join(memoryDir, userId, 'session');
+      if (!await fs.stat(sessionDir).catch(() => null)) continue;
+
+      const files = await fs.readdir(sessionDir);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const sessionId = file.replace(/\.json$/, '');
+        const session = await this.loadSession(userId, sessionId);
+        if (!session.activeRequestId) continue;
+
+        const activeReq = session.requests.find(r => r.requestId === session.activeRequestId);
+        if (!activeReq) {
+          // dangling activeRequestId(指向不存在的 request,defensive)
+          session.activeRequestId = null;
+          await this.saveSession(userId, sessionId, session);
+          details.push({ sessionId, requestId: 'dangling', action: 'cleared' });
+          log.warn('启动清理: dangling activeRequestId 已清', { userId, sessionId });
+          continue;
+        }
+
+        // 'processing' 在进程重启后必然是中断的
+        if (activeReq.status === 'processing') {
+          activeReq.status = 'failed';
+          activeReq.result = activeReq.result || '请求被中断(进程重启)';
+          activeReq.updatedAt = new Date().toISOString();
+          session.activeRequestId = null;
+          await this.saveSession(userId, sessionId, session);
+          details.push({ sessionId, requestId: activeReq.requestId, action: 'marked-failed' });
+          log.warn('启动清理: processing request 标记为 failed', {
+            userId, sessionId, requestId: activeReq.requestId,
+          });
+        }
+      }
+    }
+
+    log.info('启动清理完成', { cleaned: details.length });
+    return { cleaned: details.length, details };
+  }
+
+  /**
    * 同步请求状态（根据子任务状态聚合）
    */
   private syncRequestStatus(request: Request): void {
