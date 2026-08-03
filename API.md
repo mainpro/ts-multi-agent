@@ -76,10 +76,25 @@ POST /tasks/stream
 | `request_queued` | 请求被排队等待 |
 | `request_checkpoint` | 多任务检查点(R1 让位给 R2) |
 | `request_spawned` | 合并请求已生成 |
+| `request_steered` | 用户中途改口消息已注入当前任务 |
 | `request_error` | 合并请求失败 |
 | `question` | 需要用户回答 |
 | `complete` | 任务完成 |
 | `error` | 执行错误 |
+
+#### send-and-go JSON 响应
+
+某些场景下后端**不返回 SSE 流**,而是直接返回 JSON(状态码 202 或 503)。
+前端需要先检查 `Content-Type` 决定走 JSON 还是 SSE 解析路径。
+
+| 状态码 | shape | 触发条件 |
+|--------|-------|---------|
+| 202 | `{success, steered: true, message}` | session 有 active running task,新消息作为 steer 注入 |
+| 202 | `{status: 'queued', draftId, position}` | session 有 active request 但无 running task,新消息进 gate 队列 |
+| 503 | `{error, message, code: 'QUEUE_FULL', pendingCount}` | pending 队列已满(>10) |
+
+**注**:在主请求的 SSE 流中,`request_steered` 事件会实时推送,告知当前活跃请求
+收到了用户改口消息。前端可在 step monitor 展示。
 
 > 注:`step` 事件曾用于传输执行步骤更新,自重构后移除(dead code)。多任务进度通过 `task_started/completed/failed/waiting` 四个独立事件传递。
 
