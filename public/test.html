@@ -154,6 +154,10 @@
     .msg.user .msg-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
 .msg.ai .msg-bubble { background: var(--bg-white); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .msg.assistant .msg-bubble { background: var(--bg-white); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+/* system 消息:steer/queued/accepted 等 send-and-go 提示,居中显示,弱化样式 */
+.msg.system { align-self: center; max-width: 70%; }
+.msg.system .msg-avatar { background: var(--bg); border: 1px dashed var(--border); color: var(--text-light); }
+.msg.system .msg-bubble { background: var(--bg); border: 1px dashed var(--border); color: var(--text-light); font-size: 12px; border-radius: 8px; }
 .msg-image { margin-bottom: 8px; }
 .msg-image img { max-width: 200px; max-height: 150px; border-radius: 8px; }
 .msg-time { font-size: 11px; color: var(--text-light); padding: 2px 4px; }
@@ -871,6 +875,34 @@ const res = await fetch(API + '/tasks/stream', {
   headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
   body: JSON.stringify(requestBody)
 });
+    // 后端可能返回 202 + JSON(send-and-go 场景:steer / queued)
+    // 或 503 + JSON(queue_full)。这些情况下 Content-Type 是 application/json,
+    // 不是 SSE 流,不能走下面的解析循环。注意:必须在 res.ok 检查之前处理 503。
+    const contentType = res.headers.get('content-type') || '';
+    if ((res.status === 202 || res.status === 503) && contentType.includes('application/json')) {
+      const json = await res.json();
+      // 清理 addThink 占位(steer/queued/accepted 都不进入 SSE 流程,占位无意义)
+      if (thinkingActive) {
+        const el = document.getElementById(thinkId);
+        if (el) el.remove();
+      }
+      setStep('result', 'done', '完成');
+      if (json.steered) {
+        // steer:消息已注入 SubAgent 下一轮,前端只显示提示
+        addMsg('system', json.message || '(改口消息已发送,等当前任务生效)');
+      } else if (json.status === 'queued') {
+        addMsg('system', `已加入待合并队列(第 ${json.position} 位)`);
+      } else if (json.code === 'QUEUE_FULL') {
+        showError(`队列已满(${json.pendingCount}),请稍后重试`);
+      } else if (json.data?.status === 'accepted') {
+        // 兼容 POST /tasks 端点的 202 accepted 形状
+        addMsg('system', json.data.message || '请求已接收');
+      } else {
+        // 未知 JSON 形状:降级显示
+        addMsg('system', JSON.stringify(json));
+      }
+      return;
+    }
     if (!res.ok) throw new Error('HTTP ' + res.status);
 
     const reader = res.body.getReader();
