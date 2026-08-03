@@ -43,6 +43,21 @@ export type RequestLifecycleEvent =
         message: string;
       };
       timestamp: string;
+    }
+  | {
+      type: 'request_steered';
+      requestId: string;           // the active request receiving the steer
+      taskId: string;              // which SubAgent task consumed the steer
+      content: string;             // the steer message content
+      enqueuedAt: string;          // when the user sent it
+      consumedAt: string;          // when SubAgent consumed it
+    }
+  | {
+      type: 'request_completed';
+      requestId: string;
+      sessionId: string;
+      status: 'completed' | 'failed';
+      completedAt: string;
     };
 
 export type RequestLifecycleEventType = RequestLifecycleEvent['type'];

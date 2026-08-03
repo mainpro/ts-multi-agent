@@ -16,6 +16,7 @@ import { MemoryService } from '../memory/memory-service';
 import { resolveResource } from '../utils/app-root';
 import { DEFAULT_RECALL_CONFIG } from '../memory/types';
 import { steeringBuffer } from '../memory/steering-buffer';
+import { requestLifecycle } from '../events/request-lifecycle';
 import { createLogger } from '../observability/logger';
 import {
   syncQuestionHistoryToContext,
@@ -209,6 +210,19 @@ export class SubAgent {
       throw mapSubAgentError(error);
     } finally {
       llmEvents.setAgent(previousAgent);
+      // v4: 任务结束(成功/失败)清掉本 session 残留的 steer 消息,
+      // 防止未消费的改口消息留到下一次请求被错误注入。
+      if (task.sessionId) {
+        const pending = steeringBuffer.peek(task.sessionId);
+        if (pending.length > 0) {
+          SubAgent.log.warn('任务结束,清掉残留 steer 消息', {
+            sessionId: task.sessionId,
+            taskId: task.id,
+            droppedCount: pending.length,
+          });
+          steeringBuffer.clear(task.sessionId);
+        }
+      }
     }
   }
 
@@ -568,6 +582,8 @@ export class SubAgent {
     // ===== v4: steer 队列消费(每轮 LLM 调用前) =====
     // 用户在本 request 跑着时发来的新消息,以 user message 形式插到当前 turn 边界,
     // 不用等 checkpoint 合并。sessionId 缺失时不消费(拿不到归属,避免串会话)。
+    // 消费时 emit request_steered 事件,供 SSE 前端/ops 观测。
+    // 注:requestId 字段填 taskId,真正 request 级 ID 需要 planId 信息(由 MainAgent 注入)
     const consumeSteering = (trackedMessages: Message[]) => {
       if (!sessionId) return;
       const steering = steeringBuffer.consume(sessionId);
@@ -577,6 +593,14 @@ export class SubAgent {
           sessionId,
           taskId,
           content: msg.content.substring(0, 50),
+        });
+        requestLifecycle.emit({
+          type: 'request_steered',
+          requestId: taskId,  // SubAgent 不知道 requestId,用 taskId 作 proxy
+          taskId,
+          content: msg.content,
+          enqueuedAt: msg.enqueuedAt,
+          consumedAt: new Date().toISOString(),
         });
       }
     };
