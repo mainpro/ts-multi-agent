@@ -102,11 +102,28 @@ export class MainAgent {
   }
 
   /**
-   * 暴露 SessionStore 给 API 层(只读用途:steer 判定需要看 activeRequestId/status)。
-   * 不要用它绕过 MainAgent 改写会话状态。
+   * 判断新请求是否应作为 steer 注入(而非走 gate 队列)。
+   *
+   * 条件:
+   *  - session 有 activeRequestId
+   *  - activeRequest.status === 'processing'
+   *  - 至少一个 task status === 'running'(SubAgent 工具循环未结束,能消费 steer)
+   *
+   * waiting 状态不进 steer(走 continueRequest)。
+   *
+   * 取代原 getSessionStore() 暴露,封装边界清晰。
    */
-  getSessionStore(): SessionStore {
-    return this.sessionStore;
+  async shouldSteer(userId: string, sessionId: string): Promise<boolean> {
+    try {
+      const session = await this.sessionStore.loadSession(userId, sessionId);
+      if (!session.activeRequestId) return false;
+      const activeReq = session.requests.find(r => r.requestId === session.activeRequestId);
+      if (activeReq?.status !== 'processing') return false;
+      return !!activeReq.tasks?.some(t => t.status === 'running');
+    } catch (err) {
+      MainAgent.log.warn('shouldSteer 判定失败,返回 false', { error: (err as Error).message });
+      return false;
+    }
   }
 
   /**

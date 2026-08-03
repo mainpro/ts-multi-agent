@@ -383,13 +383,7 @@ app.post(
     {
       const steerSessionId = (req.body.sessionId as string | undefined) || userId;
       try {
-        const session = await mainAgent.getSessionStore().loadSession(userId, steerSessionId);
-        const activeReq = session.activeRequestId
-          ? session.requests.find((r) => r.requestId === session.activeRequestId)
-          : undefined;
-        // waiting 状态不进 steer —— 走原逻辑(gate 的 continue_waiting → continueRequest)
-        const hasRunningTask = !!activeReq?.tasks?.some((t) => t.status === 'running');
-        if (activeReq?.status === 'processing' && hasRunningTask) {
+        if (await mainAgent.shouldSteer(userId, steerSessionId)) {
           steeringBuffer.enqueue(steerSessionId, {
             content: requirement,
             enqueuedAt: new Date().toISOString(),
@@ -402,10 +396,9 @@ app.post(
           return;
         }
       } catch (steerErr) {
-        // steer 判定失败不应阻断正常请求,降级到原逻辑
-        log.warn('steer 判定失败,回退原有 gate 路径', {
+        // mock 或旧版 mainAgent 没有 shouldSteer → 降级到原 gate 路径
+        log.warn('shouldSteer 调用失败,回退到 gate 路径', {
           error: (steerErr as Error).message,
-          sessionId: steerSessionId,
         });
       }
     }

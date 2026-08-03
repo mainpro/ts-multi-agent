@@ -32,6 +32,7 @@ describe('API SSE task_* 事件 (per-task progress)', () => {
     mockMainAgent = {
       gateCheck: async () => ({ type: 'proceed' as const }),
       processRequirement: async () => ({ success: true, data: { type: 'skill_task' } }),
+      shouldSteer: async () => false,  // 默认不进 steer,让原 gate 路径生效
     };
   });
 
