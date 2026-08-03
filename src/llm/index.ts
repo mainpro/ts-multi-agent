@@ -2,6 +2,7 @@ import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import type { ILLMClient } from './interfaces';
 import { createLogger } from '../observability/logger';
+import { repairToolCalls } from './tool-call-repair';
 export type { ILLMClient } from './interfaces';
 
 const log = createLogger({ module: 'LLM' });
@@ -885,6 +886,8 @@ export class LLMClient implements ILLMClient {
    * @param toolExecutor - 工具执行回调
    * @param signal - 可选的中止信号
    * @param concurrencyChecker - 并发安全性检查函数
+   * @param onIterationStart - 每轮 LLM 调用前的回调,接收可变的 trackedMessages
+   *                           (调用方可 push 消息实现 turn 边界注入,如 steer 队列)
    * @returns 包含 content、toolCalls 和完整 messages 的结果
    */
   async generateWithTools(
@@ -892,7 +895,8 @@ export class LLMClient implements ILLMClient {
     tools: ToolDefinition[],
     toolExecutor: (toolCall: { name: string; arguments: Record<string, unknown> }) => Promise<string>,
     signal?: AbortSignal,
-    concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean
+    concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean,
+    onIterationStart?: (messages: Message[]) => void,
   ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }> {
     const trackedMessages = [...messages];
 
@@ -903,6 +907,15 @@ export class LLMClient implements ILLMClient {
     while (maxIterations-- > 0) {
       if (signal?.aborted) {
         throw new LLMError('CANCELLED', 'Tool calling loop cancelled by external signal');
+      }
+
+      // turn 边界注入点:调用方可以在此把新的 user 消息 push 进 trackedMessages
+      if (onIterationStart) {
+        try {
+          onIterationStart(trackedMessages);
+        } catch (hookErr) {
+          log.warn('onIterationStart 回调异常,忽略', { error: (hookErr as Error).message });
+        }
       }
 
       iteration++;
@@ -1093,27 +1106,38 @@ export class LLMClient implements ILLMClient {
       throw new LLMError('API_ERROR', 'No message in response');
     }
 
-    const message = choice.message;
-    const reasoning = message.reasoning_content || message.reasoning || '';
+    const rawMessage = choice.message;
+    const reasoning = rawMessage.reasoning_content || rawMessage.reasoning || '';
+
+    // 先尝试把模型写在 content 里的"伪 grammar"反向提升为原生 tool_calls
+    const repaired = repairToolCalls({
+      content: rawMessage.content,
+      tool_calls: rawMessage.tool_calls as any,
+    });
+
+    if (repaired.repaired) {
+      log.warn('tool-call-repair 触发', {
+        toolCount: repaired.tool_calls.length,
+        toolNames: repaired.tool_calls.map(tc => tc.function.name),
+      });
+    }
 
     if (reasoning) {
       llmEvents.emit('reasoning', reasoning);
     }
 
-    log.info('工具调用请求完成', { reasoningLength: reasoning.length, contentLength: (message.content || '').length, toolCallsCount: message.tool_calls?.length || 0 });
+    log.info('工具调用请求完成', {
+      reasoningLength: reasoning.length,
+      contentLength: (rawMessage.content || '').length,
+      toolCallsCount: repaired.tool_calls.length,
+      repaired: repaired.repaired,
+    });
 
     return {
       message: {
         role: 'assistant',
-        content: message.content || '',
-        tool_calls: message.tool_calls?.map(tc => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: {
-            name: tc.function.name,
-            arguments: tc.function.arguments,
-          },
-        })),
+        content: repaired.content || rawMessage.content || '',
+        tool_calls: repaired.tool_calls.length > 0 ? repaired.tool_calls : undefined,
       },
       reasoning,
     };
