@@ -31,6 +31,7 @@ describe('LLM reasoning 事件订阅修复', () => {
 
   beforeEach(() => {
     mockMainAgent = {
+      gateCheck: async () => ({ type: 'proceed' as const }),
       processRequirement: async () => ({ success: true, data: { type: 'skill_task' } }),
     };
   });
@@ -97,11 +98,7 @@ describe('LLM reasoning 事件订阅修复', () => {
   });
 
   test('queueFull 路径:不订阅 / 不泄漏 listener', async () => {
-    mockMainAgent.processRequirement = async () => ({
-      success: false,
-      queueFull: true,
-      pendingCount: 100,
-    });
+    mockMainAgent.gateCheck = async () => ({ type: 'queue_full' as const, pendingCount: 100, draftId: 'd-qf' });
 
     const initialListenerCount = (llmEvents as any).listeners.get('reasoning')?.length ?? 0;
     const app = createAPIServer(mockMainAgent, mockSkillRegistry, new MockTaskQueue());
@@ -114,12 +111,7 @@ describe('LLM reasoning 事件订阅修复', () => {
   });
 
   test('queued 路径:不订阅 / 不泄漏 listener', async () => {
-    mockMainAgent.processRequirement = async () => ({
-      success: true,
-      queued: true,
-      draftId: 'd-1',
-      position: 1,
-    });
+    mockMainAgent.gateCheck = async () => ({ type: 'queued' as const, draftId: 'd-1', position: 1 });
 
     const initialListenerCount = (llmEvents as any).listeners.get('reasoning')?.length ?? 0;
     const app = createAPIServer(mockMainAgent, mockSkillRegistry, new MockTaskQueue());

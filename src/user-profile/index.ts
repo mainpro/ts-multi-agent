@@ -6,6 +6,10 @@ export class UserProfileService {
   private profilePath: string;
   private logger: { warn: (msg: string) => void; error: (msg: string) => void };
   private skillsMetadata: SkillMetadata[] = [];
+  // 首次加载的并发去重:3 路并发请求时只有第一个真正去读文件,其余 await 同一 promise
+  private initPromise: Promise<void> | null = null;
+  // 写操作串行化:防止 read-modify-write 丢更新
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(
     dataDir: string = 'data',
@@ -17,6 +21,43 @@ export class UserProfileService {
 
   setSkillsMetadata(skills: SkillMetadata[]): void {
     this.skillsMetadata = skills;
+  }
+
+  /**
+   * 确保 profile 文件已存在且至少包含给定 userId。
+   * 并发安全:多路同时调用只会触发一次 file 读取 + 一次默认 profile 创建。
+   */
+  private ensureInitialized(userId: string): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit(userId);
+    }
+    // 已 reject 的 promise 不会自动重置,允许重试
+    this.initPromise.catch(() => {
+      this.initPromise = null;
+    });
+    return this.initPromise;
+  }
+
+  private async doInit(userId: string): Promise<void> {
+    const fileStat = await fs.stat(this.profilePath).catch(() => null);
+    if (fileStat && fileStat.isFile()) {
+      return; // 文件已存在,无需初始化
+    }
+    this.logger.warn(`Profile file not found: ${this.profilePath}. Creating default profile.`);
+    const profile = this.createDefaultProfile(userId);
+    await this.enqueueWrite(profile);
+  }
+
+  /**
+   * 串行化所有写操作(读改写链)。避免并发 saveProfile 互相覆盖。
+   */
+  private enqueueWrite(profile: UserProfile): Promise<void> {
+    const next = this.writeQueue.then(async () => {
+      await this.saveProfile(profile);
+    });
+    // 即使某个写失败,链不能断(用 catch 把错误吞掉放到 promise 自身)
+    this.writeQueue = next.catch(() => {});
+    return next;
   }
 
   private createDefaultProfile(userId: string): UserProfile {
@@ -35,14 +76,8 @@ export class UserProfileService {
 
   async loadProfile(userId: string): Promise<UserProfile> {
     try {
-      const fileStat = await fs.stat(this.profilePath).catch(() => null);
-
-      if (!fileStat || !fileStat.isFile()) {
-        this.logger.warn(`Profile file not found: ${this.profilePath}. Creating default profile.`);
-        const profile = this.createDefaultProfile(userId);
-        await this.saveProfile(profile);
-        return profile;
-      }
+      // 首次冷启动并发去重:多路同时调用,只有第一个真的去 stat 文件
+      await this.ensureInitialized(userId);
 
       const content = await fs.readFile(this.profilePath, 'utf-8');
       // 文件存在但内容为空 / 解析失败(并发 saveProfile 可能产生竞态)
@@ -60,13 +95,13 @@ export class UserProfileService {
 
       this.logger.warn(`Profile not found for userId: ${userId}. Creating new profile.`);
       const profile = this.createDefaultProfile(userId);
-      await this.saveProfile(profile);
+      await this.enqueueWrite(profile);
       return profile;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Error loading profile for ${userId}: ${errorMsg}`);
       const profile = this.createDefaultProfile(userId);
-      await this.saveProfile(profile).catch(err => {
+      await this.enqueueWrite(profile).catch(err => {
         this.logger.error(`Error saving profile for ${userId}: ${err}`);
       });
       return profile;
@@ -110,7 +145,7 @@ export class UserProfileService {
     profile.lastActiveAt = new Date().toISOString();
     profile.updatedAt = new Date().toISOString();
     
-    await this.saveProfile(profile);
+    await this.enqueueWrite(profile);
   }
 
   async saveProfile(profile: UserProfile): Promise<void> {
@@ -162,7 +197,7 @@ export class UserProfileService {
       updatedProfile.lastActiveAt = new Date().toISOString();
     }
 
-    await this.saveProfile(updatedProfile);
+    await this.enqueueWrite(updatedProfile);
 
     return updatedProfile;
   }

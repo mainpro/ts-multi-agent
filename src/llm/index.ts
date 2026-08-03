@@ -642,7 +642,8 @@ export class LLMClient implements ILLMClient {
    */
   private async readSSEStream(
     response: Response,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: { emitContent?: boolean } = {}
   ): Promise<{ reasoning: string; content: string }> {
     if (!response.body) {
       throw new LLMError('API_ERROR', 'No response body');
@@ -709,6 +710,12 @@ export class LLMClient implements ILLMClient {
 
           if (delta.content) {
             content += delta.content;
+            // 透传 content delta 到 SSE,让用户在 IntentRouter 等慢路径
+            // 能看到模型正在"打字"。仅在调用方显式开启时触发,
+            // 避免 SubAgent 等多步骤路径上的重复事件。
+            if (options.emitContent) {
+              llmEvents.emit('reasoning', delta.content);
+            }
           }
         } catch {
         }
@@ -799,7 +806,7 @@ export class LLMClient implements ILLMClient {
 
     messages.push({ role: 'user', content: prompt });
 
-    const response = await this.makeStreamRequest(messages, signal);
+    const response = await this.makeStreamRequest(messages, signal, { emitContent: true });
 
     if (!response.content) {
       throw new LLMError('API_ERROR', 'No content in response');
@@ -849,7 +856,8 @@ export class LLMClient implements ILLMClient {
    */
   private async makeStreamRequest(
     messages: Message[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: { emitContent?: boolean } = {}
   ): Promise<{ reasoning: string; content: string }> {
     // 总超时计时器（5 分钟），防止整个重试过程无限等待
     const totalTimeoutController = new AbortController();
@@ -860,7 +868,7 @@ export class LLMClient implements ILLMClient {
     try {
       const requestBody = this.buildRequestBody(messages, { stream: true });
       const response = await this.fetchWithRetry(requestBody, signal);
-      return await this.readSSEStream(response, signal);
+      return await this.readSSEStream(response, signal, options);
     } finally {
       clearTimeout(totalTimeoutId);
       if (signal) {
