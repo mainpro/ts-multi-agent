@@ -19,5 +19,10 @@ export interface ILLMClient {
     toolExecutor: (toolCall: { name: string; arguments: Record<string, unknown> }) => Promise<string>,
     signal?: AbortSignal,
     concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean,
+    /**
+     * 每轮 LLM 调用前的回调,接收当前(可变的)消息数组。
+     * 调用方可以往里 push 消息(例如 steer 队列里的用户改口),实现 turn 边界注入。
+     */
+    onIterationStart?: (messages: Message[]) => void,
   ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }>;
 }

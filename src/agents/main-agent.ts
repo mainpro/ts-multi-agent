@@ -102,6 +102,14 @@ export class MainAgent {
   }
 
   /**
+   * 暴露 SessionStore 给 API 层(只读用途:steer 判定需要看 activeRequestId/status)。
+   * 不要用它绕过 MainAgent 改写会话状态。
+   */
+  getSessionStore(): SessionStore {
+    return this.sessionStore;
+  }
+
+  /**
    * 提前执行 gate 决策(fast,~ms)。API 层可借此判断是否需要 SSE 流。
    * - queueFull / queued: 调用方直接返回 JSON 状态码(503 / 202),不发 SSE
    * - proceed: 调用方可以立即 flushHeaders + emit start,再调 processRequirement

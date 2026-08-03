@@ -12,6 +12,7 @@ import { RequestContext } from '../context/request-context';
 import { resolveResource } from '../utils/app-root';
 import { traceIdMiddleware, globalErrorHandler, errorToResponse } from './error-handler';
 import { BusinessError } from '../errors';
+import { steeringBuffer } from '../memory/steering-buffer';
 import { createLogger } from '../observability/logger';
 import type { ApiResponse } from '../types/api-response';
 
@@ -369,6 +370,44 @@ app.post(
         code: 'REQUIREMENT_TOO_LONG',
       });
       return;
+    }
+
+    // ===== v4: Steer 注入 =====
+    // 当前 session 已有"正在跑且已展开子任务"的 request 时,新消息不进 pendingRequests
+    // 等 checkpoint 合并(长延迟),而是进 steeringBuffer,由 SubAgent 的工具循环在下一轮
+    // LLM 调用前作为 user message 插入 —— 接近实时的用户改口。
+    //
+    // 只在有 running 任务时 steer:steering 消息只有 SubAgent 工具循环会消费,
+    // 若此刻没有任何 running 任务(例如主智能体还在 IntentRouter 阶段),消息将无人消费、
+    // 被静默丢弃,因此这种情况仍然走原来的 gate/queue 路径(202 queued / 503 queue_full)。
+    {
+      const steerSessionId = (req.body.sessionId as string | undefined) || userId;
+      try {
+        const session = await mainAgent.getSessionStore().loadSession(userId, steerSessionId);
+        const activeReq = session.activeRequestId
+          ? session.requests.find((r) => r.requestId === session.activeRequestId)
+          : undefined;
+        // waiting 状态不进 steer —— 走原逻辑(gate 的 continue_waiting → continueRequest)
+        const hasRunningTask = !!activeReq?.tasks?.some((t) => t.status === 'running');
+        if (activeReq?.status === 'processing' && hasRunningTask) {
+          steeringBuffer.enqueue(steerSessionId, {
+            content: requirement,
+            enqueuedAt: new Date().toISOString(),
+          });
+          res.status(202).json({
+            success: true,
+            steered: true,
+            message: '已注入 steer 队列,主请求处理完后会看到这条消息',
+          } as any);
+          return;
+        }
+      } catch (steerErr) {
+        // steer 判定失败不应阻断正常请求,降级到原逻辑
+        log.warn('steer 判定失败,回退原有 gate 路径', {
+          error: (steerErr as Error).message,
+          sessionId: steerSessionId,
+        });
+      }
     }
 
     const sendEvent = (event: string, data: unknown) => {
