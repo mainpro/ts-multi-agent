@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { SkillRegistry } from '../skill-registry';
 import { ILLMClient, llmEvents, LLMError } from '../llm';
+import { compactMessages } from '../llm/compaction';
 import {
   Task, TaskResult, Skill, SkillExecutionResult,
   Message, CompletedToolCall, QuestionHistoryEntry,
@@ -14,12 +15,14 @@ import { HookEvent } from '../hooks/types';
 import { MemoryService } from '../memory/memory-service';
 import { resolveResource } from '../utils/app-root';
 import { DEFAULT_RECALL_CONFIG } from '../memory/types';
+import { steeringBuffer } from '../memory/steering-buffer';
 import { createLogger } from '../observability/logger';
 import {
   syncQuestionHistoryToContext,
   buildResumedContext,
   validateResumedContext,
 } from './conversation-context-helper';
+import { UnknownToolLoopGuard } from './unknown-tool-guard';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -224,6 +227,9 @@ export class SubAgent {
     const skillRootDir = resolveResource('skills', skill.name);
     const absoluteSkillRootDir = path.resolve(skillRootDir);
 
+    // v4: 未知工具熔断(per-taskId,与 OpenClaw 一致)
+    const unknownToolGuard = new UnknownToolLoopGuard(3);
+
     // ===== v3: 记忆召回 - 通用上下文组装（不依赖特定业务字段） =====
     let promptOptions: SubAgentPromptOptions | undefined;
     try {
@@ -397,140 +403,125 @@ export class SubAgent {
     });
 
     // ===== v2: 使用 generateWithTools =====
-    const result = await this.llm.generateWithTools(
-      messages,
-      tools,
-      async (toolCall) => {
-        const toolStartTime = Date.now();
-        SubAgent.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
-        SubAgent.log.debug('工具参数', { args: toolCall.arguments });
+    // 提取工具执行回调为命名 const,以便在 safe compaction 重试循环中复用
+    const toolExecutor = async (toolCall: { name: string; arguments: Record<string, unknown> }) => {
+      // v4: 未知工具熔断检查
+      if (!allowedToolNames.has(toolCall.name)) {
+        const rewrite = unknownToolGuard.check(toolCall.name);
+        if (rewrite) {
+          SubAgent.log.warn('未知工具熔断触发', { toolName: toolCall.name, count: '>3' });
+          return rewrite;  // 直接返回改写后的 toolResult
+        }
+        // 未超阈值但仍不在允许名单 → 走原有 "工具不存在" 返回
+        return `工具执行失败: 工具 '${toolCall.name}' 不在允许列表中,可用工具: ${Array.from(allowedToolNames).join(', ')}`;
+      } else {
+        unknownToolGuard.reset();  // 合法工具调用,重置计数
+      }
+      const toolStartTime = Date.now();
+      SubAgent.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
+      SubAgent.log.debug('工具参数', { args: toolCall.arguments });
 
-        SubAgent.log.info('tool.call', {
-          traceId: taskId,
-          skillName: skill.name,
-          toolName: toolCall.name,
-          argsLength: JSON.stringify(toolCall.arguments).length,
-        });
+      SubAgent.log.info('tool.call', {
+        traceId: taskId,
+        skillName: skill.name,
+        toolName: toolCall.name,
+        argsLength: JSON.stringify(toolCall.arguments).length,
+      });
 
-        // 触发工具调用前钩子
-        await hookManager.emit(HookEvent.BEFORE_TOOL_CALL, {
-          skillName: skill.name,
-          toolName: toolCall.name,
-          userId: userId || 'sub-agent',
-          sessionId: sessionId || 'skill-execution',
-          data: { arguments: toolCall.arguments }
-        });
+      // 触发工具调用前钩子
+      await hookManager.emit(HookEvent.BEFORE_TOOL_CALL, {
+        skillName: skill.name,
+        toolName: toolCall.name,
+        userId: userId || 'sub-agent',
+        sessionId: sessionId || 'skill-execution',
+        data: { arguments: toolCall.arguments }
+      });
 
-        try {
-          const toolResult = await this.toolRegistry.execute(
-            toolCall.name,
-            toolCall.arguments,
-            toolContext
-          );
+      try {
+        const toolResult = await this.toolRegistry.execute(
+          toolCall.name,
+          toolCall.arguments,
+          toolContext
+        );
 
-          if (toolResult.success) {
-            const toolDuration = Date.now() - toolStartTime;
-            const data = typeof toolResult.data === 'string'
-              ? toolResult.data
-              : JSON.stringify(toolResult.data, null, 2);
-            const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
-            SubAgent.log.info('工具执行成功', { toolName: toolCall.name, duration: toolDuration });
-            SubAgent.log.debug('工具返回', { preview: dataPreview });
+        if (toolResult.success) {
+          const toolDuration = Date.now() - toolStartTime;
+          const data = typeof toolResult.data === 'string'
+            ? toolResult.data
+            : JSON.stringify(toolResult.data, null, 2);
+          const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
+          SubAgent.log.info('工具执行成功', { toolName: toolCall.name, duration: toolDuration });
+          SubAgent.log.debug('工具返回', { preview: dataPreview });
 
-            SubAgent.log.info('tool.result', {
-              traceId: taskId,
-              skillName: skill.name,
-              toolName: toolCall.name,
-              resultLength: data.length,
-              duration: toolDuration,
-            });
-
-            // bash 工具：检测脚本返回的非 200 状态码，直接报错中断
-            if (toolCall.name === 'bash' && toolResult.data) {
-              const toolData = typeof toolResult.data === 'string'
-                ? toolResult.data
-                : JSON.stringify(toolResult.data);
-              // 从 stdout 中提取 API 返回的 code 字段
-              const codeMatch = toolData.match(/"code"\s*:\s*(\d+)/);
-              if (codeMatch && codeMatch[1] !== '200') {
-                const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
-                SubAgent.log.warn('接口调用失败', { code: codeMatch[1] });
-                SubAgent.log.debug('接口返回', { preview: dataPreview });
-                throw new Error(errMsg);
-              }
-            }
-
-            // 触发工具调用后钩子
-            await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
-              skillName: skill.name,
-              toolName: toolCall.name,
-              userId: userId || 'sub-agent',
-              sessionId: sessionId || 'skill-execution',
-              data: {
-                arguments: toolCall.arguments,
-                result: data,
-                success: true
-              }
-            });
-
-            // 记录工具调用（截断过大的结果，避免无限累积）
-            const MAX_RESULT_LENGTH = 2000;
-            let truncatedResult: string;
-            if (typeof data === 'string') {
-              truncatedResult = data.length > MAX_RESULT_LENGTH
-                ? data.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + data.length + ' 字符]'
-                : data;
-            } else {
-              const jsonStr = JSON.stringify(data);
-              truncatedResult = jsonStr.length > MAX_RESULT_LENGTH
-                ? jsonStr.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + jsonStr.length + ' 字符]'
-                : jsonStr;
-            }
-
-            trackedToolCalls.push({
-              name: toolCall.name,
-              arguments: toolCall.arguments,
-              result: truncatedResult,
-              timestamp: new Date(),
-            });
-
-            return data;
-          } else {
-            const toolDuration = Date.now() - toolStartTime;
-            SubAgent.log.info('工具执行失败', { toolName: toolCall.name, duration: toolDuration });
-            SubAgent.log.debug('失败原因', { error: toolResult.error });
-
-            SubAgent.log.error('tool.result', {
-              traceId: taskId,
-              skillName: skill.name,
-              toolName: toolCall.name,
-              error: toolResult.error,
-              duration: toolDuration,
-            });
-
-            await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
-              skillName: skill.name,
-              toolName: toolCall.name,
-              userId: userId || 'sub-agent',
-              sessionId: sessionId || 'skill-execution',
-              data: {
-                arguments: toolCall.arguments,
-                error: toolResult.error,
-                success: false
-              }
-            });
-
-            return `工具执行失败: ${toolResult.error}`;
-          }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          SubAgent.log.warn('工具执行异常', { error: errorMsg });
-
-          SubAgent.log.error('tool.exception', {
+          SubAgent.log.info('tool.result', {
             traceId: taskId,
             skillName: skill.name,
             toolName: toolCall.name,
-            error: errorMsg,
+            resultLength: data.length,
+            duration: toolDuration,
+          });
+
+          // bash 工具：检测脚本返回的非 200 状态码，直接报错中断
+          if (toolCall.name === 'bash' && toolResult.data) {
+            const toolData = typeof toolResult.data === 'string'
+              ? toolResult.data
+              : JSON.stringify(toolResult.data);
+            // 从 stdout 中提取 API 返回的 code 字段
+            const codeMatch = toolData.match(/"code"\s*:\s*(\d+)/);
+            if (codeMatch && codeMatch[1] !== '200') {
+              const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
+              SubAgent.log.warn('接口调用失败', { code: codeMatch[1] });
+              SubAgent.log.debug('接口返回', { preview: dataPreview });
+              throw new Error(errMsg);
+            }
+          }
+
+          // 触发工具调用后钩子
+          await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
+            skillName: skill.name,
+            toolName: toolCall.name,
+            userId: userId || 'sub-agent',
+            sessionId: sessionId || 'skill-execution',
+            data: {
+              arguments: toolCall.arguments,
+              result: data,
+              success: true
+            }
+          });
+
+          // 记录工具调用（截断过大的结果，避免无限累积）
+          const MAX_RESULT_LENGTH = 2000;
+          let truncatedResult: string;
+          if (typeof data === 'string') {
+            truncatedResult = data.length > MAX_RESULT_LENGTH
+              ? data.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + data.length + ' 字符]'
+              : data;
+          } else {
+            const jsonStr = JSON.stringify(data);
+            truncatedResult = jsonStr.length > MAX_RESULT_LENGTH
+              ? jsonStr.slice(0, MAX_RESULT_LENGTH) + '\n... [结果已截断，原始长度: ' + jsonStr.length + ' 字符]'
+              : jsonStr;
+          }
+
+          trackedToolCalls.push({
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            result: truncatedResult,
+            timestamp: new Date(),
+          });
+
+          return data;
+        } else {
+          const toolDuration = Date.now() - toolStartTime;
+          SubAgent.log.info('工具执行失败', { toolName: toolCall.name, duration: toolDuration });
+          SubAgent.log.debug('失败原因', { error: toolResult.error });
+
+          SubAgent.log.error('tool.result', {
+            traceId: taskId,
+            skillName: skill.name,
+            toolName: toolCall.name,
+            error: toolResult.error,
+            duration: toolDuration,
           });
 
           await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
@@ -540,17 +531,93 @@ export class SubAgent {
             sessionId: sessionId || 'skill-execution',
             data: {
               arguments: toolCall.arguments,
-              error: errorMsg,
+              error: toolResult.error,
               success: false
             }
           });
 
-          return `工具执行异常: ${errorMsg}`;
+          return `工具执行失败: ${toolResult.error}`;
         }
-      },
-      signal,
-      concurrencyChecker
-    );
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        SubAgent.log.warn('工具执行异常', { error: errorMsg });
+
+        SubAgent.log.error('tool.exception', {
+          traceId: taskId,
+          skillName: skill.name,
+          toolName: toolCall.name,
+          error: errorMsg,
+        });
+
+        await hookManager.emit(HookEvent.AFTER_TOOL_CALL, {
+          skillName: skill.name,
+          toolName: toolCall.name,
+          userId: userId || 'sub-agent',
+          sessionId: sessionId || 'skill-execution',
+          data: {
+            arguments: toolCall.arguments,
+            error: errorMsg,
+            success: false
+          }
+        });
+
+        return `工具执行异常: ${errorMsg}`;
+      }
+    };
+
+    // ===== v4: steer 队列消费(每轮 LLM 调用前) =====
+    // 用户在本 request 跑着时发来的新消息,以 user message 形式插到当前 turn 边界,
+    // 不用等 checkpoint 合并。sessionId 缺失时不消费(拿不到归属,避免串会话)。
+    const consumeSteering = (trackedMessages: Message[]) => {
+      if (!sessionId) return;
+      const steering = steeringBuffer.consume(sessionId);
+      for (const msg of steering) {
+        trackedMessages.push({ role: 'user', content: msg.content });
+        SubAgent.log.info('steering 消息注入到 messages', {
+          sessionId,
+          taskId,
+          content: msg.content.substring(0, 50),
+        });
+      }
+    };
+
+    // ===== Safe Compaction: CONTEXT_TOO_LONG 时压缩并重试 1 次 =====
+    // result.messages 已是完整轨迹,不能被压缩后的 messages 覆盖
+    // 用 IIFE 包裹循环,使 result 一定有返回值,避免 TS "used before assigned" 报错
+    const result = await (async (): Promise<{ content: string; toolCalls: any[]; messages: Message[] }> => {
+      let baseMessages = messages;
+      let attempts = 0;
+      const MAX_COMPACTION_ATTEMPTS = 1;
+
+      while (attempts <= MAX_COMPACTION_ATTEMPTS) {
+        try {
+          return await this.llm.generateWithTools(
+            baseMessages,
+            tools,
+            toolExecutor,
+            signal,
+            concurrencyChecker,
+            consumeSteering,
+          );
+        } catch (err) {
+          if (err instanceof LLMError && err.type === 'CONTEXT_TOO_LONG' && attempts < MAX_COMPACTION_ATTEMPTS) {
+            SubAgent.log.warn('CONTEXT_TOO_LONG,触发 safe compaction', {
+              beforeLength: baseMessages.length,
+            });
+            baseMessages = await compactMessages(baseMessages, this.llm, {
+              tokenBudget: 8000,
+              keepRecent: 5,
+              signal,
+            });
+            attempts++;
+            continue;
+          }
+          throw err;
+        }
+      }
+      // 不可达:循环要么 return,要么 throw
+      throw new LLMError('API_ERROR', 'Safe compaction loop exited unexpectedly');
+    })();
 
     const response = result.content;
     const toolCallsCount = result.toolCalls?.length || 0;
