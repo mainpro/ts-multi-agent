@@ -61,6 +61,7 @@ POST /tasks/stream
 | `userId` | string | 是 | 用户唯一标识 |
 | `sessionId` | string | 是 | 会话唯一标识 |
 | `imageAttachment` | string | 否 | 图片附件 Base64 |
+| `employeeId` | string | 否 | 虚拟员工 ID(可选)。不填则走意图识别 + 默认员工 fallback。示例: `'it-ops-consultant'` |
 
 #### SSE 事件
 
