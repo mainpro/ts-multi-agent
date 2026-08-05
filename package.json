@@ -20,6 +20,9 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@opentelemetry/api": "^1.4.0",
+    "@opentelemetry/exporter-prometheus": "^0.40.0",
+    "@opentelemetry/sdk-metrics": "^1.13.0",
     "cors": "2.8.5",
     "dotenv": "^17.2.4",
     "express": "^5.1.0",

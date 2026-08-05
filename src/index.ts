@@ -144,7 +144,7 @@ async function bootstrap() {
 
     // 9. Create and start API Server
     console.log('🌐 Starting API Server...');
-    const app = createAPIServer(mainAgent, skillRegistry, taskQueue);
+    const app = createAPIServer(mainAgent, skillRegistry, taskQueue, userProfileService);
     
     app.listen(PORT, () => {
       console.log('\n' + '='.repeat(50));

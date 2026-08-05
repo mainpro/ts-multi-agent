@@ -24,5 +24,11 @@ export interface ILLMClient {
      * 调用方可以往里 push 消息(例如 steer 队列里的用户改口),实现 turn 边界注入。
      */
     onIterationStart?: (messages: Message[]) => void,
+    /**
+     * 可选的请求级 ID(Final Review fix #2),用于把 LLM SLA breach 关联回
+     * 上层 request / task。不传则走 fallback `llm-${ts}-${rand}`,时间戳已含
+     * 在 slaId 内,便于人工对账。
+     */
+    requestId?: string,
   ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }>;
 }

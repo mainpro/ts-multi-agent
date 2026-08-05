@@ -15,6 +15,9 @@ import { BusinessError } from '../errors';
 import { steeringBuffer } from '../memory/steering-buffer';
 import { createLogger } from '../observability/logger';
 import type { ApiResponse } from '../types/api-response';
+import { UserProfileService } from '../user-profile';
+import { guardrailMiddleware } from '../guardrail/middleware';
+import { collectOtelMetrics } from '../observability/otel';
 
 interface ImageAttachment {
   data: Buffer;
@@ -119,7 +122,12 @@ const log = createLogger({ module: 'API' });
 export function createAPIServer(
   mainAgent: MainAgent,
   skillRegistry: SkillRegistry,
-  taskQueue: TaskQueue
+  taskQueue: TaskQueue,
+  // Optional to keep existing tests / callers that mock mainAgent working without
+  // having to wire a profile service. When omitted, the guardrail middleware
+  // falls back to a minimal `{ role: 'employee', permissions: [] }` profile,
+  // which is correct (employee has no privileged access).
+  userProfileService?: UserProfileService
 ): express.Application {
   const app = express();
 
@@ -182,21 +190,33 @@ export function createAPIServer(
   });
 
   // ============================================================================
-  // Metrics API (Issue #11)
+  // Metrics API (Issue #11 + Task 11)
   // ============================================================================
-  app.get('/metrics', (_req: Request, res: Response) => {
-    const metrics = taskQueue.getMetrics();
-    res.json({
-      queue: {
-        tasksCompleted: metrics.tasksCompleted,
-        tasksFailed: metrics.tasksFailed,
-        tasksTimedOut: metrics.tasksTimedOut,
-        averageExecutionTime: Math.round(metrics.averageExecutionTime),
-        totalExecutionTime: Math.round(metrics.totalExecutionTime),
-      },
-      queueSize: taskQueue.getAllTasks().length,
-      runningCount: taskQueue.getRunningCount(),
-    });
+  // 缺口 4.2:统一观测面板入口。
+  // - task  ← TaskQueue 累计统计(完成/失败/超时/平均延迟/总耗时)
+  // - otel  ← collectOtelMetrics() 浅拷贝 shadow buffer(LLM / Skill / Guardrail / SLA 共 10 个 metric)
+  // - queueSize / runningCount 暂时保留为顶层字段供老探针使用,后续可在 SemVer 许可下迁入 task.{size,running}。
+  app.get('/metrics', async (_req: Request, res: Response) => {
+    try {
+      const taskMetrics = taskQueue.getMetrics();
+      const otelMetrics = await collectOtelMetrics();
+      res.json({
+        timestamp: new Date().toISOString(),
+        task: {
+          tasksCompleted: taskMetrics.tasksCompleted,
+          tasksFailed: taskMetrics.tasksFailed,
+          tasksTimedOut: taskMetrics.tasksTimedOut,
+          averageExecutionTime: Math.round(taskMetrics.averageExecutionTime),
+          totalExecutionTime: Math.round(taskMetrics.totalExecutionTime),
+        },
+        otel: otelMetrics,
+        queueSize: taskQueue.getAllTasks().length,
+        runningCount: taskQueue.getRunningCount(),
+      });
+    } catch (err) {
+      log.error('Metrics collection failed', { error: (err as Error).message });
+      res.status(500).json({ error: 'metrics collection failed' });
+    }
   });
 
   // ============================================================================
@@ -324,6 +344,22 @@ export function createAPIServer(
  */
 app.post(
   '/tasks/stream',
+  // 1. 加载 user profile → req.profile(给 guardrail 用)
+  async (req: Request<{}, {}, SubmitTaskRequest>, _res: Response, next: NextFunction) => {
+    if (userProfileService) {
+      try {
+        const userId = req.body.userId || 'default';
+        (req as any).profile = await userProfileService.loadProfile(userId);
+      } catch (err) {
+        // profile 加载失败不阻塞主流程:guardrail middleware 会用兜底 profile
+        log.warn('Failed to load user profile, using fallback', { error: (err as Error).message });
+      }
+    }
+    next();
+  },
+  // 2. guardrail(deny/rewrite/alert)
+  guardrailMiddleware(),
+  // 3. 原 handler
   async (
     req: Request<{}, {}, SubmitTaskRequest>,
     res: Response<ApiError>

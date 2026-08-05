@@ -71,6 +71,10 @@ export class UserProfileService {
       lastActiveAt: now,
       createdAt: now,
       updatedAt: now,
+      role: 'employee',
+      permissions: [],
+      history: [],
+      preferences: [],
     };
   }
 
@@ -90,7 +94,14 @@ export class UserProfileService {
       }
 
       if (profiles[userId]) {
-        return profiles[userId];
+        // 缺失字段补全（向后兼容）：老 JSON 缺 role / permissions / history / preferences 时自动填默认值
+        return {
+          ...profiles[userId],
+          role: profiles[userId].role ?? 'employee',
+          permissions: profiles[userId].permissions ?? [],
+          history: profiles[userId].history ?? [],
+          preferences: profiles[userId].preferences ?? [],
+        };
       }
 
       this.logger.warn(`Profile not found for userId: ${userId}. Creating new profile.`);
@@ -119,8 +130,12 @@ export class UserProfileService {
       lastActiveAt: now,
       createdAt: now,
       updatedAt: now,
+      role: initialData?.role || 'employee',
+      permissions: initialData?.permissions || [],
+      history: initialData?.history || [],
+      preferences: initialData?.preferences || [],
     };
-    
+
     await this.saveProfile(profile);
     return profile;
   }

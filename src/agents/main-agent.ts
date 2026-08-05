@@ -29,6 +29,8 @@ import { SessionGate, QueueFullError } from "./session-gate";
 import { requestLifecycle } from "../events/request-lifecycle";
 import { taskEvents } from "../events/task-events";
 import { BusinessError, AppError } from '../errors';
+import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
+import { CONFIG } from '../types';
 
 /**
  * MainAgent 依赖注入接口
@@ -184,6 +186,46 @@ export class MainAgent {
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
+    // SLA Watcher (Task 9): 跟踪整条 processRequirement 链路耗时,超阈值时归因 + 审计告警。
+    // 入口先以 placeholder ID 启动;拿到真实 requestId 后重新 start(用真实 ID 替换);
+    // finally 块统一清理 / 归因。activeSlaId 在闭包内可变,inner 会切换到真实 ID。
+    const slaRequestId = `req-sla-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    let activeSlaId: string = slaRequestId;
+    const switchSlaId = (newId: string): void => {
+      slaTracker.clear(slaRequestId);
+      slaTracker.start(newId, CONFIG.SLA_REQUEST_MS);
+      activeSlaId = newId;
+    };
+    slaTracker.start(slaRequestId, CONFIG.SLA_REQUEST_MS);
+    try {
+      return await this._processRequirementInner(
+        requirement, imageAttachment, userId, sessionId, effectiveSessionId, options, switchSlaId,
+      );
+    } finally {
+      // SLA 收尾:check 当前 active ID(可能是 placeholder 或真实 requestId),超阈值归因 + 清理。
+      const check = slaTracker.check(activeSlaId);
+      slaTracker.clear(activeSlaId);
+      if (check.breached) {
+        reportSlaBreach(activeSlaId, 'REQUEST', check.elapsedMs, check.slaMs);
+      }
+    }
+  }
+
+  /**
+   * processRequirement 内部实现,由外层 try/finally 包裹以保证 SLA 收尾。
+   * 拆分原因:processRequirement 内部多 return 路径,直接套 try/finally 会破坏现有结构;
+   * 抽出后 finally 由外层统一执行,任何 return / throw 都触发。
+   */
+  private async _processRequirementInner(
+    requirement: string,
+    imageAttachment: { data: Buffer; mimeType: string; originalName?: string } | undefined,
+    userId: string,
+    sessionId: string | undefined,
+    effectiveSessionId: string,
+    options: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request } | undefined,
+    switchSlaId: (newId: string) => void,
+  ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
+
     // Gate: if the session already has an active request, queue this one.
     // Skip when the caller is the queue/merge pipeline itself (spawnMergedRequest)
     // — the merged R2 is already the active request by the time it runs, so the
@@ -312,6 +354,17 @@ export class MainAgent {
       ? { type: 'new_request' as const, request: options.requestOverride }
       : await this.askAgent.handleUserInput(userId, effectiveSessionId, requirement);
     MainAgent.log.info('AskAgent 结果', { type: handleResult.type });
+
+    // SLA Watcher (Task 9): 替换为真实 requestId,以便最终归因/审计携带可追溯 ID。
+    // 旧 placeholder 立即 clear(避免泄漏到 records Map),并按真实 ID 重新 start。
+    // HandleResult 是 discriminated union,只有 continue/new_request/recall_prompt 有 request。
+    const realRequestId =
+      handleResult.type === 'continue' || handleResult.type === 'new_request' || handleResult.type === 'recall_prompt'
+        ? handleResult.request?.requestId
+        : undefined;
+    if (realRequestId) {
+      switchSlaId(realRequestId);
+    }
 
     switch (handleResult.type) {
       case 'continue':

@@ -51,6 +51,10 @@ export class L2ProfileService {
       lastActiveAt: now,
       createdAt: now,
       updatedAt: now,
+      role: 'employee',
+      permissions: [],
+      history: [],
+      preferences: [],
       extensions: {},
     };
   }
@@ -81,7 +85,14 @@ export class L2ProfileService {
         if (profiles[userId].extensions === undefined) {
           profiles[userId].extensions = {};
         }
-        return profiles[userId];
+        // 旧数据兼容:补齐 UserProfile 新增字段（role / permissions / history / preferences）
+        return {
+          ...profiles[userId],
+          role: profiles[userId].role ?? 'employee',
+          permissions: profiles[userId].permissions ?? [],
+          history: profiles[userId].history ?? [],
+          preferences: profiles[userId].preferences ?? [],
+        };
       }
 
       this.logger.warn(`Profile not found for userId: ${userId}. Creating new profile.`);
@@ -110,6 +121,10 @@ export class L2ProfileService {
       lastActiveAt: now,
       createdAt: now,
       updatedAt: now,
+      role: initialData?.role || 'employee',
+      permissions: initialData?.permissions || [],
+      history: initialData?.history || [],
+      preferences: initialData?.preferences || [],
       extensions: initialData?.extensions ?? {},
     };
 

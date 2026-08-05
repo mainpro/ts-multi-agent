@@ -3,6 +3,9 @@ import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'DynamicContext' });
 
+/** 注入上下文的历史问题 / 偏好条数上限 */
+const PROFILE_TOP_N = 10;
+
 /**
  * Dynamic Context Builder for Multi-Agent System
  *
@@ -55,6 +58,10 @@ export class DynamicContextBuilder {
       lines.push('\n### 用户画像');
       lines.push(`- **用户ID**: ${memory.profile.userId}`);
 
+      if (memory.profile.role) {
+        lines.push(`- **角色**: ${memory.profile.role}`);
+      }
+
       if (memory.profile.department) {
         lines.push(`- **部门**: ${memory.profile.department}`);
       }
@@ -68,6 +75,20 @@ export class DynamicContextBuilder {
       }
 
       lines.push(`- **对话次数**: ${memory.profile.conversationCount}`);
+
+      if (memory.profile.history && memory.profile.history.length > 0) {
+        lines.push(`\n### 历史问题(top${PROFILE_TOP_N})`);
+        for (const h of memory.profile.history.slice(0, PROFILE_TOP_N)) {
+          lines.push(`- ${h.topic}: ${h.summary} (×${h.occurrences})`);
+        }
+      }
+
+      if (memory.profile.preferences && memory.profile.preferences.length > 0) {
+        lines.push(`\n### 偏好(top${PROFILE_TOP_N})`);
+        for (const p of memory.profile.preferences.slice(0, PROFILE_TOP_N)) {
+          lines.push(`- ${p.key}: ${p.value}`);
+        }
+      }
     }
 
     if (memory.episodicEntries && memory.episodicEntries.length > 0) {

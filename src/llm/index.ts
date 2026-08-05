@@ -3,6 +3,8 @@ import { ZodSchema } from 'zod';
 import type { ILLMClient } from './interfaces';
 import { createLogger } from '../observability/logger';
 import { repairToolCalls } from './tool-call-repair';
+import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
+import { llmCalls, llmLatency, llmErrors } from '../observability/metrics';
 export type { ILLMClient } from './interfaces';
 
 const log = createLogger({ module: 'LLM' });
@@ -897,6 +899,12 @@ export class LLMClient implements ILLMClient {
     signal?: AbortSignal,
     concurrencyChecker?: (toolName: string, toolArgs: Record<string, unknown>) => boolean,
     onIterationStart?: (messages: Message[]) => void,
+    /**
+     * 可选的请求级 ID(Final Review fix #2):用于把 LLM SLA breach 关联回
+     * 上层 request / task,审计日志 / OTel tag 可据此人工定位失败原因。
+     * 不传则走 fallback `llm-${ts}-${rand}`,时间戳已含在 slaId 内,便于人工对账。
+     */
+    requestId?: string,
   ): Promise<{ content: string; toolCalls: ToolCallResult[]; messages: Message[] }> {
     const trackedMessages = [...messages];
 
@@ -921,7 +929,7 @@ export class LLMClient implements ILLMClient {
       iteration++;
       log.debug('工具调用循环开始', { iteration, timestamp: new Date().toISOString() });
       const llmStartTime = Date.now();
-      const result = await this.makeToolRequestStream(trackedMessages, tools, signal);
+      const result = await this.makeToolRequestStream(trackedMessages, tools, signal, requestId);
       const llmDuration = Date.now() - llmStartTime;
       log.debug('LLM 响应耗时', { duration: llmDuration });
 
@@ -1089,22 +1097,54 @@ export class LLMClient implements ILLMClient {
    * @param messages - Array of messages for the conversation
    * @param tools - Available tool definitions
    * @param signal - Optional external abort signal
+   * @param requestId - Optional upstream request/task ID (Final Review fix #2)
+   *                    — 若提供,slaId 用 `<requestId>-<ts>-<rand>` 形式,
+   *                    失败审计日志能直接关联到具体请求;若不提供,保留 fallback。
    * @returns Parsed message with tool_calls and reasoning
    */
   private async makeToolRequestStream(
     messages: Message[],
     tools: ToolDefinition[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    requestId?: string
   ): Promise<{ message: Message; reasoning: string }> {
-    const requestBody = this.buildRequestBody(messages, { tools, stream: false });
-    const response = await this.fetchWithRetry(requestBody, signal);
-
-    const data = await response.json() as GLMResponse;
-    const choice = data.choices?.[0];
-
-    if (!choice?.message) {
-      throw new LLMError('API_ERROR', 'No message in response');
+    // Metrics (Task 12): 缺口 4.3 — LLM 调用打点 (calls / latency / errors)。
+    // success 标志区分成功 / 失败路径:
+    //   - 成功路径:在 finally 累加 calls + latency
+    //   - 失败路径:在 catch 累加 errors + latency(避开 finally 重复)
+    const metricsStart = Date.now();
+    let success = false;
+    // SLA Watcher (Task 9): 单次 LLM 调用耗时监控,超阈值时归因 + 审计告警。
+    // slaId 构造(Final Review fix #2):
+    //   - 优先用调用方传入的 requestId 作前缀,失败审计日志能直接关联到具体请求;
+    //   - 否则检查 messages[0] 上是否附带 traceId 字段(向后兼容预留位);
+    //   - 都没有则 fallback 到 `llm-${ts}-${rand}`,时间戳已含在 slaId 内,人工可对账。
+    const ts = Date.now();
+    const rand = Math.random().toString(36).slice(2, 7);
+    let slaId: string;
+    if (requestId && typeof requestId === 'string') {
+      slaId = `${requestId}-llm-${ts}-${rand}`;
+    } else {
+      // messages[0] 在 v2 链路里通常是 system prompt,本身不带 traceId 字段。
+      // 留个轻量探针:若以后 Message 类型加 `traceId?: string`,可直接读出。
+      const msgTrace = (messages?.[0] as any)?.traceId;
+      if (msgTrace && typeof msgTrace === 'string') {
+        slaId = `${msgTrace}-llm-${ts}-${rand}`;
+      } else {
+        slaId = `llm-${ts}-${rand}`;
+      }
     }
+    slaTracker.start(slaId, CONFIG.SLA_LLM_CALL_MS);
+    try {
+      const requestBody = this.buildRequestBody(messages, { tools, stream: false });
+      const response = await this.fetchWithRetry(requestBody, signal);
+
+      const data = await response.json() as GLMResponse;
+      const choice = data.choices?.[0];
+
+      if (!choice?.message) {
+        throw new LLMError('API_ERROR', 'No message in response');
+      }
 
     const rawMessage = choice.message;
     const reasoning = rawMessage.reasoning_content || rawMessage.reasoning || '';
@@ -1133,6 +1173,7 @@ export class LLMClient implements ILLMClient {
       repaired: repaired.repaired,
     });
 
+    success = true;
     return {
       message: {
         role: 'assistant',
@@ -1141,5 +1182,28 @@ export class LLMClient implements ILLMClient {
       },
       reasoning,
     };
+    } catch (e) {
+      // SLA Watcher (Task 9): 失败路径上若超阈值,走归因 + 审计告警。
+      // 注意:slaTracker.check 在 clear 后会返回 no-records,所以 finally 先于 catch 不存在
+      // 此处直接 check 即可。
+      const check = slaTracker.check(slaId);
+      if (check.breached) {
+        reportSlaBreach(slaId, 'LLM', check.elapsedMs, check.slaMs);
+      }
+      // Metrics (Task 12): 错误计数 + 失败路径延迟(LLM 维度)。
+      const errorKind = e instanceof LLMError ? e.type : 'UNKNOWN';
+      llmErrors.add(1, { kind: errorKind });
+      llmLatency.record(Date.now() - metricsStart);
+      throw e;
+    } finally {
+      // 无论成功 / 失败 / 异常,清掉 record(成功路径不归因,失败路径已归因)。
+      slaTracker.clear(slaId);
+      // Metrics (Task 12): 成功路径累加 calls + latency;
+      // 失败路径已在 catch 累加 errors + latency,这里不再累加避免重复。
+      if (success) {
+        llmCalls.add(1);
+        llmLatency.record(Date.now() - metricsStart);
+      }
+    }
   }
 }

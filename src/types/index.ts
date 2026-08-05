@@ -33,6 +33,33 @@ export interface Skill extends SkillMetadata {
 }
 
 /**
+ * A single conversation-history entry recorded on the user profile.
+ * Tracks topics the user has asked about so the agent can recall context.
+ */
+export interface ProfileHistoryItem {
+  /** Topic label, e.g. "报销" */
+  topic: string;
+  /** Short human-readable summary of the topic */
+  summary: string;
+  /** ISO 8601 timestamp of the most recent occurrence */
+  lastOccurredAt: string;
+  /** How many times this topic has surfaced */
+  occurrences: number;
+}
+
+/**
+ * A learned preference about how the user wants the agent to respond.
+ */
+export interface ProfilePreference {
+  /** Preference key, e.g. "response_style" */
+  key: string;
+  /** Preference value, e.g. "concise" */
+  value: string;
+  /** Confidence score in [0, 1] */
+  confidence: number;
+}
+
+/**
  * User profile for personalization and tracking
  */
 export interface UserProfile {
@@ -52,6 +79,17 @@ export interface UserProfile {
   createdAt: string;
   /** Profile update timestamp (ISO 8601) */
   updatedAt: string;
+
+  // ===== 新增字段（本 spec 引入） =====
+
+  /** Role identifier (e.g. "employee", "admin") */
+  role: string;
+  /** List of permission scopes granted to the user (e.g. "oa:read") */
+  permissions: string[];
+  /** Conversation history entries for context recall */
+  history: ProfileHistoryItem[];
+  /** Learned response preferences */
+  preferences: ProfilePreference[];
 }
 
 /**
@@ -542,6 +580,20 @@ export const CONFIG = {
   EMBEDDING_DIMENSION: parseInt(process.env.EMBEDDING_DIMENSION || '1024', 10),
   /** Embedding cache size */
   EMBEDDING_CACHE_SIZE: parseInt(process.env.EMBEDDING_CACHE_SIZE || '1000', 10),
+
+  // ===== SLA 阈值(本 spec 引入,Task 9) =====
+  /** 单个 subagent task 超时阈值 */
+  SLA_SINGLE_TASK_MS: 30000,
+  /** 整个 request 端到端 SLA */
+  SLA_REQUEST_MS: 60000,
+  /** 恢复机制(compact / drain)允许耗时 */
+  SLA_RECOVERY_MS: 5000,
+  /** 单次 LLM 调用超时阈值 */
+  SLA_LLM_CALL_MS: 30000,
+  /** 单次 Skill 调用超时阈值 */
+  SLA_SKILL_CALL_MS: 15000,
+  /** SubAgent drain steering buffer 允许耗时 */
+  SLA_STEER_DRAIN_MS: 2000,
 } as const;
 
 // ============================================================================

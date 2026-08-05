@@ -24,6 +24,8 @@ import {
   validateResumedContext,
 } from './conversation-context-helper';
 import { UnknownToolLoopGuard } from './unknown-tool-guard';
+import { attributionCounter } from '../observability/attribution';
+import { skillCalls, skillLatency, skillErrors } from '../observability/metrics';
 
 // P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
 const DEFAULT_SAFE_TOOLS = new Set([
@@ -421,6 +423,9 @@ export class SubAgent {
     const toolExecutor = async (toolCall: { name: string; arguments: Record<string, unknown> }) => {
       // v4: 未知工具熔断检查
       if (!allowedToolNames.has(toolCall.name)) {
+        // 归因缺口 1 拦截: 越权 skill 调用
+        attributionCounter.inc({ rule: 'INJECT_DENY', tool: toolCall.name });
+
         const rewrite = unknownToolGuard.check(toolCall.name);
         if (rewrite) {
           SubAgent.log.warn('未知工具熔断触发', { toolName: toolCall.name, count: '>3' });
@@ -432,6 +437,10 @@ export class SubAgent {
         unknownToolGuard.reset();  // 合法工具调用,重置计数
       }
       const toolStartTime = Date.now();
+      // Metrics (Task 12): 缺口 4.3 — Skill 调用打点。
+      // 入口累加 skill.calls(成功 + 失败都计数),延迟按成功 / 失败路径分别在出口累加。
+      skillCalls.add(1, { skill: skill.name, tool: toolCall.name });
+      const skillMetricsStart = Date.now();
       SubAgent.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
       SubAgent.log.debug('工具参数', { args: toolCall.arguments });
 
@@ -486,6 +495,8 @@ export class SubAgent {
               const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
               SubAgent.log.warn('接口调用失败', { code: codeMatch[1] });
               SubAgent.log.debug('接口返回', { preview: dataPreview });
+              // Metrics (Task 12): bash 内部 code 非 200 抛错后由下方 catch 统一累加 errors/latency,
+              // 此处不前置累加,避免重复计数。
               throw new Error(errMsg);
             }
           }
@@ -524,6 +535,9 @@ export class SubAgent {
             timestamp: new Date(),
           });
 
+          // Metrics (Task 12): 成功路径累加 skill.latency。
+          skillLatency.record(Date.now() - skillMetricsStart, { skill: skill.name, tool: toolCall.name });
+
           return data;
         } else {
           const toolDuration = Date.now() - toolStartTime;
@@ -550,6 +564,10 @@ export class SubAgent {
             }
           });
 
+          // Metrics (Task 12): 工具返回 success=false 视为 skill 错误,累加 errors + latency。
+          skillErrors.add(1, { skill: skill.name, tool: toolCall.name });
+          skillLatency.record(Date.now() - skillMetricsStart, { skill: skill.name, tool: toolCall.name });
+
           return `工具执行失败: ${toolResult.error}`;
         }
       } catch (err) {
@@ -574,6 +592,13 @@ export class SubAgent {
             success: false
           }
         });
+
+        // Metrics (Task 12): 异常路径累加 errors + latency(bash code 非 200 已在上方 throw 前累加,
+        // 此处 catch 走完后还会再累加一次,造成重复)。我们用"throw 前是否已累加"判断:
+        // 简化做法 — 让 bash 抛错时不再前置累加,统一在 catch 内累加。
+        // (上方已删除 bash 错误前置累加,统一走此 catch 路径。)
+        skillErrors.add(1, { skill: skill.name, tool: toolCall.name });
+        skillLatency.record(Date.now() - skillMetricsStart, { skill: skill.name, tool: toolCall.name });
 
         return `工具执行异常: ${errorMsg}`;
       }
@@ -622,6 +647,9 @@ export class SubAgent {
             signal,
             concurrencyChecker,
             consumeSteering,
+            // Final Review fix #2: 透传 taskId 作为 LLM slaId 前缀,
+            // 失败审计日志能直接关联到具体任务。
+            taskId,
           );
         } catch (err) {
           if (err instanceof LLMError && err.type === 'CONTEXT_TOO_LONG' && attempts < MAX_COMPACTION_ATTEMPTS) {
