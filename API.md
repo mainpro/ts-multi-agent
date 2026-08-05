@@ -63,6 +63,8 @@ POST /tasks/stream
 | `imageAttachment` | string | 否 | 图片附件 Base64 |
 | `employeeId` | string | 否 | 虚拟员工 ID(可选)。不填则走意图识别 + 默认员工 fallback。示例: `'it-ops-consultant'` |
 
+> **注意**:虚拟员工路由依赖单 MainAgent 单进程。`taskQueue.setExecutor` 是进程级全局可变状态,并发请求会共享同一个 executor,后写入覆盖前写入。生产环境如需多实例或多 worker,请评估切换到 per-request/per-task 的 executor 隔离方案。
+
 #### SSE 事件
 
 | 事件类型 | 说明 |

@@ -99,4 +99,66 @@ describe('VirtualEmployeeResolver', () => {
     });
     expect(emp.config.id).toBe('a');  // 但 hintedId 优先
   });
+
+  // =============== Final Review Polish B-3: containsAtMentionPrefix regex ===============
+  describe('containsAtMentionPrefix — 要求 @ 前是字符串开头或空白', () => {
+    const resolver = new VirtualEmployeeResolver();
+
+    test('邮箱式字符串 hello@world.com 不算 @mention', () => {
+      expect(resolver.containsAtMentionPrefix('contact me at hello@world.com')).toBe(false);
+    });
+
+    test('@IT小海 在开头算 @mention', () => {
+      expect(resolver.containsAtMentionPrefix('@IT小海 帮我')).toBe(true);
+    });
+
+    test('前导空格后 @ 仍算 @mention', () => {
+      expect(resolver.containsAtMentionPrefix(' @IT小海 帮我')).toBe(true);
+    });
+
+    test('CJK 字符紧贴 @ 不算 @mention(避免误判邮箱/CJK 文本)', () => {
+      expect(resolver.containsAtMentionPrefix('你好@world')).toBe(false);
+    });
+
+    test('纯文本无 @ 返回 false', () => {
+      expect(resolver.containsAtMentionPrefix('随便问点什么')).toBe(false);
+    });
+  });
+
+  // =============== Final Review Polish B-4: extractMention "first @ wins" ===============
+  describe('extractMention — 多 @ 时只取第一个(deterministic)', () => {
+    const resolver = new VirtualEmployeeResolver();
+
+    test('"@IT小海 ... @HR助理 ..." → 第一个 @ 命中 IT 员工,忽略后面的', () => {
+      VirtualEmployeeRegistry.register('it-ops-consultant', ITConsultant as any);
+      VirtualEmployeeRegistry.register('hr', EmployeeB as any);
+      // 'IT小海' 不是注册 id,但 ITConsultant.displayName = 'IT 运维顾问·小海'
+      // 这里要走 displayName 模糊匹配需要 "IT小海" 是其真子串;而 displayName 中含
+      // 空格 'IT 运维顾问·小海' 不连续包含 'IT小海' — 所以首 @ 实际无法解析,
+      // 整个 extractMention 返回 undefined,而非按预期返回 it-ops-consultant。
+      // 这正是该函数的设计:首 @ 不解析就让调用方走意图/默认 fallback。
+      // 故此处采用更直接的 @id-形式来验证 first-@-wins。
+      const result = resolver.extractMention('@it-ops-consultant 帮我查 @HR助理 请假');
+      expect(result).toBe('it-ops-consultant');
+    });
+
+    test('"@ghost @it-ops-consultant 帮我" → 第一个 @ghost 无法解析,跳过该路径返回 undefined', () => {
+      VirtualEmployeeRegistry.register('it-ops-consultant', ITConsultant as any);
+      const result = resolver.extractMention('@ghost @it-ops-consultant 帮我');
+      expect(result).toBeUndefined();
+    });
+
+    test('多 @ 时,首个 @ 按 displayName 模糊命中 → 仍只取首个,忽略后续 id 命中', () => {
+      class OABot extends VirtualEmployee {
+        readonly config = { id: 'oa-bot', displayName: 'OA助理', intentKeywords: [] };
+      }
+      VirtualEmployeeRegistry.register('oa-bot', OABot as any);
+      VirtualEmployeeRegistry.register('it-ops-consultant', ITConsultant as any);
+
+      // 首个 @ 后是 'OA助理' → displayName 'OA助理' 精确包含 'OA助理' → 命中 oa-bot
+      // 后面 '@it-ops-consultant' 是注册的 id,但因 first-@-wins 不被取到
+      const result = resolver.extractMention('@OA助理 帮我修 @it-ops-consultant');
+      expect(result).toBe('oa-bot');
+    });
+  });
 });

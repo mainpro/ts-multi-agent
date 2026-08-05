@@ -74,6 +74,11 @@ describe('SubAgent template method hooks (default behavior)', () => {
     const sa = new SubAgent(buildStubSkillRegistry(), new StubLLM());
     expect(sa.resultRewriter()).toBeNull();
   });
+
+  test('默认 SubAgent 的 configId 返回 "unknown"(无员工概念)', () => {
+    const sa = new SubAgent(buildStubSkillRegistry(), new StubLLM());
+    expect((sa as any).configId()).toBe('unknown');
+  });
 });
 
 describe('SubAgent template method hooks (skill whitelist)', () => {
@@ -252,3 +257,34 @@ describe('SubAgent template method integration — result rewriter', () => {
 // Suppress the unused-spyon warning by re-exporting it; tests below don't need
 // it directly but the import kept to make future hook-spying tests easy to add.
 void spyOn;
+
+describe('SubAgent template method hooks (configId for log/error messages)', () => {
+  test('VirtualEmployee subclass configId 返回 config.id', () => {
+    class NamedEmployee extends VirtualEmployee {
+      readonly config = { id: 'named-emp', displayName: 'Named', intentKeywords: [] };
+    }
+    const emp = new NamedEmployee(buildStubSkillRegistry(), new StubLLM());
+    expect((emp as any).configId()).toBe('named-emp');
+  });
+
+  test('SKILL_NOT_ALLOWED 错误消息中的员工标识来自 configId,而非 "unknown"', async () => {
+    class StrictEmployee extends VirtualEmployee {
+      readonly config = { id: 'audit-emp', displayName: 'Audit', intentKeywords: [] };
+      protected allowedSkillNames() { return new Set(['allowed-skill']); }
+    }
+    const emp = new StrictEmployee(buildStubSkillRegistry(), new StubLLM());
+    const task = {
+      id: 't1', requirement: 'r', skillName: 'forbidden-skill', sessionId: 's', userId: 'u',
+    } as Task;
+    try {
+      await emp.execute(task);
+      throw new Error('应该抛错但没有');
+    } catch (err: unknown) {
+      const e = err as { code?: string; message?: string };
+      expect(e.code).toBe('SKILL_NOT_ALLOWED');
+      // B-5 refactor 后 empId 应是 config.id('audit-emp'),不再是 'unknown'
+      expect(e.message).toContain('audit-emp');
+      expect(e.message).not.toContain('虚拟员工 unknown');
+    }
+  });
+});

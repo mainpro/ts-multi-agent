@@ -85,11 +85,19 @@ export class VirtualEmployeeResolver {
 
   /**
    * 从 userMessage 中提取 @mention。
+   *
    * 例: "@IT小海 帮我..." → 优先按 id 查 'it-ops-consultant',
    * 否则按 displayName substring 匹配。
+   *
+   * **多 @ 行为(确定性)**:消息中存在多个 `@token` 时,只取第一个 —
+   * `String.prototype.match` 不带 `g` 标志时仅返回首次匹配。
+   * 这意味着相同输入永远派给同一个员工,不会出现"同一句话两次路由不同"。
+   * 如果第一个 @ 未能解析(id 不存在 + displayName 不包含),则跳过
+   * `extractMention` 路径,让兜底路由(意图/默认员工)接管。
+   *
    * 解析不到时返回 undefined(由调用方在兜底全失败时再决定抛哪个错误码)。
    */
-  private extractMention(userMessage: string): EmployeeId | undefined {
+  extractMention(userMessage: string): EmployeeId | undefined {
     const mentionMatch = userMessage.match(/@([\p{L}\p{N}_-]+)/u);
     if (!mentionMatch) return undefined;
     const name = mentionMatch[1];
@@ -108,8 +116,12 @@ export class VirtualEmployeeResolver {
 
   /**
    * 消息中是否有 @ 前缀(用于决定兜底失败时的错误码)。
+   *
+   * 要求 `@` 前必须是字符串开头或空白字符,避免把 `hello@world.com`
+   * 这类邮箱式文本误判为 mention。CJK 字符(无空格)也不应触发 —
+   * 邮箱/CJK @ 紧贴前文一律视为非 mention。
    */
-  private containsAtMentionPrefix(userMessage: string): boolean {
-    return /@[\p{L}\p{N}_-]/u.test(userMessage);
+  containsAtMentionPrefix(userMessage: string): boolean {
+    return /(?:^|\s)@[\p{L}\p{N}_-]/u.test(userMessage);
   }
 }

@@ -162,6 +162,14 @@ export class SubAgent {
     return null;
   }
 
+  /**
+   * 用于日志/错误消息中的员工标识。SubAgent 默认无员工概念,返回 'unknown'。
+   * VirtualEmployee 重写此 hook 返回其 config.id。
+   */
+  protected configId(): string {
+    return 'unknown';
+  }
+
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
     const previousAgent = llmEvents.getAgent();
     llmEvents.setAgent('SubAgent');
@@ -171,8 +179,7 @@ export class SubAgent {
       // 子类可通过 override allowedSkillNames() 加白名单;默认 null = 放行所有
       const allowed = this.allowedSkillNames();
       if (allowed instanceof Set && task.skillName && !allowed.has(task.skillName)) {
-        const empConfig = (this as any).config;
-        const empId = empConfig?.id ?? 'unknown';
+        const empId = this.configId();
         SubAgent.log.warn('虚拟员工 skill 白名单拒绝', {
           employeeId: empId,
           skillName: task.skillName,
