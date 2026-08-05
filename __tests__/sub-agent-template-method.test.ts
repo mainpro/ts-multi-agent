@@ -208,6 +208,45 @@ describe('SubAgent template method integration — result rewriter', () => {
     // 避免结果改写器创建新内容时恰好与原内容相同导致测试误过
     expect(data.response).not.toBe(RAW);
   });
+
+  // 修复 Final Review Minor #1: rewriter 不应对 waiting_user_input 的提问文本起作用
+  test('resultRewriter 在 waiting_user_input 状态不被调用(避免给提问追加"转人工"尾注)', async () => {
+    const APPENDED = '<<< SHOULD_NOT_APPEAR >>>';
+    const QUESTION = '请问您遇到的是什么具体问题?';
+    let rewriterCalled = false;
+
+    class WaitingRewritingEmployee extends VirtualEmployee {
+      readonly config = { id: 'wr', displayName: 'WR', intentKeywords: [] };
+      protected resultRewriter() {
+        return (raw: string) => {
+          rewriterCalled = true;
+          return `${raw} ${APPENDED}`;
+        };
+      }
+      // 用 SubAgent 子类 stub executeSkill 直接返回 waiting_user_input,
+      // 绕开 ask_user 工具检测的复杂 setup;这是合法且更轻量的单元级断言。
+      protected async executeSkill(): Promise<unknown> {
+        return {
+          response: QUESTION,
+          status: 'waiting_user_input',
+          question: { type: 'skill_question', content: QUESTION },
+        };
+      }
+    }
+
+    const emp = new WaitingRewritingEmployee(buildStubSkillRegistry(), new StubLLM());
+    const result = await emp.execute({
+      id: 't4', requirement: 'ask', skillName: 'test-skill',
+      sessionId: 's', userId: 'u',
+    } as Task);
+
+    expect(result.success).toBe(true);
+    const data = result.data as { response?: string; status?: string };
+    expect(data.status).toBe('waiting_user_input');
+    expect(data.response).toBe(QUESTION);
+    expect(data.response).not.toContain(APPENDED);
+    expect(rewriterCalled).toBe(false);
+  });
 });
 
 // Suppress the unused-spyon warning by re-exporting it; tests below don't need

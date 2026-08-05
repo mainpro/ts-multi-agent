@@ -245,7 +245,9 @@ export class SubAgent {
 
       // ===== VirtualEmployee template hook: result 改写器 =====
       const rewriter = this.resultRewriter();
-      const finalResult = rewriter ? rewriter(cleanResult.response ?? '') : cleanResult.response;
+      // 仅在 completed 状态改写(避免对 waiting_user_input 的提问内容追加"转人工"尾注)
+      const shouldRewrite = rewriter && cleanResult.status !== 'waiting_user_input';
+      const finalResult = shouldRewrite ? rewriter!(cleanResult.response ?? '') : cleanResult.response;
 
       return { success: true, data: { ...cleanResult, response: finalResult } };
     } catch (error) {
