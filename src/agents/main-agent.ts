@@ -31,6 +31,8 @@ import { taskEvents } from "../events/task-events";
 import { BusinessError, AppError } from '../errors';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { CONFIG } from '../types';
+import { VirtualEmployee } from './virtual-employee/base';
+import { VirtualEmployeeResolver } from './virtual-employee/resolver';
 
 /**
  * MainAgent 依赖注入接口
@@ -182,7 +184,7 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request },
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request; employeeId?: string },
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
@@ -222,7 +224,7 @@ export class MainAgent {
     userId: string,
     sessionId: string | undefined,
     effectiveSessionId: string,
-    options: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request } | undefined,
+    options: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request; employeeId?: string } | undefined,
     switchSlaId: (newId: string) => void,
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
 
@@ -289,6 +291,36 @@ export class MainAgent {
     try {
       await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
     } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
+
+    // ===== VirtualEmployee 路由(Task 6)=====
+    // 在系统命令拦截之前先选员工。失败 → BusinessError (UNKNOWN_EMPLOYEE / NO_DEFAULT_EMPLOYEE)
+    // 抛出 → API middleware 收到后由 error handler 透传给客户端。
+    // 注:本次 resolver 只产生一个实例,不缓存;后续要 per-task 路由时再重构。
+    const resolver = new VirtualEmployeeResolver();
+    let selectedEmployee: VirtualEmployee;
+    try {
+      selectedEmployee = resolver.resolve({
+        hintedId: options?.employeeId,
+        userMessage: requirement,
+        skillRegistry: this.skillRegistry,
+        llm: this.llm,
+        memoryService: this.memoryService,
+      });
+    } catch (err) {
+      if (err instanceof BusinessError && (err.code === 'UNKNOWN_EMPLOYEE' || err.code === 'NO_DEFAULT_EMPLOYEE')) {
+        MainAgent.log.warn('虚拟员工路由失败 → 抛错(由 API 层映射)', { error: err.message });
+      }
+      throw err;
+    }
+    MainAgent.log.info('已选虚拟员工', { employeeId: selectedEmployee.config.id });
+
+    // 把 taskQueue 的 executor 替换成 selectedEmployee.execute。
+    // 简化实现:本次 processRequirement 内全部 task 走它,下一个请求进来时会重新调 resolver + swap。
+    // 这样不需要 finally restore,而且多并发请求各自走自己的 swap → execute 路径是顺序触发的,
+    // executor 字段在两个请求 cross-await 时仍然指向最近一次 setExecutor 设置的值。
+    // 当前 bootstrap 是单进程(单 MainAgent),并发请求共享 executor 的 race 是已知限制,
+    // 见 docs/virtual-employee.md 中的后续改进项(Task 7+)。
+    this.taskQueue.setExecutor(async (task: Task) => selectedEmployee.execute(task));
 
     // ========== 步骤 1: 图片分析 ==========
     if (imageAttachment) {

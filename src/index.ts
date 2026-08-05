@@ -9,7 +9,6 @@ import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
 import { LLMClient } from './llm';
 import { MainAgent, MainAgentDependencies } from './agents/main-agent';
-import { SubAgent } from './agents/sub-agent';
 import { createAPIServer } from './api';
 import { Task } from './types';
 import { MemoryService } from './memory/memory-service';
@@ -91,12 +90,29 @@ async function bootstrap() {
     memoryServiceInstance = memoryService;
     console.log('✅ MemoryService initialized\n');
 
-    // 5. Create SubAgent
-    console.log('🤖 Initializing SubAgent...');
-    const subAgent = new SubAgent(skillRegistry, llmClient, memoryService);
-    console.log('✅ SubAgent initialized\n');
+    // 5. Register virtual employees
+    console.log('👥 Registering virtual employees...');
+    const { VirtualEmployeeRegistry } = await import('./agents/virtual-employee/registry');
+    const { ITOperationsConsultantEmployee } = await import('./agents/virtual-employee/employees/it-operations-consultant');
+    VirtualEmployeeRegistry.register(
+      'it-ops-consultant',
+      ITOperationsConsultantEmployee as any,
+      { isDefault: true },
+    );
+    console.log('✅ Virtual employees registered\n');
 
-    // 6. Create Task Queue with SubAgent as executor
+    // 6. Resolve default employee (本次唯一一个,作为 SubAgent 单例复用)
+    console.log('🤖 Initializing SubAgent (default virtual employee)...');
+    const { VirtualEmployeeResolver } = await import('./agents/virtual-employee/resolver');
+    const subAgent = new VirtualEmployeeResolver().resolve({
+      userMessage: '',  // 默认员工 fallback 路径,userMessage 不参与
+      skillRegistry,
+      llm: llmClient,
+      memoryService,
+    });
+    console.log(`✅ SubAgent initialized (employee=${subAgent.config.id})\n`);
+
+    // 7. Create Task Queue with SubAgent as executor
     console.log('📋 Initializing Task Queue...');
     taskQueue = new TaskQueue(async (task: Task): Promise<unknown> => {
       // SubAgent.execute now throws AppError directly (Task 8).

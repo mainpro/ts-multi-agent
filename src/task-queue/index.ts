@@ -52,6 +52,15 @@ export class TaskQueue {
   }
 
   /**
+   * Replace the task executor. Exposed for VirtualEmployee routing — the agent
+   * can swap the executor per request to route tasks to a selected employee,
+   * then restore it (typically via try/finally) once the request completes.
+   */
+  setExecutor(executor: TaskExecutor): void {
+    this.executor = executor;
+  }
+
+  /**
    * Start the periodic cleanup interval
    */
   private startCleanupInterval(): void {
