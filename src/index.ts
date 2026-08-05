@@ -90,16 +90,12 @@ async function bootstrap() {
     memoryServiceInstance = memoryService;
     console.log('✅ MemoryService initialized\n');
 
-    // 5. Register virtual employees
+    // 5. Register virtual employees (从 JSON 加载)
     console.log('👥 Registering virtual employees...');
-    const { VirtualEmployeeRegistry } = await import('./agents/virtual-employee/registry');
-    const { ITOperationsConsultantEmployee } = await import('./agents/virtual-employee/employees/it-operations-consultant');
-    VirtualEmployeeRegistry.register(
-      'it-ops-consultant',
-      ITOperationsConsultantEmployee,
-      ITOperationsConsultantEmployee.config,
-      { isDefault: true },
-    );
+    const { FileEmployeeConfigProvider, loadAndRegister } = await import('./agents/virtual-employee/loader');
+    const employeeDir = resolveResource('agents/virtual-employee/employees');
+    const provider = new FileEmployeeConfigProvider(employeeDir);
+    await loadAndRegister(provider);
     console.log('✅ Virtual employees registered\n');
 
     // 6. Resolve default employee (本次唯一一个,作为 SubAgent 单例复用)

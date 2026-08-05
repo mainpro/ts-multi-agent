@@ -33,21 +33,25 @@ export class VirtualEmployeeResolver {
   resolve(opts: ResolverOptions): VirtualEmployee {
     // ===== 1. hintedId 显式 =====
     if (opts.hintedId !== undefined) {
-      const Ctor = VirtualEmployeeRegistry.getCtor(opts.hintedId);
-      if (!Ctor) {
+      const employee = VirtualEmployeeRegistry.getInstance(
+        opts.hintedId, opts.skillRegistry, opts.llm, opts.memoryService,
+      );
+      if (!employee) {
         throw new BusinessError(
           'UNKNOWN_EMPLOYEE',
           `UNKNOWN_EMPLOYEE: 虚拟员工 '${opts.hintedId}' 不存在`,
         );
       }
-      return new Ctor(opts.skillRegistry, opts.llm, opts.memoryService);
+      return employee;
     }
 
     // ===== 1b. @mention 解析 =====
     const hintedFromMessage = this.extractMention(opts.userMessage);
     if (hintedFromMessage) {
-      const Ctor = VirtualEmployeeRegistry.getCtor(hintedFromMessage)!;
-      return new Ctor(opts.skillRegistry, opts.llm, opts.memoryService);
+      const employee = VirtualEmployeeRegistry.getInstance(
+        hintedFromMessage, opts.skillRegistry, opts.llm, opts.memoryService,
+      )!;
+      return employee;
     }
 
     // ===== 2. 意图识别关键词匹配(按注册顺序)=====
@@ -55,16 +59,20 @@ export class VirtualEmployeeResolver {
     for (const config of VirtualEmployeeRegistry.list()) {
       for (const kw of config.intentKeywords) {
         if (lowered.includes(kw.toLowerCase())) {
-          const Ctor = VirtualEmployeeRegistry.getCtor(config.id)!;
-          return new Ctor(opts.skillRegistry, opts.llm, opts.memoryService);
+          const employee = VirtualEmployeeRegistry.getInstance(
+            config.id, opts.skillRegistry, opts.llm, opts.memoryService,
+          )!;
+          return employee;
         }
       }
     }
 
     // ===== 3. 默认 fallback =====
-    const DefaultCtor = VirtualEmployeeRegistry.getDefaultCtor();
-    if (DefaultCtor) {
-      return new DefaultCtor(opts.skillRegistry, opts.llm, opts.memoryService);
+    const defaultEmployee = VirtualEmployeeRegistry.getDefaultInstance(
+      opts.skillRegistry, opts.llm, opts.memoryService,
+    );
+    if (defaultEmployee) {
+      return defaultEmployee;
     }
 
     // ===== 三级全部失败 =====
@@ -102,8 +110,8 @@ export class VirtualEmployeeResolver {
     if (!mentionMatch) return undefined;
     const name = mentionMatch[1];
 
-    // 直接当 id 查
-    if (VirtualEmployeeRegistry.getCtor(name)) return name;
+    // 直接当 id 查 — 通过 Registry.list() 里查找(避免触发 factory)
+    if (VirtualEmployeeRegistry.list().some((c) => c.id === name)) return name;
 
     // 否则按 displayName 模糊匹配(取第一个命中)
     for (const config of VirtualEmployeeRegistry.list()) {
