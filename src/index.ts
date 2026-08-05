@@ -97,6 +97,7 @@ async function bootstrap() {
     VirtualEmployeeRegistry.register(
       'it-ops-consultant',
       ITOperationsConsultantEmployee,
+      ITOperationsConsultantEmployee.config,
       { isDefault: true },
     );
     console.log('✅ Virtual employees registered\n');

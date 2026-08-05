@@ -470,7 +470,10 @@ export class TaskQueue {
 
     try {
       log.info('开始执行任务', { taskId: task.id });
-      const result = await this.executor(task, controller.signal);
+      // P3 race fix: 优先用 task 自带的 executor(),fall back 到 this.executor。
+      // 这样 executor 跟随 task 而不是 process-global,跨请求并发时不会互相覆盖。
+      const executor = task.executor ?? this.executor;
+      const result = await executor(task, controller.signal);
       log.info('executor 返回成功', { taskId: task.id });
 
       clearTimeout(timeoutHandle);

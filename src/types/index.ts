@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as dotenv from 'dotenv';
 import { resolveResource } from '../utils/app-root';
+import type { TaskExecutor } from '../task-queue';
 
 // ============================================================================
 // Tool System Types (re-exported for convenience)
@@ -316,6 +317,10 @@ export interface Task {
     timestamp: Date;
     result: 'success' | 'failure' | 'skipped';
   }>;
+
+  // P3 race fix: per-task executor, 让 executor 跟随 task 而不是 process-global。
+  // 未设置时,TaskQueue 回退到默认 this.executor(back-compat)。
+  executor?: TaskExecutor;
 }
 
 /**

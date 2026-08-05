@@ -13,7 +13,7 @@ import { VirtualEmployee } from '../base';
  *   - 技能:IT 类全 7 个 skill(本系统当前全部 skill 都是 IT 类)
  */
 export class ITOperationsConsultantEmployee extends VirtualEmployee {
-  readonly config: EmployeeConfig = {
+  static readonly config: EmployeeConfig = {
     id: 'it-ops-consultant',
     displayName: 'IT 运维顾问·小海',
     intentKeywords: [
@@ -22,6 +22,8 @@ export class ITOperationsConsultantEmployee extends VirtualEmployee {
       'EES', 'GEAM', '法务', '合同', '时间管理', '硫酸',
     ],
   };
+
+  readonly config: EmployeeConfig = ITOperationsConsultantEmployee.config;
 
   protected systemPromptPrefix(): string {
     return `你是「${this.config.displayName}」,集团 IT 服务台的虚拟员工。

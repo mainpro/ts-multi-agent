@@ -1,6 +1,6 @@
 import { ILLMClient } from "../llm";
 import { SkillRegistry } from "../skill-registry";
-import { TaskQueue } from "../task-queue";
+import { TaskQueue, TaskExecutor } from "../task-queue";
 import { IntentRouter } from "../routers";
 import { UnifiedPlanner } from "../planners";
 import { UserProfileService } from "../user-profile";
@@ -33,6 +33,12 @@ import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { CONFIG } from '../types';
 import { VirtualEmployee } from './virtual-employee/base';
 import { VirtualEmployeeResolver } from './virtual-employee/resolver';
+
+/**
+ * Resolver 是 stateless(纯函数 + 静态 registry),进程内共享一个实例足以。
+ * 避免每个 processRequirement 调 new 一个浪费对象分配。
+ */
+const virtualEmployeeResolver = new VirtualEmployeeResolver();
 
 /**
  * MainAgent 依赖注入接口
@@ -298,10 +304,9 @@ export class MainAgent {
     //   - NO_DEFAULT_EMPLOYEE(没有默认员工 + 意图未命中)→ 静默跳过路由,
     //     沿用 taskQueue 当前 executor(back-compat:旧测试/未注册员工时)
     // 注:本次 resolver 只产生一个实例,不缓存;后续要 per-task 路由时再重构。
-    const resolver = new VirtualEmployeeResolver();
     let selectedEmployee: VirtualEmployee | undefined;
     try {
-      selectedEmployee = resolver.resolve({
+      selectedEmployee = virtualEmployeeResolver.resolve({
         hintedId: options?.employeeId,
         userMessage: requirement,
         skillRegistry: this.skillRegistry,
@@ -314,30 +319,28 @@ export class MainAgent {
         throw err;
       }
       if (err instanceof BusinessError && err.code === 'NO_DEFAULT_EMPLOYEE') {
-        MainAgent.log.warn('虚拟员工路由: 没有默认员工 + 意图未命中 → 跳过路由,沿用现有 executor');
-        // 不抛错,继续走原有执行流;selectedEmployee 保持 undefined → 不调用 setExecutor
+        MainAgent.log.warn('虚拟员工路由: 没有默认员工 + 意图未命中 → 跳过路由,沿用 TaskQueue 默认 executor');
+        // 不抛错,继续走原有执行流;selectedEmployee 保持 undefined → executorFactory = undefined
       } else {
         throw err;
       }
     }
 
-    if (selectedEmployee) {
-      MainAgent.log.info('已选虚拟员工', { employeeId: selectedEmployee.config.id });
+    // P3 race fix: 不再调 taskQueue.setExecutor() 改 process-global 状态。
+    // 改为构造 per-task executorFactory,透传给 executeTaskGraph,
+    // 每个 task 入队时绑定自己的 executor,跨请求并发时不会互相覆盖。
+    const executorFactory: ((task: Task) => TaskExecutor | undefined) | undefined = selectedEmployee
+      ? (task: Task) => {
+          // 闭包捕获 task(构造时绑定),返回 TaskExecutor 接收运行时 signal。
+          // 用箭头函数 + 显式 cast 让 TS 正确推断 TaskExecutor 签名。
+          const exec: TaskExecutor = (_task: Task, signal?: AbortSignal) =>
+            selectedEmployee!.execute(task, signal);
+          return exec;
+        }
+      : undefined;
 
-      // 把 taskQueue 的 executor 替换成 selectedEmployee.execute。
-      // 简化实现:本次 processRequirement 内全部 task 走它,下一个请求进来时会重新调 resolver + swap。
-      // 这样不需要 finally restore,而且多并发请求各自走自己的 swap → execute 路径是顺序触发的,
-      // executor 字段在两个请求 cross-await 时仍然指向最近一次 setExecutor 设置的值。
-      // 当前 bootstrap 是单进程(单 MainAgent),并发请求共享 executor 的 race 是已知限制,
-      // 见 docs/virtual-employee.md 中的后续改进项(Task 7+)。
-      //
-      // setExecutor 是 duck-type 接口,只有真 TaskQueue 才有;MockTaskQueue(测试用 EventEmitter)
-      // 没有这个方法,所以用 typeof guard 兼容两种情况。
-      if (typeof (this.taskQueue as any).setExecutor === 'function') {
-        this.taskQueue.setExecutor(
-          async (task: Task, signal?: AbortSignal) => selectedEmployee!.execute(task, signal),
-        );
-      }
+    if (selectedEmployee) {
+      MainAgent.log.info('已选虚拟员工(per-task 绑定)', { employeeId: selectedEmployee.config.id });
     }
 
     // ========== 步骤 1: 图片分析 ==========
@@ -422,8 +425,12 @@ export class MainAgent {
         return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
 
       case 'new_request':
-        // 新请求，走正常流程
-        return this.processNormalRequirement(requirement, userId, effectiveSessionId, handleResult.request, imageAttachment, options);
+        // 新请求，走正常流程。透传 executorFactory 让 processNormalRequirement 的
+        // executeTaskGraph 把每个 task 绑定到当前选定的虚拟员工(P3 race fix)。
+        return this.processNormalRequirement(
+          requirement, userId, effectiveSessionId, handleResult.request,
+          imageAttachment, { ...options, executorFactory },
+        );
 
       case 'recall_prompt':
       case 'no_action':
@@ -906,7 +913,7 @@ export class MainAgent {
     sessionId: string,
     request: Request,
     _imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
-    options?: { planMode?: boolean },
+    options?: { planMode?: boolean; executorFactory?: (task: Task) => TaskExecutor | undefined },
     depth: number = 0,
   ): Promise<TaskResult> {
     // 递归深度限制，防止无限递归
@@ -1153,7 +1160,10 @@ export class MainAgent {
       const graph = this.buildTaskGraph(plan);
       let result: TaskResult;
       try {
-        result = await this.executeTaskGraph(graph, sessionId, userId, request);
+        // P3 race fix: 透传 processRequirement 注入的 executorFactory,让每个 task
+        // 绑定自己的 executor,跨请求并发时不会互相覆盖。
+        const executorFactory = options?.executorFactory;
+        result = await this.executeTaskGraph(graph, sessionId, userId, request, executorFactory);
       } finally {
         offTaskEvents();
       }
@@ -1524,14 +1534,18 @@ export class MainAgent {
 
   /**
    * 分层执行任务图（委托给 TaskGraphExecutor）
+   *
+   * P3 race fix: 接受 executorFactory 参数,透传给 TaskGraphExecutor 让每个 task
+   * 绑定自己的 executor,跨请求并发时不会互相覆盖。
    */
   private async executeTaskGraph(
     graph: TaskGraph,
     sessionId: string,
     userId: string,
     request: Request,
+    executorFactory?: (task: Task) => TaskExecutor | undefined,
   ): Promise<TaskResult> {
-    return this.taskGraphExecutor.executeTaskGraph(graph, sessionId, userId, request);
+    return this.taskGraphExecutor.executeTaskGraph(graph, sessionId, userId, request, executorFactory);
   }
 
   /**

@@ -1,4 +1,4 @@
-import { TaskQueue } from '../task-queue';
+import { TaskQueue, TaskExecutor } from '../task-queue';
 import { ResultAggregator } from './result-aggregator';
 import { getSkillData } from '../types';
 import { SessionStore } from '../memory/session-store';
@@ -61,6 +61,17 @@ interface LayerExecutionResult {
  * executeLayers 是 executeTaskGraph 和 resumeFromBreakpoint 的共享核心循环，
  * 消除了原先 ~200 行的重复代码。
  */
+/**
+ * P3 race fix: per-task executor 工厂。
+ *
+ * MainAgent 调用 TaskGraphExecutor 时把当前请求的 executor(例如某个虚拟员工)
+ * 通过 factory 传入,executeLayers 在构造 task 时 `task.executor = factory(task)`,
+ * 这样 executor 跟随 task 而不是 process-global,跨请求并发时不会互相覆盖。
+ *
+ * Factory 返回 undefined 时退回到 TaskQueue 自身的 this.executor(back-compat)。
+ */
+export type TaskExecutorFactory = (task: Task) => TaskExecutor | undefined;
+
 export class TaskGraphExecutor {
   constructor(
     private taskQueue: TaskQueue,
@@ -237,6 +248,7 @@ export class TaskGraphExecutor {
     startLayerIdx: number,
     completedResults: Map<string, any>,
     allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }>,
+    executorFactory?: TaskExecutorFactory,
   ): Promise<LayerExecutionResult> {
     const failedTasks: FailedTaskInfo[] = [];
 
@@ -261,6 +273,10 @@ export class TaskGraphExecutor {
           sessionId,
           userId,
           questionHistory: [],
+          // P3 race fix: 绑定 per-task executor,executor 跟随 task 生命周期而不是
+          // process-global。即使后续 MainAgent 调用 setExecutor 覆盖了原值,
+          // 已入队的 task 仍用自己绑定的 executor,避免跨请求并发互相污染。
+          executor: executorFactory ? executorFactory({ id: taskId, requirement: node.content, skillName: node.skillName, dependencies: node.dependencies } as Task) : undefined,
         };
 
         this.taskQueue.addTask(task);
@@ -347,17 +363,23 @@ export class TaskGraphExecutor {
 
   /**
    * 从第 0 层开始执行整个任务图
+   *
+   * @param executorFactory P3 race fix 注入:per-task executor 工厂。
+   *                        传入后,executeLayers 在 addTask 前给每个 task 绑定 executor,
+   *                        跨请求并发时不会互相覆盖。
+   *                        未传入时,executor 走 TaskQueue 自己的 this.executor(back-compat)。
    */
   async executeTaskGraph(
     graph: TaskGraph,
     sessionId: string,
     userId: string,
     request: Request,
+    executorFactory?: TaskExecutorFactory,
   ): Promise<TaskResult> {
     const completedResults: Map<string, any> = new Map();
     const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
 
-    const layerResult = await this.executeLayers(graph, sessionId, userId, 0, completedResults, allResults);
+    const layerResult = await this.executeLayers(graph, sessionId, userId, 0, completedResults, allResults, executorFactory);
 
     // P3-1 修复:把每个 task 的执行结果回写到 session.tasks,
     // 避免 syncRequestStatus 看到 task=pending 推出 status='processing',
@@ -468,6 +490,7 @@ export class TaskGraphExecutor {
     sessionId: string,
     request: Request,
     question: QAEntry,
+    executorFactory?: TaskExecutorFactory,
   ): Promise<TaskResult> {
     const progress = request.executionProgress!;
     const graph = progress.taskGraph;
@@ -572,7 +595,7 @@ export class TaskGraphExecutor {
       }
     }
 
-    const layerResult = await this.executeLayers(graph, sessionId, userId, startLayerIdx, completedResults, allResults);
+    const layerResult = await this.executeLayers(graph, sessionId, userId, startLayerIdx, completedResults, allResults, executorFactory);
 
     // 遇到新的等待用户输入
     if (layerResult.waitingTaskId) {
