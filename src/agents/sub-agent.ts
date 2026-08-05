@@ -142,11 +142,47 @@ export class SubAgent {
     this.memoryService = memoryService;
   }
 
+  /**
+   * ===== VirtualEmployee template hooks (default no-op for SubAgent) =====
+   * Subclasses (VirtualEmployee) override these to express business personality.
+   * Default implementations preserve SubAgent behavior bit-for-bit:
+   *   - no persona prefix
+   *   - no skill whitelist (null = allow all)
+   *   - no result rewriting (null = passthrough)
+   */
+  protected systemPromptPrefix(): string {
+    return '';
+  }
+
+  protected allowedSkillNames(): Set<string> | null {
+    return null;
+  }
+
+  protected resultRewriter(): ((rawResult: string) => string) | null {
+    return null;
+  }
+
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
     const previousAgent = llmEvents.getAgent();
     llmEvents.setAgent('SubAgent');
 
     try {
+      // ===== VirtualEmployee template hook: skill 白名单校验 =====
+      // 子类可通过 override allowedSkillNames() 加白名单;默认 null = 放行所有
+      const allowed = (this as any).allowedSkillNames?.call(this);
+      if (allowed instanceof Set && task.skillName && !allowed.has(task.skillName)) {
+        const empConfig = (this as any).config;
+        const empId = empConfig?.id ?? 'unknown';
+        SubAgent.log.warn('虚拟员工 skill 白名单拒绝', {
+          employeeId: empId,
+          skillName: task.skillName,
+        });
+        throw new SkillError(
+          'SKILL_NOT_ALLOWED',
+          `虚拟员工 ${empId} 不允许调用 skill: ${task.skillName}`,
+        );
+      }
+
       SubAgent.log.debug('任务入口', { taskId: task.id, skillName: task.skillName, userId: task.userId, params: task.params ? Object.keys(task.params) : [] });
 
       // ===== v2: 断点续执行检测 =====
@@ -207,7 +243,11 @@ export class SubAgent {
       // 旧 remember(procedural) 已由 L3 summarizeRequest 在请求完成时统一处理,
       // 此处不再单独调用(避免重复写入且无 sessionId 归属)。
 
-      return { success: true, data: cleanResult };
+      // ===== VirtualEmployee template hook: result 改写器 =====
+      const rewriter = (this as any).resultRewriter?.call(this);
+      const finalResult = rewriter ? rewriter(cleanResult.response ?? '') : cleanResult.response;
+
+      return { success: true, data: { ...cleanResult, response: finalResult } };
     } catch (error) {
       throw mapSubAgentError(error);
     } finally {
@@ -228,7 +268,7 @@ export class SubAgent {
     }
   }
 
-  private async executeSkill(
+  protected async executeSkill(
     taskId: string,
     requirement: string,
     skill: Skill,
@@ -296,9 +336,15 @@ export class SubAgent {
       SubAgent.log.warn('上下文加载失败，继续执行', { error: (err as Error).message });
     }
 
+    // ===== VirtualEmployee template hook: persona prefix =====
+    const personaPrefix = (this as any).systemPromptPrefix?.call(this) ?? '';
+    const skillBodyWithPersona = personaPrefix
+      ? `${personaPrefix}\n\n${skill.body}`
+      : skill.body;
+
     // ===== v2: 构建增强的 system prompt =====
     const systemPrompt = await buildSubAgentPrompt(
-      skill.body,
+      skillBodyWithPersona,
       absoluteSkillRootDir,
       params,
       questionHistory,
@@ -341,8 +387,12 @@ export class SubAgent {
 
     if (conversationContext && conversationContext.length > 0) {
       // ===== 断点续执行：重新构建 system prompt（包含最新的 questionHistory） =====
+      // ===== VirtualEmployee template hook: persona prefix(断点续也需要 persona)=====
+      const refreshedPromptBody = personaPrefix
+        ? `${personaPrefix}\n\n${skill.body}`
+        : skill.body;
       const refreshedSystemPrompt = await buildSubAgentPrompt(
-        skill.body,
+        refreshedPromptBody,
         absoluteSkillRootDir,
         params,
         questionHistory,     // 使用最新的 questionHistory（包含刚添加的回答）
