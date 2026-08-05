@@ -169,7 +169,7 @@ export class SubAgent {
     try {
       // ===== VirtualEmployee template hook: skill 白名单校验 =====
       // 子类可通过 override allowedSkillNames() 加白名单;默认 null = 放行所有
-      const allowed = (this as any).allowedSkillNames?.call(this);
+      const allowed = this.allowedSkillNames();
       if (allowed instanceof Set && task.skillName && !allowed.has(task.skillName)) {
         const empConfig = (this as any).config;
         const empId = empConfig?.id ?? 'unknown';
@@ -244,7 +244,7 @@ export class SubAgent {
       // 此处不再单独调用(避免重复写入且无 sessionId 归属)。
 
       // ===== VirtualEmployee template hook: result 改写器 =====
-      const rewriter = (this as any).resultRewriter?.call(this);
+      const rewriter = this.resultRewriter();
       const finalResult = rewriter ? rewriter(cleanResult.response ?? '') : cleanResult.response;
 
       return { success: true, data: { ...cleanResult, response: finalResult } };
@@ -337,7 +337,7 @@ export class SubAgent {
     }
 
     // ===== VirtualEmployee template hook: persona prefix =====
-    const personaPrefix = (this as any).systemPromptPrefix?.call(this) ?? '';
+    const personaPrefix = this.systemPromptPrefix() ?? '';
     const skillBodyWithPersona = personaPrefix
       ? `${personaPrefix}\n\n${skill.body}`
       : skill.body;
@@ -387,12 +387,9 @@ export class SubAgent {
 
     if (conversationContext && conversationContext.length > 0) {
       // ===== 断点续执行：重新构建 system prompt（包含最新的 questionHistory） =====
-      // ===== VirtualEmployee template hook: persona prefix(断点续也需要 persona)=====
-      const refreshedPromptBody = personaPrefix
-        ? `${personaPrefix}\n\n${skill.body}`
-        : skill.body;
+      // 复用首次执行已构造的 skillBodyWithPersona(persona prefix 不变,无需重新拼接)
       const refreshedSystemPrompt = await buildSubAgentPrompt(
-        refreshedPromptBody,
+        skillBodyWithPersona,
         absoluteSkillRootDir,
         params,
         questionHistory,     // 使用最新的 questionHistory（包含刚添加的回答）
