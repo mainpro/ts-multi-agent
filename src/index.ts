@@ -96,7 +96,7 @@ async function bootstrap() {
     const { ITOperationsConsultantEmployee } = await import('./agents/virtual-employee/employees/it-operations-consultant');
     VirtualEmployeeRegistry.register(
       'it-ops-consultant',
-      ITOperationsConsultantEmployee as any,
+      ITOperationsConsultantEmployee,
       { isDefault: true },
     );
     console.log('✅ Virtual employees registered\n');

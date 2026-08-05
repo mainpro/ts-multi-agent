@@ -293,11 +293,13 @@ export class MainAgent {
     } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
     // ===== VirtualEmployee 路由(Task 6)=====
-    // 在系统命令拦截之前先选员工。失败 → BusinessError (UNKNOWN_EMPLOYEE / NO_DEFAULT_EMPLOYEE)
-    // 抛出 → API middleware 收到后由 error handler 透传给客户端。
+    // 在系统命令拦截之前先选员工。
+    //   - UNKNOWN_EMPLOYEE(用户显式 @ 但未匹配)→ 抛错,由 API 中间件映射
+    //   - NO_DEFAULT_EMPLOYEE(没有默认员工 + 意图未命中)→ 静默跳过路由,
+    //     沿用 taskQueue 当前 executor(back-compat:旧测试/未注册员工时)
     // 注:本次 resolver 只产生一个实例,不缓存;后续要 per-task 路由时再重构。
     const resolver = new VirtualEmployeeResolver();
-    let selectedEmployee: VirtualEmployee;
+    let selectedEmployee: VirtualEmployee | undefined;
     try {
       selectedEmployee = resolver.resolve({
         hintedId: options?.employeeId,
@@ -307,20 +309,36 @@ export class MainAgent {
         memoryService: this.memoryService,
       });
     } catch (err) {
-      if (err instanceof BusinessError && (err.code === 'UNKNOWN_EMPLOYEE' || err.code === 'NO_DEFAULT_EMPLOYEE')) {
-        MainAgent.log.warn('虚拟员工路由失败 → 抛错(由 API 层映射)', { error: err.message });
+      if (err instanceof BusinessError && err.code === 'UNKNOWN_EMPLOYEE') {
+        MainAgent.log.warn('虚拟员工路由失败(显式 @ 错误)→ 抛错(由 API 层映射)', { error: err.message });
+        throw err;
       }
-      throw err;
+      if (err instanceof BusinessError && err.code === 'NO_DEFAULT_EMPLOYEE') {
+        MainAgent.log.warn('虚拟员工路由: 没有默认员工 + 意图未命中 → 跳过路由,沿用现有 executor');
+        // 不抛错,继续走原有执行流;selectedEmployee 保持 undefined → 不调用 setExecutor
+      } else {
+        throw err;
+      }
     }
-    MainAgent.log.info('已选虚拟员工', { employeeId: selectedEmployee.config.id });
 
-    // 把 taskQueue 的 executor 替换成 selectedEmployee.execute。
-    // 简化实现:本次 processRequirement 内全部 task 走它,下一个请求进来时会重新调 resolver + swap。
-    // 这样不需要 finally restore,而且多并发请求各自走自己的 swap → execute 路径是顺序触发的,
-    // executor 字段在两个请求 cross-await 时仍然指向最近一次 setExecutor 设置的值。
-    // 当前 bootstrap 是单进程(单 MainAgent),并发请求共享 executor 的 race 是已知限制,
-    // 见 docs/virtual-employee.md 中的后续改进项(Task 7+)。
-    this.taskQueue.setExecutor(async (task: Task) => selectedEmployee.execute(task));
+    if (selectedEmployee) {
+      MainAgent.log.info('已选虚拟员工', { employeeId: selectedEmployee.config.id });
+
+      // 把 taskQueue 的 executor 替换成 selectedEmployee.execute。
+      // 简化实现:本次 processRequirement 内全部 task 走它,下一个请求进来时会重新调 resolver + swap。
+      // 这样不需要 finally restore,而且多并发请求各自走自己的 swap → execute 路径是顺序触发的,
+      // executor 字段在两个请求 cross-await 时仍然指向最近一次 setExecutor 设置的值。
+      // 当前 bootstrap 是单进程(单 MainAgent),并发请求共享 executor 的 race 是已知限制,
+      // 见 docs/virtual-employee.md 中的后续改进项(Task 7+)。
+      //
+      // setExecutor 是 duck-type 接口,只有真 TaskQueue 才有;MockTaskQueue(测试用 EventEmitter)
+      // 没有这个方法,所以用 typeof guard 兼容两种情况。
+      if (typeof (this.taskQueue as any).setExecutor === 'function') {
+        this.taskQueue.setExecutor(
+          async (task: Task, signal?: AbortSignal) => selectedEmployee!.execute(task, signal),
+        );
+      }
+    }
 
     // ========== 步骤 1: 图片分析 ==========
     if (imageAttachment) {

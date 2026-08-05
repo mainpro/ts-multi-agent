@@ -5,7 +5,7 @@ import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'TaskQueue' });
 
-type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
+export type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown>;
 
 /**
  * TaskQueue manages task scheduling, execution, and dependency resolution
@@ -53,8 +53,11 @@ export class TaskQueue {
 
   /**
    * Replace the task executor. Exposed for VirtualEmployee routing — the agent
-   * can swap the executor per request to route tasks to a selected employee,
-   * then restore it (typically via try/finally) once the request completes.
+   * can swap the executor per request to route tasks to a selected employee.
+   *
+   * Note: the new executor is NOT auto-restored. The sole caller
+   * (MainAgent._processRequirementInner) deliberately lets the swap persist so
+   * subsequent requests re-resolve and re-swap to a fresh employee.
    */
   setExecutor(executor: TaskExecutor): void {
     this.executor = executor;
