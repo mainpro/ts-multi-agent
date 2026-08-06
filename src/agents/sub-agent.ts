@@ -754,9 +754,16 @@ export class SubAgent {
     });
 
     // ===== 双轨制：优先检测工具调用，其次文本检测 =====
-    const askUserCall = trackedToolCalls.find(tc => tc.name === 'ask_user');
-    if (askUserCall) {
-      const args = askUserCall.arguments as unknown as AskUserArgs;
+    // Bug fix: 之前用 trackedToolCalls.find('ask_user') → 之前调用过 ask_user 的任务
+    // 后续 LLM 继续做了其他工作(read 工具 + 返回文本)后,仍然被误判为 waiting。
+    // 正确语义:只在 ask_user 是【最后一次】工具调用时才等待用户输入。
+    // (如果 ask_user 之后又调用了其他工具,说明 LLM 已经自行处理完毕。)
+    const lastToolCall = trackedToolCalls[trackedToolCalls.length - 1];
+    const isLastActionAskUser = !!lastToolCall && lastToolCall.name === 'ask_user';
+    if (isLastActionAskUser) {
+      // 从 result.toolCalls 拿到 ask_user 的 arguments(累积里通常保留最后一次的参数)
+      // trackedToolCalls 里的 arguments 已经是对象,直接用
+      const args = lastToolCall.arguments as unknown as AskUserArgs;
 
       // P0: 预检查 — 如果 ask_user 询问的信息已在 params 中，自动回答
       if (args.paramName && params && params[args.paramName] !== undefined && params[args.paramName] !== null && params[args.paramName] !== '') {
