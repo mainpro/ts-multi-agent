@@ -1,6 +1,6 @@
 {
   "candidates": [
-    { "providerKey": "siliconflow:Pro/MiniMaxAI/MiniMax-M2.5", "priority": 1, "model": "Pro/MiniMaxAI/MiniMax-M2.5" },
-    { "providerKey": "haier:glm-5-fp8", "priority": 2, "model": "glm-5-fp8" }
+    { "providerKey": "haier:glm-5-fp8", "priority": 1, "model": "glm-5-fp8" },
+    { "providerKey": "siliconflow:Pro/MiniMaxAI/MiniMax-M2.5", "priority": 2, "model": "Pro/MiniMaxAI/MiniMax-M2.5" }
   ]
 }
