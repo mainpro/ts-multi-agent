@@ -575,6 +575,10 @@ export const CONFIG = {
   LLM_CONNECTION_KEEP_ALIVE_MS: parseInt(process.env.LLM_CONNECTION_KEEP_ALIVE_MS || '60000', 10),
   /** Intent router config file path */
   INTENT_ROUTER_CONFIG_PATH: process.env.INTENT_ROUTER_CONFIG || resolveResource('config', 'intent-router.json'),
+  /** LLM fallback chain config file path */
+  LLM_FALLBACK_CONFIG_PATH: process.env.LLM_FALLBACK_CONFIG_PATH || resolveResource('config', 'llm-fallback.json'),
+  /** Whether LLM fallback chain is enabled (set false to disable) */
+  LLM_FALLBACK_ENABLED: process.env.LLM_FALLBACK_ENABLED !== 'false',
   /** Embedding API base URL (e.g. https://api.siliconflow.cn/v1) */
   EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || '',
   /** Embedding API key (defaults to SILICONFLOW_API_KEY if not set) */
