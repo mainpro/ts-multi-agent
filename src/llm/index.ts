@@ -305,6 +305,38 @@ export class LLMClient implements ILLMClient {
       );
     }
   }
+
+  /**
+   * Reconfigure the provider and model after construction.
+   *
+   * Used by `buildFallbackLLMClient()` to set per-candidate provider/model
+   * on a freshly-constructed LLMClient without re-running the full env-key
+   * resolution. Only mutates `provider`, `capabilities`, `model` and the
+   * matching API key (other fields like baseUrl / timeout / maxRetries
+   * are left untouched).
+   *
+   * NOTE: does NOT throw if the new provider's env key is missing — that
+   * check would happen lazily on the first request, keeping construction
+   * cheap for fallback-chain wiring where most candidates never run.
+   */
+  configureProvider(provider: string, model: string): void {
+    const newProvider = provider as LLMProvider;
+    this.provider = newProvider;
+    this.capabilities = PROVIDER_CONFIGS[newProvider] || PROVIDER_CONFIGS.openrouter;
+
+    if (newProvider === 'openrouter') {
+      this.apiKey = process.env.OPENROUTER_API_KEY || this.apiKey;
+    } else if (newProvider === 'nvidia') {
+      this.apiKey = process.env.NVIDIA_API_KEY || this.apiKey;
+    } else if (newProvider === 'zhipu') {
+      this.apiKey = process.env.ZHIPU_API_KEY || this.apiKey;
+    } else if (newProvider === 'siliconflow') {
+      this.apiKey = process.env.SILICONFLOW_API_KEY || this.apiKey;
+    } else if (newProvider === 'haier') {
+      this.apiKey = process.env.HAIER_API_KEY || this.apiKey;
+    }
+    this.model = model;
+  }
   
   /**
    * Acquire a slot for concurrent request limiting
@@ -1207,4 +1239,71 @@ export class LLMClient implements ILLMClient {
       }
     }
   }
+}
+
+// =====================================================================
+// Factory: buildFallbackLLMClient()  (Task 7 wiring)
+// =====================================================================
+
+import { readFileSync } from 'fs';
+import { FallbackLLMClient } from './fallback-client';
+import { parseFallbackConfig } from './failover-config';
+
+/**
+ * Build the production LLM client.
+ *
+ * Decision tree:
+ *  - LLM_FALLBACK_ENABLED = false  → return bare LLMClient
+ *  - LLM_FALLBACK_ENABLED = true   → try to load + parse LLM_FALLBACK_CONFIG_PATH
+ *      - success → wrap with FallbackLLMClient
+ *      - any failure (ENOENT / SyntaxError / ZodError) → log warn + return bare
+ *        LLMClient (graceful degradation so the app keeps booting with the
+ *        env-configured default provider).
+ *
+ * The factory is called once at bootstrap in `src/index.ts`, once lazily in
+ * `requirement-analyzer.ts`, and as the constructor default for `MainAgent`'s
+ * DI container when no `llm` is injected.
+ *
+ * NOTE: `parseFallbackConfig` throws on invalid JSON / schema violations;
+ * we catch all errors uniformly so a misconfigured fallback file does NOT
+ * brick the server.
+ */
+export function buildFallbackLLMClient(): ILLMClient {
+  if (!CONFIG.LLM_FALLBACK_ENABLED) {
+    return new LLMClient();
+  }
+
+  // CONFIG.LLM_FALLBACK_CONFIG_PATH is already resolved to an absolute path
+  // in src/types/index.ts via resolveResource('config', 'llm-fallback.json').
+  const configPath = CONFIG.LLM_FALLBACK_CONFIG_PATH;
+
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf-8');
+  } catch (err) {
+    log.warn('LLM fallback config file unreadable, falling back to bare LLMClient', {
+      configPath,
+      error: (err as Error).message,
+    });
+    return new LLMClient();
+  }
+
+  let parsed;
+  try {
+    parsed = parseFallbackConfig(raw);
+  } catch (err) {
+    log.warn('LLM fallback config parse failed, falling back to bare LLMClient', {
+      configPath,
+      error: (err as Error).message,
+    });
+    return new LLMClient();
+  }
+
+  return new FallbackLLMClient(parsed, (providerKey: string) => {
+    // providerKey = "<provider>:<modelId>"
+    const [provider, model] = providerKey.split(':');
+    const client = new LLMClient();
+    client.configureProvider(provider, model);
+    return client;
+  });
 }

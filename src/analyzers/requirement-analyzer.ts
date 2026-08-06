@@ -1,4 +1,4 @@
-import { LLMClient } from '../llm';
+import { ILLMClient, buildFallbackLLMClient } from '../llm';
 import {
   DecompositionResult,
   SubRequirement,
@@ -20,10 +20,10 @@ const CONTEXT_INDICATORS = ['那怎么', '那能不能', '如果是这样', '继
 const SMALL_TALK_PATTERNS = ['你好', '您好', '谢谢', '感谢', '好的', '没问题', '了解', '知道了'];
 
 export class RequirementAnalyzer {
-  private llmClient: LLMClient;
+  private llmClient: ILLMClient;
 
-  constructor(llmClient?: LLMClient) {
-    this.llmClient = llmClient || new LLMClient();
+  constructor(llmClient?: ILLMClient) {
+    this.llmClient = llmClient || buildFallbackLLMClient();
   }
 
   async decompose(requirement: string, signal?: AbortSignal): Promise<DecompositionResult> {
@@ -267,6 +267,6 @@ private detectType(text: string): SubRequirementType {
   }
 }
 
-export function createRequirementAnalyzer(llmClient?: LLMClient): RequirementAnalyzer {
+export function createRequirementAnalyzer(llmClient?: ILLMClient): RequirementAnalyzer {
   return new RequirementAnalyzer(llmClient);
 }

@@ -7,7 +7,7 @@ const log = createLogger({ module: 'Bootstrap' });
 
 import { SkillRegistry } from './skill-registry';
 import { TaskQueue } from './task-queue';
-import { LLMClient } from './llm';
+import { ILLMClient, buildFallbackLLMClient } from './llm';
 import { MainAgent, MainAgentDependencies } from './agents/main-agent';
 import { createAPIServer } from './api';
 import { Task } from './types';
@@ -47,11 +47,11 @@ async function bootstrap() {
   try {
     console.log('🚀 Starting Multi-Agent System...\n');
 
-    // 1. Create LLM Client
+    // 1. Create LLM Client (with fallback chain wiring — Task 7)
     console.log('📡 Initializing LLM Client...');
-    let llmClient: LLMClient;
+    let llmClient: ILLMClient;
     try {
-      llmClient = new LLMClient();
+      llmClient = buildFallbackLLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
       log.warn('Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.', { error });
