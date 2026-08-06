@@ -340,7 +340,12 @@ export class MainAgent {
       : undefined;
 
     if (selectedEmployee) {
-      MainAgent.log.info('已选虚拟员工(per-task 绑定)', { employeeId: selectedEmployee.config.id });
+      MainAgent.log.info('已选虚拟员工(per-task 绑定)', {
+        employeeId: selectedEmployee.config.id,
+        displayName: selectedEmployee.config.displayName,
+      });
+      // 注入 employeeId 到 SubAgent logger,后续 SubAgent 内部 this.log 自动带 employeeId
+      selectedEmployee.setEmployeeContext(selectedEmployee.config.id);
     }
 
     // ========== 步骤 1: 图片分析 ==========

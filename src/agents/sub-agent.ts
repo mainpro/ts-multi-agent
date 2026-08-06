@@ -17,7 +17,7 @@ import { resolveResource } from '../utils/app-root';
 import { DEFAULT_RECALL_CONFIG } from '../memory/types';
 import { steeringBuffer } from '../memory/steering-buffer';
 import { requestLifecycle } from '../events/request-lifecycle';
-import { createLogger } from '../observability/logger';
+import { createLogger, Logger } from '../observability/logger';
 import {
   syncQuestionHistoryToContext,
   buildResumedContext,
@@ -129,7 +129,15 @@ export function detectQuestion(
 }
 
 export class SubAgent {
-  private static readonly log = createLogger({ module: 'SubAgent' });
+  /**
+   * 绑了上下文(模块名 + 可选 employeeId)的 logger,所有内部日志都走 this.log。
+   *
+   * 初始是 module-level logger,后续 setEmployeeContext() 会用 child() 派生
+   * 一个带 employeeId 的 logger,后续所有日志自动带 employeeId 字段。
+   * 这样 ops 通过 grep `employeeId="xxx"` 就能定位某个员工的所有活动。
+   */
+  private log: Logger = createLogger({ module: 'SubAgent' });
+
   private skillRegistry: SkillRegistry;
   private llm: ILLMClient;
   private toolRegistry: ToolRegistry;
@@ -140,6 +148,15 @@ export class SubAgent {
     this.llm = llm;
     this.toolRegistry = new ToolRegistry();
     this.memoryService = memoryService;
+  }
+
+  /**
+   * 注入当前 SubAgent 实例对应的虚拟员工 id。
+   * 派生一个 child logger,后续所有 this.log 调用都自动带 employeeId。
+   * MainAgent 在 _processRequirementInner 拿到 selectedEmployee 后调用一次即可。
+   */
+  setEmployeeContext(employeeId: string): void {
+    this.log = createLogger({ module: 'SubAgent', employeeId });
   }
 
   /**
@@ -180,7 +197,7 @@ export class SubAgent {
       const allowed = this.allowedSkillNames();
       if (allowed instanceof Set && task.skillName && !allowed.has(task.skillName)) {
         const empId = this.configId();
-        SubAgent.log.warn('虚拟员工 skill 白名单拒绝', {
+        this.log.warn('虚拟员工 skill 白名单拒绝', {
           employeeId: empId,
           skillName: task.skillName,
         });
@@ -190,15 +207,15 @@ export class SubAgent {
         );
       }
 
-      SubAgent.log.debug('任务入口', { taskId: task.id, skillName: task.skillName, userId: task.userId, params: task.params ? Object.keys(task.params) : [] });
+      this.log.debug('任务入口', { taskId: task.id, skillName: task.skillName, userId: task.userId, params: task.params ? Object.keys(task.params) : [] });
 
       // ===== v2: 断点续执行检测 =====
       const isResuming = !!(task.conversationContext && task.conversationContext.length > 0);
       if (isResuming) {
-        SubAgent.log.info('断点续执行模式', { contextLength: task.conversationContext!.length });
+        this.log.info('断点续执行模式', { contextLength: task.conversationContext!.length });
       }
 
-      SubAgent.log.debug('execute 入口状态', { isResuming, conversationContext: task.conversationContext?.length, questionHistory: task.questionHistory?.length, latestUserAnswer: (task.params as any)?.latestUserAnswer });
+      this.log.debug('execute 入口状态', { isResuming, conversationContext: task.conversationContext?.length, questionHistory: task.questionHistory?.length, latestUserAnswer: (task.params as any)?.latestUserAnswer });
 
       if (!task.skillName) {
         throw new SkillError('MISSING_SKILL', 'No skill assigned');
@@ -266,7 +283,7 @@ export class SubAgent {
       if (task.sessionId) {
         const pending = steeringBuffer.peek(task.sessionId);
         if (pending.length > 0) {
-          SubAgent.log.warn('任务结束,清掉残留 steer 消息', {
+          this.log.warn('任务结束,清掉残留 steer 消息', {
             sessionId: task.sessionId,
             taskId: task.id,
             droppedCount: pending.length,
@@ -318,7 +335,7 @@ export class SubAgent {
           }
           if (profileEntries.length > 0) {
             contextParts.push('### 用户画像\n' + profileEntries.join('\n'));
-            SubAgent.log.info('已加载用户画像', { fieldsCount: profileEntries.length });
+            this.log.info('已加载用户画像', { fieldsCount: profileEntries.length });
           }
         }
 
@@ -330,10 +347,10 @@ export class SubAgent {
           if (recalledResults.length > 0) {
             const memoryLines = recalledResults.map(r => `- ${r.content}`);
             contextParts.push('### 相关记忆\n' + memoryLines.join('\n'));
-            SubAgent.log.info('已召回相关记忆', { count: recalledResults.length });
+            this.log.info('已召回相关记忆', { count: recalledResults.length });
           }
         } catch (recallErr) {
-          SubAgent.log.warn('记忆召回失败，继续执行', { error: (recallErr as Error).message });
+          this.log.warn('记忆召回失败，继续执行', { error: (recallErr as Error).message });
         }
 
         // 3. 组装为统一的上下文文本
@@ -342,7 +359,7 @@ export class SubAgent {
         }
       }
     } catch (err) {
-      SubAgent.log.warn('上下文加载失败，继续执行', { error: (err as Error).message });
+      this.log.warn('上下文加载失败，继续执行', { error: (err as Error).message });
     }
 
     // ===== VirtualEmployee template hook: persona prefix =====
@@ -407,16 +424,16 @@ export class SubAgent {
         skill.name
       );
 
-      SubAgent.log.info('断点续执行模式启动');
-      SubAgent.log.debug('询问历史条数', { count: questionHistory?.length || 0 });
+      this.log.info('断点续执行模式启动');
+      this.log.debug('询问历史条数', { count: questionHistory?.length || 0 });
       if (questionHistory && questionHistory.length > 0) {
         questionHistory.forEach((qh, i) => {
-          SubAgent.log.debug('询问历史', { index: i, question: qh.question.content.substring(0, 80), answer: qh.answer });
+          this.log.debug('询问历史', { index: i, question: qh.question.content.substring(0, 80), answer: qh.answer });
         });
       }
-      SubAgent.log.debug('已完成工具调用数', { count: completedToolCalls?.length || 0 });
-      SubAgent.log.debug('恢复对话上下文数', { count: conversationContext.length });
-      SubAgent.log.debug('latestUserAnswer', { value: params?.latestUserAnswer || '(无)' });
+      this.log.debug('已完成工具调用数', { count: completedToolCalls?.length || 0 });
+      this.log.debug('恢复对话上下文数', { count: conversationContext.length });
+      this.log.debug('latestUserAnswer', { value: params?.latestUserAnswer || '(无)' });
 
       // 使用优化后的上下文构建函数
       messages = buildResumedContext(
@@ -432,7 +449,7 @@ export class SubAgent {
       // 验证上下文完整性
       const validation = validateResumedContext(messages, questionHistory || []);
       if (!validation.valid) {
-        SubAgent.log.warn('上下文验证警告', { issues: validation.issues });
+        this.log.warn('上下文验证警告', { issues: validation.issues });
         // 尝试修复：同步 questionHistory
         messages = syncQuestionHistoryToContext(messages, questionHistory || []);
       }
@@ -445,11 +462,11 @@ export class SubAgent {
           content: `[用户回复] ${latestAnswer}\n\n请根据以上对话上下文和用户的最新回复，继续执行任务。不要重复已经完成的步骤。`,
         });
 
-        SubAgent.log.info('已追加用户最新回复到对话上下文', { answer: latestAnswer });
+        this.log.info('已追加用户最新回复到对话上下文', { answer: latestAnswer });
       }
     } else {
       // 首次执行：使用标准流程
-      SubAgent.log.info('首次执行模式');
+      this.log.info('首次执行模式');
       messages = [];
       if (systemPrompt) {
         messages.push({ role: 'system', content: systemPrompt });
@@ -457,16 +474,16 @@ export class SubAgent {
       messages.push({ role: 'user', content: requirement });
     }
 
-    SubAgent.log.info('发送给LLM', { messageCount: messages.length, branch: (conversationContext && conversationContext.length > 0) ? '断点续执行' : '首次执行' });
+    this.log.info('发送给LLM', { messageCount: messages.length, branch: (conversationContext && conversationContext.length > 0) ? '断点续执行' : '首次执行' });
     messages.forEach((m, i) => {
       const preview = typeof m.content === 'string' ? m.content.substring(0, 120).replace(/\n/g, '\\n') : `(non-string: ${typeof m.content})`;
-      SubAgent.log.debug('消息预览', { index: i, role: m.role, length: typeof m.content === 'string' ? m.content.length : '?', preview });
+      this.log.debug('消息预览', { index: i, role: m.role, length: typeof m.content === 'string' ? m.content.length : '?', preview });
     });
 
     // ===== v2: 跟踪工具调用 =====
     const trackedToolCalls: CompletedToolCall[] = [...(completedToolCalls || [])];
 
-    SubAgent.log.info('llm.request', {
+    this.log.info('llm.request', {
       traceId: taskId,
       skillName: skill.name,
       messages: messages.length,
@@ -484,7 +501,7 @@ export class SubAgent {
 
         const rewrite = unknownToolGuard.check(toolCall.name);
         if (rewrite) {
-          SubAgent.log.warn('未知工具熔断触发', { toolName: toolCall.name, count: '>3' });
+          this.log.warn('未知工具熔断触发', { toolName: toolCall.name, count: '>3' });
           return rewrite;  // 直接返回改写后的 toolResult
         }
         // 未超阈值但仍不在允许名单 → 走原有 "工具不存在" 返回
@@ -497,10 +514,10 @@ export class SubAgent {
       // 入口累加 skill.calls(成功 + 失败都计数),延迟按成功 / 失败路径分别在出口累加。
       skillCalls.add(1, { skill: skill.name, tool: toolCall.name });
       const skillMetricsStart = Date.now();
-      SubAgent.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
-      SubAgent.log.debug('工具参数', { args: toolCall.arguments });
+      this.log.info('调用工具', { toolName: toolCall.name, timestamp: new Date().toISOString() });
+      this.log.debug('工具参数', { args: toolCall.arguments });
 
-      SubAgent.log.info('tool.call', {
+      this.log.info('tool.call', {
         traceId: taskId,
         skillName: skill.name,
         toolName: toolCall.name,
@@ -529,10 +546,10 @@ export class SubAgent {
             ? toolResult.data
             : JSON.stringify(toolResult.data, null, 2);
           const dataPreview = data.length > 500 ? data.substring(0, 500) + `... (共${data.length}字符)` : data;
-          SubAgent.log.info('工具执行成功', { toolName: toolCall.name, duration: toolDuration });
-          SubAgent.log.debug('工具返回', { preview: dataPreview });
+          this.log.info('工具执行成功', { toolName: toolCall.name, duration: toolDuration });
+          this.log.debug('工具返回', { preview: dataPreview });
 
-          SubAgent.log.info('tool.result', {
+          this.log.info('tool.result', {
             traceId: taskId,
             skillName: skill.name,
             toolName: toolCall.name,
@@ -549,8 +566,8 @@ export class SubAgent {
             const codeMatch = toolData.match(/"code"\s*:\s*(\d+)/);
             if (codeMatch && codeMatch[1] !== '200') {
               const errMsg = `接口调用失败 (code: ${codeMatch[1]})，请检查请求参数或 token 是否有效`;
-              SubAgent.log.warn('接口调用失败', { code: codeMatch[1] });
-              SubAgent.log.debug('接口返回', { preview: dataPreview });
+              this.log.warn('接口调用失败', { code: codeMatch[1] });
+              this.log.debug('接口返回', { preview: dataPreview });
               // Metrics (Task 12): bash 内部 code 非 200 抛错后由下方 catch 统一累加 errors/latency,
               // 此处不前置累加,避免重复计数。
               throw new Error(errMsg);
@@ -597,10 +614,10 @@ export class SubAgent {
           return data;
         } else {
           const toolDuration = Date.now() - toolStartTime;
-          SubAgent.log.info('工具执行失败', { toolName: toolCall.name, duration: toolDuration });
-          SubAgent.log.debug('失败原因', { error: toolResult.error });
+          this.log.info('工具执行失败', { toolName: toolCall.name, duration: toolDuration });
+          this.log.debug('失败原因', { error: toolResult.error });
 
-          SubAgent.log.error('tool.result', {
+          this.log.error('tool.result', {
             traceId: taskId,
             skillName: skill.name,
             toolName: toolCall.name,
@@ -628,9 +645,9 @@ export class SubAgent {
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        SubAgent.log.warn('工具执行异常', { error: errorMsg });
+        this.log.warn('工具执行异常', { error: errorMsg });
 
-        SubAgent.log.error('tool.exception', {
+        this.log.error('tool.exception', {
           traceId: taskId,
           skillName: skill.name,
           toolName: toolCall.name,
@@ -670,7 +687,7 @@ export class SubAgent {
       const steering = steeringBuffer.consume(sessionId);
       for (const msg of steering) {
         trackedMessages.push({ role: 'user', content: msg.content });
-        SubAgent.log.info('steering 消息注入到 messages', {
+        this.log.info('steering 消息注入到 messages', {
           sessionId,
           taskId,
           content: msg.content.substring(0, 50),
@@ -709,7 +726,7 @@ export class SubAgent {
           );
         } catch (err) {
           if (err instanceof LLMError && err.type === 'CONTEXT_TOO_LONG' && attempts < MAX_COMPACTION_ATTEMPTS) {
-            SubAgent.log.warn('CONTEXT_TOO_LONG,触发 safe compaction', {
+            this.log.warn('CONTEXT_TOO_LONG,触发 safe compaction', {
               beforeLength: baseMessages.length,
             });
             baseMessages = await compactMessages(baseMessages, this.llm, {
@@ -729,7 +746,7 @@ export class SubAgent {
 
     const response = result.content;
     const toolCallsCount = result.toolCalls?.length || 0;
-    SubAgent.log.info('llm.response', {
+    this.log.info('llm.response', {
       traceId: taskId,
       skillName: skill.name,
       contentLength: response?.length || 0,
@@ -744,7 +761,7 @@ export class SubAgent {
       // P0: 预检查 — 如果 ask_user 询问的信息已在 params 中，自动回答
       if (args.paramName && params && params[args.paramName] !== undefined && params[args.paramName] !== null && params[args.paramName] !== '') {
         const existingValue = String(params[args.paramName]);
-        SubAgent.log.info('ask_user 预检查: 已在 params 中，跳过询问', { paramName: args.paramName, existingValue });
+        this.log.info('ask_user 预检查: 已在 params 中，跳过询问', { paramName: args.paramName, existingValue });
 
         return {
           response: `[系统自动填充] 根据已知信息，${args.paramName} = ${existingValue}`,
@@ -754,7 +771,7 @@ export class SubAgent {
         };
       }
 
-      SubAgent.log.info('检测到 ask_user 工具调用，返回 waiting_user_input 状态');
+      this.log.info('检测到 ask_user 工具调用，返回 waiting_user_input 状态');
 
       return {
         response: args.question,
@@ -781,7 +798,7 @@ export class SubAgent {
     // 轨道 2: 文本检测（兼容旧技能）
     const question = detectQuestion(response, result.toolCalls);
     if (question) {
-      SubAgent.log.info('检测到询问用户意图（文本检测），返回 waiting_user_input 状态');
+      this.log.info('检测到询问用户意图（文本检测），返回 waiting_user_input 状态');
       return {
         response,
         status: 'waiting_user_input',
