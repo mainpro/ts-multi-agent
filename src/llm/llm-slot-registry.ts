@@ -37,6 +37,8 @@ export class LLMSlotRegistry {
   }
 
   release(): void {
+    // 防御 over-release:空池时 release 是 no-op,避免 active 变负数
+    if (this.active === 0) return;
     this.active--;
     const next = this.waiters.shift();
     if (next) {

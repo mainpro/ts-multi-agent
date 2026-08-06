@@ -57,7 +57,8 @@ describe('LLMSlotRegistry', () => {
       });
       await new Promise(resolve => setImmediate(resolve));
       expect(acquired).toBe(false);
-      // 构造一个 capacity=0 的库无法释放出槽位 → 测试通过"始终排队"
+      // capacity=0:由于 release 也被 guarded(active=0),释放也不会改变状态,
+      // 所以 promise 永远排队 — 这是该测试的核心断言
       // 用 try/catch 防止 dangling promise
       promise.catch(() => {});
       // 给一个永远不会触发的 release,验证仍排队(acquired=false)
@@ -92,17 +93,36 @@ describe('LLMSlotRegistry', () => {
       registry.release();
     });
 
-    test('release 多次是安全的(空池)', () => {
+    test('release 多次是安全的(空池 → over-release 不会让 active 变负)', async () => {
       const localRegistry = new LLMSlotRegistry(2);
-      // 不应抛错
+      // 多次 release 在空池上不应抛错
       localRegistry.release();
       localRegistry.release();
-      // active 仍 = 0,不会变成负数
-      // 通过后续 acquire 能正常拿满 2 个槽位来验证状态正确
-      expect(async () => {
-        await localRegistry.acquire();
-        await localRegistry.acquire();
-      }).not.toThrow();
+      // over-release:再 release 两次,active 必须仍 = 0(不会变成 -2)
+      localRegistry.release();
+      localRegistry.release();
+
+      // 验证 acquire 仍按预期工作(active 从 0 增至 1,不会因 over-release 而变成 2)
+      const a1 = await localRegistry.acquire();
+      const a2 = await localRegistry.acquire();
+      // 第三个应排队(active=2,capacity=2)
+      let thirdAcquired = false;
+      const a3 = localRegistry.acquire().then(() => {
+        thirdAcquired = true;
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(thirdAcquired).toBe(false);
+
+      // 释放一个,a3 立即拿到 → 证明 active 准确为 1,不是 3
+      localRegistry.release();
+      await a3;
+      expect(thirdAcquired).toBe(true);
+
+      // 清理
+      localRegistry.release();
+      localRegistry.release();
+      void a1;
+      void a2;
     });
   });
 
