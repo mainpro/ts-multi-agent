@@ -30,6 +30,7 @@ import { Message, ToolDefinition, ToolCallResult } from '../types';
 import { classifyFailoverReason } from './failover-classifier';
 import { cooldown } from './cooldown-cache';
 import { sharedSlot } from './llm-slot-registry';
+import { AbortError } from './llm-slot-registry';
 import { FailoverError, FailoverAttempt } from './failover-types';
 import { LLMFallbackConfig } from './failover-config';
 import { createLogger } from '../observability/logger';
@@ -90,7 +91,7 @@ export class FallbackLLMClient implements ILLMClient {
   ): Promise<T> {
     const attempts: FailoverAttempt[] = [];
     for (const c of this.candidates) {
-      if (signal?.aborted) throw new Error('aborted');
+      if (signal?.aborted) throw new AbortError();
       if (!cooldown.isAvailable(c.providerKey)) {
         log.debug('skipping candidate in cooldown', { providerKey: c.providerKey });
         continue;

@@ -14,7 +14,7 @@
  *  - 验证 capacity 限制、release 唤醒、AbortSignal 拒绝、共享池行为
  */
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { LLMSlotRegistry } from '../src/llm/llm-slot-registry';
+import { LLMSlotRegistry, AbortError } from '../src/llm/llm-slot-registry';
 
 describe('LLMSlotRegistry', () => {
   let registry: LLMSlotRegistry;
@@ -127,28 +127,39 @@ describe('LLMSlotRegistry', () => {
   });
 
   describe('AbortSignal rejection', () => {
-    test('acquire 在已 abort 的 signal 上立刻抛错', async () => {
+    test('acquire 在已 abort 的 signal 上立刻抛 AbortError(name === "AbortError")', async () => {
       const controller = new AbortController();
       controller.abort();
-      await expect(registry.acquire(controller.signal)).rejects.toThrow();
+      let caught: unknown;
+      try {
+        await registry.acquire(controller.signal);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(AbortError);
+      expect((caught as Error).name).toBe('AbortError');
     });
 
-    test('acquire 在排队期间被 abort → 从 waiters 移除,后续 release 不会唤醒它', async () => {
+    test('acquire 在排队期间被 abort → 从 waiters 移除,reject AbortError', async () => {
       await registry.acquire();
       await registry.acquire();
       // 此时 active=2, capacity 满
       // 第三个进入排队
       const controller = new AbortController();
       let waiterRejected = false;
-      const waiter = registry.acquire(controller.signal).catch(() => {
+      let waiterErr: unknown;
+      const waiter = registry.acquire(controller.signal).catch((e) => {
         waiterRejected = true;
+        waiterErr = e;
       });
       await new Promise(resolve => setImmediate(resolve));
 
-      // abort 后原 Promise 应 reject
+      // abort 后原 Promise 应 reject, 且必须是 AbortError
       controller.abort();
       await waiter;
       expect(waiterRejected).toBe(true);
+      expect(waiterErr).toBeInstanceOf(AbortError);
+      expect((waiterErr as Error).name).toBe('AbortError');
 
       // 被 abort 的 waiter 已从队列移除,不影响其他 waiter
       // 验证方法:排队一个新 waiter,通过 release 唤醒

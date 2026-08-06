@@ -1,6 +1,20 @@
 import { CONFIG } from '../types';
 
 /**
+ * AbortError —— typed error for AbortSignal-driven rejection.
+ *
+ * Sets `name === 'AbortError'` so upstream consumers (e.g. `LLMClient.fetchWithRetry`)
+ * can pattern-match on it the same way they do for native DOM AbortError.
+ * Use `instanceof AbortError` for an even tighter contract.
+ */
+export class AbortError extends Error {
+  constructor(message = 'aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/**
  * LLMSlotRegistry —— 共享并发槽位池
  *
  * 设计目的:把 LLMClient 的 class-level semaphore 抽出为命名包装,
@@ -10,6 +24,7 @@ import { CONFIG } from '../types';
  *  - 全局上限 = capacity(共享池,非 per-caller)
  *  - FIFO 等待队列(shift() 取最早入队的 waiter)
  *  - AbortSignal 支持:已 abort 的 signal 立刻拒绝;排队期间 abort 会从队列移除
+ *    — 拒绝一律抛 AbortError(name === 'AbortError'),便于上游 pattern-match
  */
 export class LLMSlotRegistry {
   private active = 0;
@@ -18,7 +33,7 @@ export class LLMSlotRegistry {
   constructor(private readonly capacity: number = CONFIG.LLM_MAX_CONCURRENT_REQUESTS ?? 20) {}
 
   async acquire(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw new Error('aborted');
+    if (signal?.aborted) throw new AbortError();
     if (this.active < this.capacity) {
       this.active++;
       return;
@@ -30,7 +45,7 @@ export class LLMSlotRegistry {
         signal.addEventListener('abort', () => {
           const idx = this.waiters.indexOf(entry);
           if (idx >= 0) this.waiters.splice(idx, 1);
-          reject(new Error('aborted'));
+          reject(new AbortError());
         }, { once: true });
       }
     });

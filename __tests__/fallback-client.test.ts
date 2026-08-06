@@ -17,6 +17,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { setSystemTime } from 'bun:test';
 import { z } from 'zod';
 import { LLMError } from '../src/llm';
+import { AbortError } from '../src/llm/llm-slot-registry';
 import { FailoverError } from '../src/llm/failover-types';
 import type { ILLMClient } from '../src/llm/interfaces';
 import type { Message, ToolDefinition, ToolCallResult } from '../src/types';
@@ -225,7 +226,8 @@ describe('FallbackLLMClient', () => {
       caught = e;
     }
 
-    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toBeInstanceOf(AbortError);
+    expect(caught.name).toBe('AbortError');
     expect((mockA as any).__calls).toEqual([]);
     expect((mockB as any).__calls).toEqual([]);
     expect((mockC as any).__calls).toEqual([]);
