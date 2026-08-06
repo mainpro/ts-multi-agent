@@ -54,7 +54,7 @@ async function bootstrap() {
       llmClient = buildFallbackLLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
-      log.warn('Failed to initialize LLM Client. Set NVIDIA_API_KEY env var.', { error });
+      log.warn('Failed to initialize LLM Client. Set SILICONFLOW_API_KEY or HAIER_API_KEY env var.', { error });
       process.exit(1);
     }
 

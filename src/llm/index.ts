@@ -213,39 +213,27 @@ interface GLMResponse {
   };
 }
 
-type LLMProvider = 'openrouter' | 'nvidia' | 'zhipu' | 'siliconflow' | 'haier';
+type LLMProvider = 'siliconflow' | 'haier';
 
 interface ProviderCapabilities {
   supportsReasoning: boolean;
   supportsStreaming: boolean;
   reasoningField: 'reasoning_content' | 'reasoning' | 'thinking';
+  defaultBaseUrl: string;
 }
 
 const PROVIDER_CONFIGS: Record<LLMProvider, ProviderCapabilities> = {
-  openrouter: {
-    supportsReasoning: true,
-    supportsStreaming: true,
-    reasoningField: 'reasoning_content',
-  },
-  nvidia: {
-    supportsReasoning: false,
-    supportsStreaming: true,
-    reasoningField: 'reasoning_content',
-  },
-  zhipu: {
-    supportsReasoning: true,
-    supportsStreaming: true,
-    reasoningField: 'reasoning_content',
-  },
   siliconflow: {
     supportsReasoning: true,
     supportsStreaming: true,
     reasoningField: 'reasoning_content',
+    defaultBaseUrl: 'https://api.siliconflow.cn/v1',
   },
   haier: {
     supportsReasoning: true,
     supportsStreaming: true,
     reasoningField: 'reasoning_content',
+    defaultBaseUrl: 'https://modelapi-test.haier.net/model/v1',
   },
 };
 
@@ -273,20 +261,14 @@ export class LLMClient implements ILLMClient {
 
   /**
    * Create a new LLM client
-   * @param apiKey - API key (defaults to OPENROUTER_API_KEY or NVIDIA_API_KEY env var)
+   * @param apiKey - API key (defaults to SILICONFLOW_API_KEY or HAIER_API_KEY env var)
    */
   constructor(apiKey?: string) {
-    this.provider = (process.env.LLM_PROVIDER || 'openrouter') as LLMProvider;
-    this.capabilities = PROVIDER_CONFIGS[this.provider] || PROVIDER_CONFIGS.openrouter;
+    this.provider = (process.env.LLM_PROVIDER || 'siliconflow') as LLMProvider;
+    this.capabilities = PROVIDER_CONFIGS[this.provider];
 
     if (apiKey) {
       this.apiKey = apiKey;
-    } else if (this.provider === 'openrouter') {
-      this.apiKey = process.env.OPENROUTER_API_KEY || '';
-    } else if (this.provider === 'nvidia') {
-      this.apiKey = process.env.NVIDIA_API_KEY || '';
-    } else if (this.provider === 'zhipu') {
-      this.apiKey = process.env.ZHIPU_API_KEY || '';
     } else if (this.provider === 'siliconflow') {
       this.apiKey = process.env.SILICONFLOW_API_KEY || '';
     } else if (this.provider === 'haier') {
@@ -295,7 +277,8 @@ export class LLMClient implements ILLMClient {
       this.apiKey = '';
     }
     // 移除 baseUrl 末尾的斜杠，避免拼接时出现双斜杠
-    this.baseUrl = CONFIG.LLM_BASE_URL.replace(/\/$/, '');
+    // 优先级:LLM_BASE_URL 环境变量(proxy 场景) > provider 的默认 endpoint
+    this.baseUrl = (CONFIG.LLM_BASE_URL || PROVIDER_CONFIGS[this.provider].defaultBaseUrl).replace(/\/$/, '');
     this.model = CONFIG.LLM_MODEL;
     this.temperature = CONFIG.LLM_TEMPERATURE;
     this.timeoutMs = CONFIG.LLM_TIMEOUT_MS;
@@ -314,9 +297,16 @@ export class LLMClient implements ILLMClient {
    *
    * Used by `buildFallbackLLMClient()` to set per-candidate provider/model
    * on a freshly-constructed LLMClient without re-running the full env-key
-   * resolution. Only mutates `provider`, `capabilities`, `model` and the
-   * matching API key (other fields like baseUrl / timeout / maxRetries
-   * are left untouched).
+   * resolution. Mutates `provider`, `capabilities`, `baseUrl`, `apiKey`,
+   * and `model` — i.e. everything that's provider-specific.
+   *
+   * `baseUrl` MUST follow provider: cross-vendor failover (e.g.
+   * `siliconflow` → `haier`) would otherwise hit the old endpoint with
+   * the wrong key. Respects `CONFIG.LLM_BASE_URL` override for proxy
+   * scenarios; otherwise uses the provider's `defaultBaseUrl`.
+   *
+   * Connection-level fields (`timeoutMs`, `maxRetries`, `temperature`)
+   * are left untouched — they're shared across candidates.
    *
    * NOTE: does NOT throw if the new provider's env key is missing — that
    * check would happen lazily on the first request, keeping construction
@@ -325,19 +315,15 @@ export class LLMClient implements ILLMClient {
   configureProvider(provider: string, model: string): void {
     const newProvider = provider as LLMProvider;
     this.provider = newProvider;
-    this.capabilities = PROVIDER_CONFIGS[newProvider] || PROVIDER_CONFIGS.openrouter;
+    this.capabilities = PROVIDER_CONFIGS[newProvider];
 
-    if (newProvider === 'openrouter') {
-      this.apiKey = process.env.OPENROUTER_API_KEY || this.apiKey;
-    } else if (newProvider === 'nvidia') {
-      this.apiKey = process.env.NVIDIA_API_KEY || this.apiKey;
-    } else if (newProvider === 'zhipu') {
-      this.apiKey = process.env.ZHIPU_API_KEY || this.apiKey;
-    } else if (newProvider === 'siliconflow') {
+    if (newProvider === 'siliconflow') {
       this.apiKey = process.env.SILICONFLOW_API_KEY || this.apiKey;
     } else if (newProvider === 'haier') {
       this.apiKey = process.env.HAIER_API_KEY || this.apiKey;
     }
+    // 同步切换 baseUrl:跨 provider 时必须改 endpoint,否则会用别的 key 打老 endpoint
+    this.baseUrl = (CONFIG.LLM_BASE_URL || PROVIDER_CONFIGS[newProvider].defaultBaseUrl).replace(/\/$/, '');
     this.model = model;
   }
   

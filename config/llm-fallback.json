@@ -1,7 +1,6 @@
 {
   "candidates": [
-    { "providerKey": "openrouter:anthropic/claude-opus-4-7", "priority": 1, "model": "anthropic/claude-opus-4-7" },
-    { "providerKey": "openrouter:anthropic/claude-sonnet-4-6", "priority": 2, "model": "anthropic/claude-sonnet-4-6" },
-    { "providerKey": "zhipu:glm-4-plus", "priority": 3, "model": "glm-4-plus" }
+    { "providerKey": "siliconflow:Pro/MiniMaxAI/MiniMax-M2.5", "priority": 1, "model": "Pro/MiniMaxAI/MiniMax-M2.5" },
+    { "providerKey": "haier:glm-5-fp8", "priority": 2, "model": "glm-5-fp8" }
   ]
 }

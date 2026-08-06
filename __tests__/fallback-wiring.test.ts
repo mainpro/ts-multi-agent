@@ -20,33 +20,78 @@ import { FallbackLLMClient } from '../src/llm/fallback-client';
 import { CONFIG } from '../src/types';
 
 describe('configureProvider() on LLMClient', () => {
+  const originalBaseUrl = CONFIG.LLM_BASE_URL;
+
+  beforeEach(() => {
+    // 隔离 .env 加载的 LLM_BASE_URL,让 configureProvider 走 provider 默认 endpoint
+    CONFIG.LLM_BASE_URL = '';
+  });
+
+  afterEach(() => {
+    CONFIG.LLM_BASE_URL = originalBaseUrl;
+  });
+
   test('覆盖 provider 后,后续 API key 解析走新 provider 的 env', () => {
     // 构造时给个 apiKey 避免默认 provider 的 env 缺失导致抛错
     const client = new LLMClient('test-key-initial');
     expect(client).toBeInstanceOf(LLMClient);
 
     // 调用 configureProvider → 不抛错
-    expect(() => client.configureProvider('nvidia', 'nvidia/model')).not.toThrow();
+    expect(() => client.configureProvider('haier', 'glm-5-fp8')).not.toThrow();
 
     // 验证 fallback-config 的格式能正确解析 provider / model 两段
-    const [provider, model] = 'nvidia:nvidia/model'.split(':');
-    expect(provider).toBe('nvidia');
-    expect(model).toBe('nvidia/model');
+    const [provider, model] = 'haier:glm-5-fp8'.split(':');
+    expect(provider).toBe('haier');
+    expect(model).toBe('glm-5-fp8');
+  });
+
+  test('configureProvider 跨 provider 时同步切换 baseUrl(否则用错 key 打错 endpoint)', () => {
+    const client = new LLMClient('test-key-initial');
+    // 切换到 haier
+    client.configureProvider('haier', 'glm-5-fp8');
+    expect((client as any).baseUrl).toBe('https://modelapi-test.haier.net/model/v1');
+    expect((client as any).provider).toBe('haier');
+    expect((client as any).model).toBe('glm-5-fp8');
+
+    // 切回 siliconflow
+    client.configureProvider('siliconflow', 'Pro/MiniMaxAI/MiniMax-M2.5');
+    expect((client as any).baseUrl).toBe('https://api.siliconflow.cn/v1');
+    expect((client as any).provider).toBe('siliconflow');
+  });
+
+  test('LLM_BASE_URL 环境变量(proxy)优先于 provider 默认 baseUrl', () => {
+    // 验证代理场景:全公司走 proxy 时,所有候选仍走同一 endpoint
+    const originalBaseUrl = CONFIG.LLM_BASE_URL;
+    CONFIG.LLM_BASE_URL = 'https://llm-proxy.internal/v1';
+    try {
+      const client = new LLMClient('test-key-initial');
+      expect((client as any).baseUrl).toBe('https://llm-proxy.internal/v1');
+
+      client.configureProvider('haier', 'glm-5-fp8');
+      // 即使切到 haier,baseUrl 仍走 proxy
+      expect((client as any).baseUrl).toBe('https://llm-proxy.internal/v1');
+    } finally {
+      CONFIG.LLM_BASE_URL = originalBaseUrl;
+    }
   });
 });
 
 describe('buildFallbackLLMClient()', () => {
   const originalEnabled = CONFIG.LLM_FALLBACK_ENABLED;
   const originalConfigPath = CONFIG.LLM_FALLBACK_CONFIG_PATH;
+  const originalBaseUrl = CONFIG.LLM_BASE_URL;
   let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fallback-wiring-'));
+    // 隔离 .env 加载的 LLM_BASE_URL,让 configureProvider 走 provider 默认 endpoint
+    CONFIG.LLM_BASE_URL = '';
   });
 
   afterEach(() => {
     CONFIG.LLM_FALLBACK_ENABLED = originalEnabled;
     CONFIG.LLM_FALLBACK_CONFIG_PATH = originalConfigPath;
+    CONFIG.LLM_BASE_URL = originalBaseUrl;
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -68,8 +113,8 @@ describe('buildFallbackLLMClient()', () => {
     const configPath = join(tmpDir, 'llm-fallback.json');
     const validConfig = {
       candidates: [
-        { providerKey: 'openrouter:test-model-1', priority: 1, model: 'test-model-1' },
-        { providerKey: 'openrouter:test-model-2', priority: 2, model: 'test-model-2' },
+        { providerKey: 'siliconflow:test-model-1', priority: 1, model: 'test-model-1' },
+        { providerKey: 'haier:test-model-2', priority: 2, model: 'test-model-2' },
       ],
     };
     writeFileSync(configPath, JSON.stringify(validConfig), 'utf-8');
@@ -112,7 +157,7 @@ describe('buildFallbackLLMClient()', () => {
     CONFIG.LLM_FALLBACK_ENABLED = true;
     const configPath = join(tmpDir, 'llm-fallback.json');
     writeFileSync(configPath, JSON.stringify({
-      candidates: [{ providerKey: 'openrouter:m', priority: 1, model: 'm' }],
+      candidates: [{ providerKey: 'siliconflow:m', priority: 1, model: 'm' }],
     }), 'utf-8');
     CONFIG.LLM_FALLBACK_CONFIG_PATH = configPath;
 

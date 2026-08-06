@@ -543,12 +543,12 @@ export const CONFIG = {
   SCRIPT_TIMEOUT_MS: parseInt(process.env.SCRIPT_TIMEOUT_MS || '180000', 10),
   /** Skill directory path */
   SKILL_DIRECTORY: resolveResource('skills') + '/',
-  /** LLM Provider: nvidia | openrouter | zhipu | siliconflow | haier */
-  LLM_PROVIDER: process.env.LLM_PROVIDER || 'openrouter',
+  /** LLM Provider: siliconflow | haier */
+  LLM_PROVIDER: process.env.LLM_PROVIDER || 'siliconflow',
   /** LLM model name */
-  LLM_MODEL: process.env.LLM_MODEL || 'minimax/minimax-m2.5:free',
-  /** LLM API base URL */
-  LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
+  LLM_MODEL: process.env.LLM_MODEL || 'Pro/MiniMaxAI/MiniMax-M2.5',
+  /** LLM API base URL (override per-provider defaultBaseUrl; useful for proxies) */
+  LLM_BASE_URL: process.env.LLM_BASE_URL || '',
   /** LLM temperature (0-1, lower = more deterministic) */
   LLM_TEMPERATURE: parseFloat(process.env.LLM_TEMPERATURE || '0.7'),
   /** LLM max output tokens */

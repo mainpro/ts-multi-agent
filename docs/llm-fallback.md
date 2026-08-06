@@ -35,9 +35,8 @@
 ```json
 {
   "candidates": [
-    { "providerKey": "openrouter:anthropic/claude-opus-4-7",   "priority": 1, "model": "anthropic/claude-opus-4-7" },
-    { "providerKey": "openrouter:anthropic/claude-sonnet-4-6", "priority": 2, "model": "anthropic/claude-sonnet-4-6" },
-    { "providerKey": "zhipu:glm-4-plus",                       "priority": 3, "model": "glm-4-plus" }
+    { "providerKey": "siliconflow:Pro/MiniMaxAI/MiniMax-M2.5", "priority": 1, "model": "Pro/MiniMaxAI/MiniMax-M2.5" },
+    { "providerKey": "haier:glm-5-fp8",                       "priority": 2, "model": "glm-5-fp8" }
   ]
 }
 ```
@@ -46,23 +45,22 @@
 
 | 字段 | 约束 | 说明 |
 |---|---|---|
-| `providerKey` | `^[a-z0-9_-]+:[a-zA-Z0-9_./-]+$` | 格式 `<provider>:<modelId>`。冒号前的 provider 必须是受支持的值:`openrouter` / `nvidia` / `zhipu` / `siliconflow` / `haier`。这个 key 同时也是 **cooldown 表的主键** |
+| `providerKey` | `^[a-z0-9_-]+:[a-zA-Z0-9_./-]+$` | 格式 `<provider>:<modelId>`。冒号前的 provider 必须是受支持的值:`siliconflow` / `haier`。这个 key 同时也是 **cooldown 表的主键** |
 | `priority` | 整数,≥ 1,**全局唯一** | 数字越小越优先。重复的 priority 会导致 schema 校验失败 |
 | `model` | 非空字符串 | 传给 provider 的实际模型 ID |
 
-`candidates` 至少要有 1 项。工厂 `buildFallbackLLMClient()` 按 `priority` 升序排序后构建候选链,每个 candidate 一个独立的 `LLMClient` 实例(通过 `configureProvider(provider, model)` 设置各自的 provider / API key / 模型)。
+`candidates` 至少要有 1 项。工厂 `buildFallbackLLMClient()` 按 `priority` 升序排序后构建候选链,每个 candidate 一个独立的 `LLMClient` 实例(通过 `configureProvider(provider, model)` 设置各自的 provider / API key / **baseUrl** / 模型)。
 
-### 各 provider 的 API key
+### 各 provider 的 API key 与默认 endpoint
 
-candidate 的 API key 从对应的环境变量读,**不写在配置文件里**:
+candidate 的 API key 从对应的环境变量读,**不写在配置文件里**。`configureProvider()` 切换 provider 时会**同步切换 baseUrl**,所以跨厂商降级(`siliconflow` → `haier`)会打到正确的 endpoint。
 
-| provider | 环境变量 |
-|---|---|
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `nvidia` | `NVIDIA_API_KEY` |
-| `zhipu` | `ZHIPU_API_KEY` |
-| `siliconflow` | `SILICONFLOW_API_KEY` |
-| `haier` | `HAIER_API_KEY` |
+| provider | 默认 baseUrl | 环境变量 |
+|---|---|---|
+| `siliconflow` | `https://api.siliconflow.cn/v1` | `SILICONFLOW_API_KEY` |
+| `haier` | `https://modelapi-test.haier.net/model/v1` | `HAIER_API_KEY` |
+
+> **代理场景**:如果设置了 `LLM_BASE_URL` 环境变量,它会**覆盖**所有 provider 的默认 baseUrl(全公司走同一 proxy)。不设就走各 provider 的默认 endpoint。
 
 ### 环境变量
 
@@ -148,19 +146,19 @@ class FailoverError extends Error {
 ### candidate 失败,准备切下一个
 
 ```json
-{"level":"warn","timestamp":"2026-08-06T07:21:59.708Z","module":"FallbackLLMClient","message":"LLM candidate failed, trying next","providerKey":"openrouter:model-a","reason":"rate_limit"}
+{"level":"warn","timestamp":"2026-08-06T07:21:59.708Z","module":"FallbackLLMClient","message":"LLM candidate failed, trying next","providerKey":"siliconflow:Pro/MiniMaxAI/MiniMax-M2.5","reason":"rate_limit"}
 ```
 
 ### 进入冷却(紧跟在上一条之前)
 
 ```json
-{"level":"warn","timestamp":"2026-08-06T07:21:59.708Z","module":"CooldownCache","message":"LLM provider marked cooldown","providerKey":"openrouter:model-a","reason":"rate_limit","ttlMs":60000,"hitCount":1}
+{"level":"warn","timestamp":"2026-08-06T07:21:59.708Z","module":"CooldownCache","message":"LLM provider marked cooldown","providerKey":"siliconflow:Pro/MiniMaxAI/MiniMax-M2.5","reason":"rate_limit","ttlMs":60000,"hitCount":1}
 ```
 
 ### 切换成功(说明这次请求靠 fallback 救回来了)
 
 ```json
-{"level":"warn","timestamp":"2026-08-06T07:21:59.704Z","module":"FallbackLLMClient","message":"LLM failover succeeded","fromProviderKey":"openrouter:model-a","toProviderKey":"openrouter:model-b","attempts":1}
+{"level":"warn","timestamp":"2026-08-06T07:21:59.704Z","module":"FallbackLLMClient","message":"LLM failover succeeded","fromProviderKey":"siliconflow:Pro/MiniMaxAI/MiniMax-M2.5","toProviderKey":"haier:glm-5-fp8","attempts":1}
 ```
 
 > 注意 `fromProviderKey` 是**第一个**失败的 candidate,不是紧邻的那个。中间失败了几个看 `attempts`。
@@ -170,7 +168,7 @@ class FailoverError extends Error {
 这条是 **debug** 级别(默认 `LOG_LEVEL=info` 下看不到),排障时把 `LOG_LEVEL=debug` 打开:
 
 ```json
-{"level":"debug","module":"FallbackLLMClient","message":"skipping candidate in cooldown","providerKey":"openrouter:model-a"}
+{"level":"debug","module":"FallbackLLMClient","message":"skipping candidate in cooldown","providerKey":"siliconflow:Pro/MiniMaxAI/MiniMax-M2.5"}
 ```
 
 ### 运维怎么用
@@ -201,19 +199,16 @@ grep '"traceId":"<id>"' app.log
 1. **Cooldown 是进程内的,不持久化。**
    状态存在单个 Node 进程的 `Map` 里。进程重启即清空,多实例部署时各实例的冷却表相互独立 —— 实例 A 已经熔断的 provider,实例 B 仍然会去撞一次墙。设计上接受这个代价:冷却表是**优化**(少打无效请求)而非**正确性保证**,最坏情况只是多几次失败的调用,不影响结果正确。如果重启频繁(比如崩溃循环),可能会反复重试已知不可用的 provider。
 
-2. **候选之间共享 `baseUrl`。**
-   `configureProvider()` 只改 `provider` / `apiKey` / `model` / `capabilities`,**不改 `baseUrl`** —— 后者来自全局的 `LLM_BASE_URL`。也就是说跨 provider 的候选链(如 `openrouter` → `zhipu`)在实际发请求时仍然打到同一个 base URL。**当前配置在同一网关(OpenRouter)下换模型是可靠的;要真正切到不同厂商的 endpoint,需要先给 candidate 加上 per-candidate baseUrl 支持。**
-
-3. **只做自动降级,不做自动升级或负载均衡。**
+2. **只做自动降级,不做自动升级或负载均衡。**
    永远按 `priority` 从头试,没有权重轮询、没有健康度评分、没有主动探活。主 provider 的恢复完全靠 cooldown TTL 到期后的下一次自然请求去试探。
 
-4. **失败状态不暴露给前端。**
-   `FailoverError` 只在服务端日志里有细节(而且刻意脱敏)。用户侧看到的是普通的任务失败,不会知道「切了三家都不行」。当前没有把 provider 健康度做成接口或看板。
+3. **失败状态不暴露给前端。**
+   `FailoverError` 只在服务端日志里有细节(而且刻意脱敏)。用户侧看到的是普通的任务失败,不会知道「切了两家都不行」。当前没有把 provider 健康度做成接口或看板。
 
-5. **跨 candidate 会重放请求。**
+4. **跨 candidate 会重放请求。**
    切换时整个请求(包括 `generateWithTools` 的完整 messages)会原样发给下一个 candidate。如果失败发生在若干轮工具调用之后,这些工具会被**重新执行一遍**。依赖工具本身的幂等性 + `concurrencyChecker` 兜底。非幂等的工具(比如发消息、写外部系统)在 failover 场景下有重复执行的风险。
 
-6. **并发槽位有两层。**
+5. **并发槽位有两层。**
    `FallbackLLMClient` 通过 `sharedSlot`(`LLMSlotRegistry`,capacity = `LLM_MAX_CONCURRENT_REQUESTS`)在候选链层面限流,而每个 `LLMClient` 内部还有一套自己的 class-level semaphore。两层上限都是同一个配置值,实际生效的是更严格的那层;这是重构过程中的中间状态,不影响正确性,但会让「当前并发数」这个指标不那么直观。
 
 ---
