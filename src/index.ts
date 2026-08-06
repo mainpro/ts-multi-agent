@@ -93,7 +93,7 @@ async function bootstrap() {
     // 5. Register virtual employees (从 JSON 加载)
     console.log('👥 Registering virtual employees...');
     const { FileEmployeeConfigProvider, loadAndRegister } = await import('./agents/virtual-employee/loader');
-    const employeeDir = resolveResource('agents/virtual-employee/employees');
+    const employeeDir = resolveResource('employees');
     const provider = new FileEmployeeConfigProvider(employeeDir);
     await loadAndRegister(provider);
     console.log('✅ Virtual employees registered\n');
