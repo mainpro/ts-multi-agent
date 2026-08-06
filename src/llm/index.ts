@@ -6,6 +6,7 @@ import { repairToolCalls } from './tool-call-repair';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { llmCalls, llmLatency, llmErrors } from '../observability/metrics';
 export type { ILLMClient } from './interfaces';
+export { LLMSlotRegistry, sharedSlot } from './llm-slot-registry';
 
 const log = createLogger({ module: 'LLM' });
 
