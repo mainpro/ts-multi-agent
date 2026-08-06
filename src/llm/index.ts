@@ -1,6 +1,9 @@
+import { readFileSync } from 'fs';
 import { Message, CONFIG, ToolDefinition, ToolCallResult } from '../types';
 import { ZodSchema } from 'zod';
 import type { ILLMClient } from './interfaces';
+import { FallbackLLMClient } from './fallback-client';
+import { parseFallbackConfig } from './failover-config';
 import { createLogger } from '../observability/logger';
 import { repairToolCalls } from './tool-call-repair';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
@@ -1244,10 +1247,6 @@ export class LLMClient implements ILLMClient {
 // =====================================================================
 // Factory: buildFallbackLLMClient()  (Task 7 wiring)
 // =====================================================================
-
-import { readFileSync } from 'fs';
-import { FallbackLLMClient } from './fallback-client';
-import { parseFallbackConfig } from './failover-config';
 
 /**
  * Build the production LLM client.
