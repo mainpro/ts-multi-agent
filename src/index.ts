@@ -20,6 +20,7 @@ import { SessionStore } from './memory/session-store';
 import { migrateMemoryIfNeeded } from './memory/migrate';
 import { AskAgent } from './agents/ask-agent';
 import { SystemSkillLoader, ExecutorRegistry } from './system-skills';
+import { BootstrapError } from './errors';
 
 // 端口优先级：命令行参数 > 环境变量 > 默认值 3000
 function getPort(): number {
@@ -54,8 +55,11 @@ async function bootstrap() {
       llmClient = buildFallbackLLMClient();
       console.log('✅ LLM Client initialized\n');
     } catch (error) {
-      log.warn('Failed to initialize LLM Client. Set SILICONFLOW_API_KEY or HAIER_API_KEY env var.', { error });
-      process.exit(1);
+      throw new BootstrapError(
+        'LLM_INIT_FAILED',
+        'Failed to initialize LLM Client. Set SILICONFLOW_API_KEY or HAIER_API_KEY env var.',
+        { cause: error },
+      );
     }
 
     // 2. Create Skill Registry
@@ -179,8 +183,7 @@ async function bootstrap() {
     });
 
   } catch (error) {
-    log.error('Failed to start server', { error });
-    process.exit(1);
+    throw new BootstrapError('SERVER_START_FAILED', 'Failed to start server', { cause: error });
   }
 }
 
