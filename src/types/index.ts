@@ -216,7 +216,7 @@ export interface QuestionHistoryEntry {
 /**
  * Error types for task failures
  */
-export type ErrorType = 'RETRYABLE' | 'FATAL' | 'USER_ERROR' | 'SKILL_ERROR';
+export type ErrorType = 'RETRYABLE' | 'FATAL' | 'USER_ERROR' | 'SKILL_ERROR' | 'BOOTSTRAP_FAILED';
 
 // Canonical LLMErrorType is exported from src/llm/index.ts (includes UNKNOWN_ERROR, CANCELLED, QUEUE_FULL).
 // Re-export here so legacy callers that imported from `../types` keep working.
@@ -646,7 +646,7 @@ export const UserProfileSchema = z.object({
 /**
  * Zod schema for ErrorType
  */
-export const ErrorTypeSchema = z.enum(['RETRYABLE', 'FATAL', 'USER_ERROR', 'SKILL_ERROR']);
+export const ErrorTypeSchema = z.enum(['RETRYABLE', 'FATAL', 'USER_ERROR', 'SKILL_ERROR', 'BOOTSTRAP_FAILED']);
 
 /**
  * Zod schema for TaskError
