@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="6" assertions="43" failures="0" skipped="0" time="0.675959">
+  <testsuite name="__tests__/it-desk-self-service-observability.test.ts" file="__tests__/it-desk-self-service-observability.test.ts" tests="3" assertions="25" failures="0" skipped="0" time="0" hostname="dipudeMacBook-Pro.local">
+    <testsuite name="IT 服务台 observability — self-service scenario" file="__tests__/it-desk-self-service-observability.test.ts" line="320" tests="3" assertions="25" failures="0" skipped="0" time="0.123" hostname="dipudeMacBook-Pro.local">
+      <testcase name="L1: 完整链路追踪 — IntentRouter + SubAgent + memory + profile" classname="IT 服务台 observability — self-service scenario" time="0.089081" file="__tests__/it-desk-self-service-observability.test.ts" line="321" assertions="14" />
+      <testcase name="L2: 多轮 SubAgent 迭代 — 验证 IntentRouter→SubAgent 顺序 + 时间戳递增" classname="IT 服务台 observability — self-service scenario" time="0.01782" file="__tests__/it-desk-self-service-observability.test.ts" line="378" assertions="7" />
+      <testcase name="L3: 错误路径追踪 — mock LLM throws → task_failed + trace dump" classname="IT 服务台 observability — self-service scenario" time="0.017231" file="__tests__/it-desk-self-service-observability.test.ts" line="412" assertions="4" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="__tests__/it-desk-progress-push-observability.test.ts" file="__tests__/it-desk-progress-push-observability.test.ts" tests="3" assertions="18" failures="0" skipped="0" time="0" hostname="dipudeMacBook-Pro.local">
+    <testsuite name="IT 服务台进度推送 — 深度内部可观测性" file="__tests__/it-desk-progress-push-observability.test.ts" line="443" tests="3" assertions="18" failures="0" skipped="0" time="0.108" hostname="dipudeMacBook-Pro.local">
+      <testcase name="OBS-1: 历史进度读取 + 新任务并存(2 个历史条目保持不变)" classname="IT 服务台进度推送 — 深度内部可观测性" time="0.021796" file="__tests__/it-desk-progress-push-observability.test.ts" line="465" assertions="9" />
+      <testcase name="OBS-2: 新任务 → task_started + task_completed 配对出现在 timeline" classname="IT 服务台进度推送 — 深度内部可观测性" time="0.070507" file="__tests__/it-desk-progress-push-observability.test.ts" line="542" assertions="4" />
+      <testcase name="OBS-3: 错误路径 — LLM 抛错时,历史任务不受影响" classname="IT 服务台进度推送 — 深度内部可观测性" time="0.017156" file="__tests__/it-desk-progress-push-observability.test.ts" line="599" assertions="5" />
+    </testsuite>
+  </testsuite>
+</testsuites>
