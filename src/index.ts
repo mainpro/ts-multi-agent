@@ -21,6 +21,7 @@ import { migrateMemoryIfNeeded } from './memory/migrate';
 import { AskAgent } from './agents/ask-agent';
 import { SystemSkillLoader, ExecutorRegistry } from './system-skills';
 import { BootstrapError } from './errors';
+import { loadEmployeeConfig } from './agents/employee/loader';
 
 // 端口优先级：命令行参数 > 环境变量 > 默认值 3000
 function getPort(): number {
@@ -143,6 +144,15 @@ async function bootstrap() {
 
     // 8. Create MainAgent（通过 DI 注入所有依赖）
     console.log('🧠 Initializing MainAgent...');
+    // Task 8: bootstrap 加载 EmployeeConfig 并注入到 MainAgent。
+    // TODO(Task 10): 解析 `--employee=<id>` CLI 参数(explicitId)传给 loadEmployeeConfig。
+    // 当前 commit 用兜底逻辑(目录中第一个 enabled JSON),兼容现有部署。
+    const { resolveResource: resolveAppResource } = await import('./utils/app-root');
+    const employee = await loadEmployeeConfig({
+      directory: resolveAppResource('employees'),
+    });
+    console.log(`✅ Employee loaded (id=${employee.employee.id})\n`);
+
     const mainAgentDeps: MainAgentDependencies = {
       llm: llmClient,
       skillRegistry,
@@ -156,7 +166,7 @@ async function bootstrap() {
       systemSkillLoader,
       executorRegistry,
     };
-    const mainAgent = new MainAgent(mainAgentDeps);
+    const mainAgent = new MainAgent(mainAgentDeps, { employee });
     console.log('✅ MainAgent initialized\n');
 
     // 9. Create and start API Server

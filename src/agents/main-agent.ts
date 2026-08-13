@@ -1,6 +1,6 @@
 import { ILLMClient } from "../llm";
 import { SkillRegistry } from "../skill-registry";
-import { TaskQueue, TaskExecutor } from "../task-queue";
+import { TaskQueue } from "../task-queue";
 import { IntentRouter } from "../routers";
 import { UnifiedPlanner } from "../planners";
 import { UserProfileService } from "../user-profile";
@@ -28,17 +28,11 @@ import { ResultAggregator } from "./result-aggregator";
 import { SessionGate, QueueFullError } from "./session-gate";
 import { requestLifecycle } from "../events/request-lifecycle";
 import { taskEvents } from "../events/task-events";
-import { BusinessError, AppError } from '../errors';
+import { BusinessError, AppError, SkillError } from '../errors';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { CONFIG } from '../types';
-import { VirtualEmployee } from './virtual-employee/base';
-import { VirtualEmployeeResolver } from './virtual-employee/resolver';
-
-/**
- * Resolver 是 stateless(纯函数 + 静态 registry),进程内共享一个实例足以。
- * 避免每个 processRequirement 调 new 一个浪费对象分配。
- */
-const virtualEmployeeResolver = new VirtualEmployeeResolver();
+import type { EmployeeConfig } from './employee/types';
+import { computeAllowedTools } from './employee/tools';
 
 /**
  * MainAgent 依赖注入接口
@@ -60,6 +54,35 @@ export interface MainAgentDependencies {
   executorRegistry: ExecutorRegistry;
 }
 
+/**
+ * 兜底最小 EmployeeConfig(仅测试场景使用):
+ *   - 生产环境必须由 bootstrap 加载并显式传入 options.employee
+ *   - 测试场景(MainAgent 构造无 options 参数)使用此 fixture,跳过下游 skill/persona 路径
+ */
+function defaultEmptyEmployee(): EmployeeConfig {
+  return {
+    employee: { id: '__test_default__', displayName: 'Test Default', enabled: false },
+    capabilities: { llm: { provider: 'haier' } },
+  };
+}
+
+/**
+ * MainAgent 构造选项
+ *
+ * Task 8 起 MainAgent 必须持有一个 EmployeeConfig(由 bootstrap 加载并注入),
+ * 负责把员工身份派发给下游:
+ *   - IntentRouter.classify(): persona + displayName
+ *   - UnifiedPlanner.plan(): planning.decompositionHint
+ *   - task._personaContext / task.allowedTools:每个 task 构造时填充
+ *   - employee.capabilities.skillWhitelist:派单前 SKILL_NOT_ALLOWED 校验
+ *
+ * options 在生产环境为必填;测试 helper 不传时使用 defaultEmptyEmployee 占位,
+ * 让现有未触及 persona/skills 路径的测试继续工作。
+ */
+export interface MainAgentOptions {
+  employee: EmployeeConfig;
+}
+
 export class MainAgent {
   private static readonly log = createLogger({ module: 'MainAgent' });
   private llm: ILLMClient;
@@ -76,8 +99,10 @@ export class MainAgent {
   private taskGraphExecutor: TaskGraphExecutor;
   private resultAggregator: ResultAggregator;
   private gate: SessionGate;
+  /** 注入的员工配置(personal / capabilities / planning / outputBehavior)。 */
+  private employee: EmployeeConfig;
 
-  constructor(deps: MainAgentDependencies) {
+  constructor(deps: MainAgentDependencies, options?: MainAgentOptions) {
     const {
       llm, skillRegistry, taskQueue,
       intentRouter, userProfileService, memoryService,
@@ -97,6 +122,11 @@ export class MainAgent {
     this.askAgent = askAgent;
     this.systemSkillLoader = systemSkillLoader;
     this.executorRegistry = executorRegistry;
+
+    // Task 8:options 在生产为必填(bootstrap 必须显式传入);
+    // 测试场景(MainAgent 构造无 second arg)走 defaultEmptyEmployee 占位,
+    // 保留现有 un-related-to-persona/skills 的测试集继续工作。
+    this.employee = options?.employee ?? defaultEmptyEmployee();
 
     // resultAggregator 需要 processNormalRequirement 回调，循环依赖 → MainAgent 内创建
     this.resultAggregator = new ResultAggregator(
@@ -298,54 +328,13 @@ export class MainAgent {
       await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
     } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
-    // ===== VirtualEmployee 路由(Task 6)=====
-    // 在系统命令拦截之前先选员工。
-    //   - UNKNOWN_EMPLOYEE(用户显式 @ 但未匹配)→ 抛错,由 API 中间件映射
-    //   - NO_DEFAULT_EMPLOYEE(没有默认员工 + 意图未命中)→ 静默跳过路由,
-    //     沿用 taskQueue 当前 executor(back-compat:旧测试/未注册员工时)
-    // 注:本次 resolver 只产生一个实例,不缓存;后续要 per-task 路由时再重构。
-    let selectedEmployee: VirtualEmployee | undefined;
-    try {
-      selectedEmployee = virtualEmployeeResolver.resolve({
-        hintedId: options?.employeeId,
-        userMessage: requirement,
-        skillRegistry: this.skillRegistry,
-        llm: this.llm,
-        memoryService: this.memoryService,
-      });
-    } catch (err) {
-      if (err instanceof BusinessError && err.code === 'UNKNOWN_EMPLOYEE') {
-        MainAgent.log.warn('虚拟员工路由失败(显式 @ 错误)→ 抛错(由 API 层映射)', { error: err.message });
-        throw err;
-      }
-      if (err instanceof BusinessError && err.code === 'NO_DEFAULT_EMPLOYEE') {
-        MainAgent.log.warn('虚拟员工路由: 没有默认员工 + 意图未命中 → 跳过路由,沿用 TaskQueue 默认 executor');
-        // 不抛错,继续走原有执行流;selectedEmployee 保持 undefined → executorFactory = undefined
-      } else {
-        throw err;
-      }
-    }
-
-    // P3 race fix: 不再调 taskQueue.setExecutor() 改 process-global 状态。
-    // 改为构造 per-task executorFactory,透传给 executeTaskGraph,
-    // 每个 task 入队时绑定自己的 executor,跨请求并发时不会互相覆盖。
-    const executorFactory: ((task: Task) => TaskExecutor | undefined) | undefined = selectedEmployee
-      ? (task: Task) => {
-          // 闭包捕获 task(构造时绑定),返回 TaskExecutor 接收运行时 signal。
-          // 用箭头函数 + 显式 cast 让 TS 正确推断 TaskExecutor 签名。
-          const exec: TaskExecutor = (_task: Task, signal?: AbortSignal) =>
-            selectedEmployee!.execute(task, signal);
-          return exec;
-        }
-      : undefined;
-
-    if (selectedEmployee) {
-      MainAgent.log.info('已选虚拟员工(per-task 绑定)', {
-        employeeId: selectedEmployee.config.id,
-        displayName: selectedEmployee.config.displayName,
-      });
-      // 注入 employeeId 到 SubAgent logger,后续 SubAgent 内部 this.log 自动带 employeeId
-      selectedEmployee.setEmployeeContext(selectedEmployee.config.id);
+    // ===== Employee routing(Task 8)=====
+    // Task 6/7 时代的 VirtualEmployeeResolver 已被本类持有的 employee 配置取代:
+    //   - persona / tools / planning 由 this.employee 统一提供
+    //   - executeTaskGraph 不再需要 executorFactory(TaskQueue 默认 executor 接管)
+    // 注:options.employeeId 仍保留(API 层可能传入 @mention hint),暂时仅作为日志。
+    if (options?.employeeId) {
+      MainAgent.log.debug('收到 employeeId hint(已废弃,仅日志)', { hint: options.employeeId });
     }
 
     // ========== 步骤 1: 图片分析 ==========
@@ -430,11 +419,10 @@ export class MainAgent {
         return this.continueRequest(userId, effectiveSessionId, handleResult.request, handleResult.question);
 
       case 'new_request':
-        // 新请求，走正常流程。透传 executorFactory 让 processNormalRequirement 的
-        // executeTaskGraph 把每个 task 绑定到当前选定的虚拟员工(P3 race fix)。
+        // 新请求，走正常流程。
         return this.processNormalRequirement(
           requirement, userId, effectiveSessionId, handleResult.request,
-          imageAttachment, { ...options, executorFactory },
+          imageAttachment, options,
         );
 
       case 'recall_prompt':
@@ -918,7 +906,7 @@ export class MainAgent {
     sessionId: string,
     request: Request,
     _imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
-    options?: { planMode?: boolean; executorFactory?: (task: Task) => TaskExecutor | undefined },
+    options?: { planMode?: boolean },
     depth: number = 0,
   ): Promise<TaskResult> {
     // 递归深度限制，防止无限递归
@@ -1019,6 +1007,8 @@ export class MainAgent {
 
       const intentResult = await this.intentRouter.classify(
         requirement, userProfile, recentHistory, sessionId, proceduralExperience, userId,
+        this.employee.persona,                                              // Task 8: 注入 persona
+        this.employee.employee.displayName,                                // Task 8: 用于模板替换
       );
 
       await hookManager.emit(HookEvent.AFTER_INTENT_CLASSIFY, {
@@ -1098,7 +1088,10 @@ export class MainAgent {
         };
       } else {
         const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
-        const planResult = await planner.plan(enrichedRequirement);
+        // Task 8: 把员工的规划偏好(decompositionHint)注入 planner
+        const planResult = await planner.plan(enrichedRequirement, {
+          hint: this.employee.planning?.decompositionHint,
+        });
         if (!planResult.success || !planResult.plan) {
           await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
           return {
@@ -1131,9 +1124,56 @@ export class MainAgent {
         };
       }
 
-      // 注册任务到请求中
+      // 注册任务到请求中(Task 8 同步注入 persona/allowedTools 并执行 skill 白名单校验)
       for (const taskDef of plan.tasks) {
         const uniqueTaskId = `${plan.id}-${taskDef.id}`;
+
+        // Task 7 移交:SubAgent.execute 不再校验 skill 白名单,改在 MainAgent 派单前完成。
+        // 规则(与 Task 3 旧 SubAgent 行为一致):
+        //   - skillWhitelist 缺失 → 全部放行(向后兼容)
+        //   - skillWhitelist.type === 'unrestricted' → 全部放行
+        //   - skillWhitelist.type === 'allowlist' → skillName 必须在 skills 列表里
+        // 没有 skillName 的任务(IntentRouter 标注 unclear 等)直接放过。
+        if (taskDef.skillName) {
+          const whitelist = this.employee.capabilities.skillWhitelist;
+          if (whitelist && whitelist.type === 'allowlist' && !whitelist.skills.includes(taskDef.skillName)) {
+            MainAgent.log.warn('SKILL_NOT_ALLOWED: task 被员工策略拦截', {
+              employeeId: this.employee.employee.id,
+              skillName: taskDef.skillName,
+              whitelistType: whitelist.type,
+            });
+            throw new SkillError(
+              'SKILL_NOT_ALLOWED',
+              `skill "${taskDef.skillName}" 不在员工 "${this.employee.employee.id}" 的白名单中`,
+            );
+          }
+        }
+
+        // 计算 task 的最终 allowedTools(skill 声明 ∩ 员工 tools 策略)
+        //   1. skill metadata 优先(轻量);失败则降级到 loadFullSkill
+        //   2. 员工 ToolPolicy(白/黑名单)叠加
+        let skillAllowedTools: string[] | undefined;
+        try {
+          const meta = this.skillRegistry.getSkillMetadata?.(taskDef.skillName ?? '');
+          skillAllowedTools = meta?.allowedTools;
+        } catch {
+          // ignore - fall through to loadFullSkill
+        }
+        if (!skillAllowedTools && taskDef.skillName) {
+          try {
+            const full = await this.skillRegistry.loadFullSkill?.(taskDef.skillName);
+            skillAllowedTools = full?.allowedTools;
+          } catch {
+            // ignore
+          }
+        }
+        const allowed = computeAllowedTools(skillAllowedTools, this.employee.capabilities.tools);
+
+        // 构造 personaContext:把 ${displayName} 模板替换为员工 displayName
+        const displayName = this.employee.employee.displayName ?? '';
+        const personaPrefix = this.employee.persona?.prefix
+          ? this.employee.persona!.prefix.replace(/\$\{displayName\}/g, displayName)
+          : '';
 
         const requestTask: RequestTask = {
           taskId: uniqueTaskId,
@@ -1145,7 +1185,22 @@ export class MainAgent {
           result: null,
           questions: [],
           currentQuestion: null,
+          // Task 8: Master 注入 SubAgent 不再走 hook 的字段:
+          //   - _personaContext → SubAgent.execute → executeSkill 的 system prompt 拼接
+          //   - allowedTools    → SubAgent.execute → 工具过滤的最高优先级列表
+          _personaContext: personaPrefix
+            ? {
+                prefix: personaPrefix,
+                style: this.employee.persona?.style,
+                boundaries: this.employee.persona?.boundaries,
+              }
+            : undefined,
+          allowedTools: Array.from(allowed),
+        } as RequestTask & {
+          _personaContext?: import('./employee/types').PersonaContext;
+          allowedTools?: string[];
         };
+
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);
       }
 
@@ -1165,10 +1220,10 @@ export class MainAgent {
       const graph = this.buildTaskGraph(plan);
       let result: TaskResult;
       try {
-        // P3 race fix: 透传 processRequirement 注入的 executorFactory,让每个 task
-        // 绑定自己的 executor,跨请求并发时不会互相覆盖。
-        const executorFactory = options?.executorFactory;
-        result = await this.executeTaskGraph(graph, sessionId, userId, request, executorFactory);
+        // Task 8: executeTaskGraph 不再接受 executorFactory,executor 改由 TaskQueue
+        // 提供(Master 不再绑定具体 SubAgent 类型)。当前 bootstrap 仍注入默认 SubAgent,
+        // 后续 Task 11 删除 VirtualEmployee 后只保留纯 SubAgent。
+        result = await this.executeTaskGraph(graph, sessionId, userId, request);
       } finally {
         offTaskEvents();
       }
@@ -1540,17 +1595,16 @@ export class MainAgent {
   /**
    * 分层执行任务图（委托给 TaskGraphExecutor）
    *
-   * P3 race fix: 接受 executorFactory 参数,透传给 TaskGraphExecutor 让每个 task
-   * 绑定自己的 executor,跨请求并发时不会互相覆盖。
+   * Task 8 起 executorFactory 移除 — executor 由 TaskQueue 默认提供。
+   * TaskGraphExecutor.executeTaskGraph 仍保留该参数(向后兼容),此处不再传入。
    */
   private async executeTaskGraph(
     graph: TaskGraph,
     sessionId: string,
     userId: string,
     request: Request,
-    executorFactory?: (task: Task) => TaskExecutor | undefined,
   ): Promise<TaskResult> {
-    return this.taskGraphExecutor.executeTaskGraph(graph, sessionId, userId, request, executorFactory);
+    return this.taskGraphExecutor.executeTaskGraph(graph, sessionId, userId, request);
   }
 
   /**
