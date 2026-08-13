@@ -23,6 +23,27 @@ import { SystemSkillLoader, ExecutorRegistry } from './system-skills';
 import { BootstrapError } from './errors';
 import { loadEmployeeConfig } from './agents/employee/loader';
 
+/**
+ * 解析命令行参数,提取 --employee=<id> 或 --employee <id>。
+ * 不存在返回 undefined。
+ *
+ * 暴露为 export 供测试。
+ */
+export function parseEmployeeArg(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('--employee=')) {
+      const value = arg.slice('--employee='.length).trim();
+      return value || undefined;
+    }
+    if (arg === '--employee' && i + 1 < argv.length) {
+      const value = argv[i + 1].trim();
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
 // 端口优先级：命令行参数 > 环境变量 > 默认值 3000
 function getPort(): number {
   const cliArg = process.argv.find(arg => arg.startsWith('--port='));
@@ -144,14 +165,14 @@ async function bootstrap() {
 
     // 8. Create MainAgent（通过 DI 注入所有依赖）
     console.log('🧠 Initializing MainAgent...');
-    // Task 8: bootstrap 加载 EmployeeConfig 并注入到 MainAgent。
-    // TODO(Task 10): 解析 `--employee=<id>` CLI 参数(explicitId)传给 loadEmployeeConfig。
-    // 当前 commit 用兜底逻辑(目录中第一个 enabled JSON),兼容现有部署。
+    // Task 10: parse --employee=<id> CLI arg,fallback to first enabled JSON
+    const employeeId = parseEmployeeArg(process.argv);
     const { resolveResource: resolveAppResource } = await import('./utils/app-root');
     const employee = await loadEmployeeConfig({
+      explicitId: employeeId,
       directory: resolveAppResource('employees'),
     });
-    console.log(`✅ Employee loaded (id=${employee.employee.id})\n`);
+    console.log(`✅ Employee loaded (id=${employee.employee.id}${employeeId ? ` via --employee=${employeeId}` : ' via fallback'})\n`);
 
     const mainAgentDeps: MainAgentDependencies = {
       llm: llmClient,
