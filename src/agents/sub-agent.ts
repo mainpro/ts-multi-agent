@@ -160,8 +160,8 @@ export class SubAgent {
    * persona / 工具白名单 / skill 白名单 / 结果改写全部由 MainAgent(Master)负责:
    *   - persona 通过 `task._personaContext` 注入
    *   - 允许的工具通过 `task.allowedTools` 注入
-   *   - skill 白名单在 MainAgent 派单前校验
-   *   - 结果改写在 ResultAggregator 汇总时执行
+   *   - TODO(Task 8): skill 白名单校验由 MainAgent 在派单前完成(目前 SubAgent.execute 不再校验)
+   *   - TODO(Task 9): result 改写由 ResultAggregator 在汇总时执行(目前 SubAgent.execute 不再调用 rewriter)
    * SubAgent 只是纯粹的"执行器",不再持有任何员工身份。
    */
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
@@ -349,7 +349,10 @@ export class SubAgent {
 
     // P0-1: 工具过滤。优先级:task.allowedTools(Master 已按员工策略过滤)
     //       > skill.allowedTools > DEFAULT_SAFE_TOOLS
-    const allowedToolNames = (taskAllowedTools && taskAllowedTools.length > 0)
+    // 注意:用 `!== undefined` 而非 `length > 0` 区分「未设置」与「显式设为空」。
+    // task.allowedTools = [] 表示员工策略拒绝一切工具,必须原样生效,
+    // 不能回退到 skill.allowedTools 把刚被撤销的工具重新授予(fail-open 安全回归)。
+    const allowedToolNames = taskAllowedTools !== undefined
       ? new Set(taskAllowedTools)
       : (skill.allowedTools && skill.allowedTools.length > 0)
         ? new Set(skill.allowedTools)

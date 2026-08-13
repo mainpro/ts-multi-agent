@@ -2104,7 +2104,6 @@ git grep -l "VirtualEmployee\|virtualEmployeeResolver\|virtual-employee/\|virtua
 rm -rf src/agents/virtual-employee/
 rm __tests__/virtual-employee-*.test.ts
 rm __tests__/main-agent-employee-routing.test.ts
-rm __tests__/sub-agent-template-method.test.ts
 ```
 
 - [ ] **Step 3: 处理 Step 1 列出的剩余引用**
