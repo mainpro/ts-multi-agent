@@ -5,6 +5,7 @@ import { UserProfile } from '../types';
 import { buildSkillMatcherPrompt } from '../prompts';
 import { sessionContextService } from '../memory';
 import { createLogger } from '../observability/logger';
+import type { PersonaConfig } from '../agents/employee/types';
 
 const log = createLogger({ module: 'IntentRouter' });
 
@@ -76,20 +77,29 @@ export class IntentRouter {
     sessionId?: string,
     _proceduralExperience?: Array<{ skillName: string; usageCount: number; lastSuccess: boolean }>,
     _userId?: string,
+    persona?: PersonaConfig,
+    displayName?: string,
   ): Promise<IntentResult> {
     const startTime = Date.now();
 
     try {
       // LLM 判断（所有输入统一走 LLM）
+      const systemPrompt = this.buildSystemPrompt(persona, displayName);
       const result = await this.llmClassify(
         userInput,
         userProfile,
         recentHistory,
-        sessionId
+        sessionId,
+        systemPrompt,
       );
 
       const elapsed = Date.now() - startTime;
-      log.info('LLM 判断', { intent: result.intent, elapsed, confidence: result.confidence });
+      log.info('LLM 判断', {
+        intent: result.intent,
+        elapsed,
+        confidence: result.confidence,
+        personaId: persona?.prefix?.substring(0, 20),
+      });
 
       return result;
     } catch (error) {
@@ -108,6 +118,20 @@ export class IntentRouter {
   }
 
   /**
+   * 构造 system prompt,把 persona 拼到前面。
+   * ${displayName} 模板变量在此处替换。
+   */
+  private buildSystemPrompt(persona?: PersonaConfig, displayName?: string): string | undefined {
+    if (!persona) return undefined;
+    const dn = displayName ?? '';
+    const prefix = persona.prefix.replace(/\$\{displayName\}/g, dn);
+    const parts = [prefix];
+    if (persona.style) parts.push(`\n【风格】${persona.style}`);
+    if (persona.boundaries) parts.push(`\n【边界】${persona.boundaries}`);
+    return parts.join('');
+  }
+
+  /**
    * LLM 意图分类
    * 
    * 输入：用户输入 + 会话上下文 + 对话历史 + 技能列表
@@ -117,10 +141,15 @@ export class IntentRouter {
     userInput: string,
     userProfile?: UserProfile,
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
-    sessionId?: string
+    sessionId?: string,
+    personaSystemPrompt?: string,
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
-    const systemPrompt = buildSkillMatcherPrompt(skills);
+    const baseSystemPrompt = buildSkillMatcherPrompt(skills);
+    // persona 部分拼到 base 前面
+    const systemPrompt = personaSystemPrompt
+      ? `${personaSystemPrompt}\n\n${baseSystemPrompt}`
+      : baseSystemPrompt;
 
     // LLM 返回的 Schema
     const IntentSchema = z.object({
