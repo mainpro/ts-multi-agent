@@ -234,8 +234,24 @@ ${resultsContext}
 
       log.info(`📊 汇总判断: completed=${judgment.completed}`);
 
+      // 应用 resultRewriter(若配置)——必须在持久化之前完成,保证落库的 summary 与
+      // 返回给调用方的 summary 一致,避免重放丢失后缀(Final Review Minor #1 衍生)
+      // 双重门控:既匹配 match.status(默认 'completed'),又显式排除 'waiting_user_input'
+      // 后者复现 Task 7 删除的 SubAgent 守卫:防止给提问追加 "转人工" 后缀
+      if (this.rewriter) {
+        const targetStatus = this.rewriter.match?.status ?? 'completed';
+        const lastTaskStatus = taskResults[0]?.status ?? 'completed';
+        if (lastTaskStatus === targetStatus && lastTaskStatus !== 'waiting_user_input') {
+          judgment = {
+            ...judgment,
+            summary: this.applyRewriter(judgment.summary, this.rewriter),
+          };
+        }
+      }
+
       if (judgment.completed) {
         // L1+L4 同步写入助手最终回复(多任务汇总)
+        // 此时 judgment.summary 已经是改写后的版本,确保落库与返回一致
         try {
           await this.memoryService.saveAssistantMessage(userId, sessionId, judgment.summary, {
             requestId: request.requestId,
@@ -255,20 +271,6 @@ ${resultsContext}
           'summarizeRequest (summarizeResults)',
           (err) => log.error('请求摘要生成失败', { error: err }),
         );
-      }
-
-      // 应用 resultRewriter(若配置)
-      // 双重门控,既匹配 match.status(默认 'completed'),又显式排除 'waiting_user_input'
-      // 后者复现 Task 7 删除的 SubAgent 守卫:防止给提问追加 "转人工" 后缀(Final Review Minor #1)
-      if (this.rewriter) {
-        const targetStatus = this.rewriter.match?.status ?? 'completed';
-        const lastTaskStatus = taskResults[0]?.status ?? 'completed';
-        if (lastTaskStatus === targetStatus && lastTaskStatus !== 'waiting_user_input') {
-          judgment = {
-            ...judgment,
-            summary: this.applyRewriter(judgment.summary, this.rewriter),
-          };
-        }
       }
 
       return judgment;

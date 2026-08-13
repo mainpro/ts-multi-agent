@@ -186,4 +186,69 @@ describe('ResultAggregator resultRewriter', () => {
     );
     expect(summary.summary).toBe('原始答案');
   });
+
+  // ──────────────────────────────────────────────────────────────────────────────
+  // REGRESSION TEST (Task 9 review fix)
+  // ──────────────────────────────────────────────────────────────────────────────
+  // Bug: rewriter was applied AFTER saveAssistantMessage/completeRequest persisted
+  // `judgment.summary`. User-visible response carried the suffix, but persisted
+  // summary did not — replay would lose the suffix.
+  //
+  // This test asserts: the value persisted via saveAssistantMessage AND
+  // completeRequest must equal the post-rewriter summary.
+  // ──────────────────────────────────────────────────────────────────────────────
+  test('rewriter is applied BEFORE persistence (saved message == returned summary)', async () => {
+    const llm: ILLMClient = {
+      generateStructured: async () => ({ completed: true, summary: '原始答案' }),
+    } as unknown as ILLMClient;
+
+    const savedMessages: Array<{ content: string; opts?: any }> = [];
+    const completions: Array<{ requestId: string; result: string }> = [];
+
+    const memoryService = {
+      saveAssistantMessage: async (_u: string, _s: string, content: string, opts?: any) => {
+        savedMessages.push({ content, opts });
+      },
+      summarizeRequest: async () => {},
+    } as unknown as MemoryService;
+
+    const sessionStore = {
+      updateTaskInRequest: async () => {},
+      loadSession: async () => makeSession(makeRequest()),
+      completeRequest: async (_u: string, _s: string, requestId: string, result: string) => {
+        completions.push({ requestId, result });
+      },
+    } as unknown as SessionStore;
+
+    const rewriter: ResultRewriter = {
+      match: { status: 'completed' },
+      transform: 'append',
+      value: '\n\n---转人工',
+    };
+    const agg = new ResultAggregator(
+      llm, memoryService, sessionStore,
+      async () => ({ success: true, data: { response: '' } }) as TaskResult,
+      rewriter,
+    );
+
+    const returned = await agg.summarizeResults(
+      '需求',
+      [{ taskId: 't1', skillName: 's', requirement: 'r', response: '原始答案', status: 'completed' }],
+      'u1', 's1',
+      makeRequest(),
+    );
+
+    const expected = '原始答案\n\n---转人工';
+    // Returned summary is post-rewriter
+    expect(returned.summary).toBe(expected);
+    // Persisted via saveAssistantMessage must match returned summary
+    expect(savedMessages).toHaveLength(1);
+    expect(savedMessages[0].content).toBe(expected);
+    // Persisted via completeRequest must also match
+    expect(completions).toHaveLength(1);
+    expect(completions[0].result).toBe(expected);
+    // And the LLM-emitted pre-rewrite value must NOT appear alone in persistence
+    expect(savedMessages[0].content).not.toBe('原始答案');
+    expect(completions[0].result).not.toBe('原始答案');
+  });
 });
