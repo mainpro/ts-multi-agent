@@ -26,7 +26,8 @@ describe('IntentRouter.classify — persona 参数', () => {
   test('persona 不传 → systemPrompt 不含 persona prefix', async () => {
     const router = new IntentRouter(mockLlm, mockSkillRegistry);
     await router.classify('你好');
-    expect(capturedSystemPrompt ?? '').not.toContain('法务助理');
+    expect(capturedSystemPrompt).toBeDefined();
+    expect(capturedSystemPrompt).not.toContain('法务助理');
   });
 
   test('persona.prefix 传入 → systemPrompt 包含 persona prefix', async () => {
@@ -47,6 +48,8 @@ describe('IntentRouter.classify — persona 参数', () => {
       prefix: 'minimal persona',
     });
     expect(capturedSystemPrompt).toContain('minimal persona');
+    expect(capturedSystemPrompt).not.toContain('【风格】');
+    expect(capturedSystemPrompt).not.toContain('【边界】');
   });
 
   test('persona.template 变量 ${displayName} → 在拼 systemPrompt 前替换', async () => {
