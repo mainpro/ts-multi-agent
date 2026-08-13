@@ -98,6 +98,11 @@ export class TaskGraphExecutor {
 
   /**
    * 从 TaskPlan 构建 TaskGraph（拓扑排序分层）
+   *
+   * Task 8: plan.tasks[i] 上由 MainAgent 写入的 `_personaContext` / `allowedTools`
+   * 透传到 TaskGraphNode,后续 executeLayers 在构造运行时 Task 时再复制到 task,
+   * 这样 SubAgent.execute 能读到 Master 注入的 persona/tools(避免 RequestTask
+   * 路径上字段被吞)。
    */
   buildTaskGraph(plan: TaskPlan): TaskGraph {
     const nodes: TaskGraphNode[] = plan.tasks.map(t => ({
@@ -106,6 +111,8 @@ export class TaskGraphExecutor {
       skillName: t.skillName,
       dependencies: t.dependencies.map(depId => `${plan.id}-${depId}`),
       params: t.params || {},
+      _personaContext: t._personaContext,
+      allowedTools: t.allowedTools,
     }));
 
     const inDegree = new Map<string, number>();
@@ -277,7 +284,17 @@ export class TaskGraphExecutor {
           // process-global。即使后续 MainAgent 调用 setExecutor 覆盖了原值,
           // 已入队的 task 仍用自己绑定的 executor,避免跨请求并发互相污染。
           executor: executorFactory ? executorFactory({ id: taskId, requirement: node.content, skillName: node.skillName, dependencies: node.dependencies } as Task) : undefined,
+          // Task 8: 把 Master 注入的 persona/tools 从 TaskGraphNode 复制到运行时 Task。
+          // SubAgent.execute(task) 读这两个字段拼 system prompt / 过滤工具列表;
+          // 没有这个传递链,SubAgent 永远拿不到 Master 的注入,persona prefix 和
+          // 员工白/黑名单会全部失效。
         };
+        if (node._personaContext !== undefined) {
+          task._personaContext = node._personaContext;
+        }
+        if (node.allowedTools !== undefined) {
+          task.allowedTools = node.allowedTools;
+        }
 
         this.taskQueue.addTask(task);
         return this.onceTaskEvent(taskId);

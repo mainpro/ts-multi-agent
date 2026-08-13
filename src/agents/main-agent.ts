@@ -1175,6 +1175,21 @@ export class MainAgent {
           ? this.employee.persona!.prefix.replace(/\$\{displayName\}/g, displayName)
           : '';
 
+        // Task 8 (fix): 把 Master 注入的 persona/tools 写回 plan.tasks[i] 而不是只写 RequestTask。
+        // 原因:buildTaskGraph 从 plan.tasks 构建 TaskGraphNode,如果只挂在 RequestTask 上,
+        // executeLayers 构造运行时 Task 时拿不到这些字段,SubAgent.execute 永远读到 undefined,
+        // persona prefix 与员工白/黑名单失效。RequestTask 同样保留这两个字段(用于持久化和兼容),
+        // 但真正喂给 SubAgent 的是 plan.tasks → TaskGraphNode → 运行时 Task 这条链。
+        const personaContext = personaPrefix
+          ? {
+              prefix: personaPrefix,
+              style: this.employee.persona?.style,
+              boundaries: this.employee.persona?.boundaries,
+            }
+          : undefined;
+        taskDef._personaContext = personaContext;
+        taskDef.allowedTools = Array.from(allowed);
+
         const requestTask: RequestTask = {
           taskId: uniqueTaskId,
           content: taskDef.requirement,
@@ -1185,20 +1200,8 @@ export class MainAgent {
           result: null,
           questions: [],
           currentQuestion: null,
-          // Task 8: Master 注入 SubAgent 不再走 hook 的字段:
-          //   - _personaContext → SubAgent.execute → executeSkill 的 system prompt 拼接
-          //   - allowedTools    → SubAgent.execute → 工具过滤的最高优先级列表
-          _personaContext: personaPrefix
-            ? {
-                prefix: personaPrefix,
-                style: this.employee.persona?.style,
-                boundaries: this.employee.persona?.boundaries,
-              }
-            : undefined,
+          _personaContext: personaContext,
           allowedTools: Array.from(allowed),
-        } as RequestTask & {
-          _personaContext?: import('./employee/types').PersonaContext;
-          allowedTools?: string[];
         };
 
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);

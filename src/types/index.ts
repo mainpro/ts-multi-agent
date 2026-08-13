@@ -138,6 +138,15 @@ export interface RequestTask {
   conversationContext?: Task['conversationContext'];
   completedToolCalls?: CompletedToolCall[];
   executionProgress?: string;
+  /**
+   * Task 8: Master 注入的 persona 上下文(也写入 plan.tasks,真正喂给 SubAgent 的是 plan 路径,
+   * 这里保留用于持久化和兼容)。
+   */
+  _personaContext?: PersonaContext;
+  /**
+   * Task 8: 同上,Master 注入的过滤后工具列表。
+   */
+  allowedTools?: string[];
 }
 
 /** 请求 */
@@ -491,6 +500,15 @@ export interface TaskPlan {
     skillName: string;
     params?: Record<string, unknown>;
     dependencies: string[];
+    /**
+     * Task 8:由 MainAgent 在派单前写入。buildTaskGraph 透传到 TaskGraphNode,
+     * 再由 executeLayers 复制到运行时 Task,SubAgent 读取。
+     */
+    _personaContext?: PersonaContext;
+    /**
+     * Task 8:同上。skill.allowedTools ∩ employee.tools 的最终结果。
+     */
+    allowedTools?: string[];
   }>;
 }
 
@@ -508,6 +526,17 @@ export interface TaskGraphNode {
   dependencies: string[];
   /** 任务参数（可能引用上游任务输出，如 "$task-1.result"） */
   params?: Record<string, unknown>;
+  /**
+   * Master 注入的 persona 上下文(可选)。
+   * Task 8:由 MainAgent 写入 TaskPlan → buildTaskGraph 传递到 TaskGraphNode,
+   * executeLayers 在构造运行时 Task 时再复制过去,SubAgent 读取。
+   */
+  _personaContext?: PersonaContext;
+  /**
+   * Master 注入的过滤后工具列表(skill.allowedTools ∩ employee.tools 的结果)。
+   * Task 8:同上,由 MainAgent 通过 TaskPlan → TaskGraphNode → 运行时 Task 传递。
+   */
+  allowedTools?: string[];
 }
 
 /**
@@ -826,6 +855,8 @@ export const TaskPlanSchema = z.object({
     skillName: z.string(),
     params: z.record(z.unknown()).optional(),
     dependencies: z.array(z.string()),
+    _personaContext: z.unknown().optional(),
+    allowedTools: z.array(z.string()).optional(),
   })),
 });
 
