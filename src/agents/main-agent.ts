@@ -330,7 +330,6 @@ export class MainAgent {
     } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
     // ===== Employee routing(Task 8)=====
-    // Task 6/7 时代的 VirtualEmployeeResolver 已被本类持有的 employee 配置取代:
     //   - persona / tools / planning 由 this.employee 统一提供
     //   - executeTaskGraph 不再需要 executorFactory(TaskQueue 默认 executor 接管)
     // 注:options.employeeId 仍保留(API 层可能传入 @mention hint),暂时仅作为日志。
@@ -1225,8 +1224,8 @@ export class MainAgent {
       let result: TaskResult;
       try {
         // Task 8: executeTaskGraph 不再接受 executorFactory,executor 改由 TaskQueue
-        // 提供(Master 不再绑定具体 SubAgent 类型)。当前 bootstrap 仍注入默认 SubAgent,
-        // 后续 Task 11 删除 VirtualEmployee 后只保留纯 SubAgent。
+        // 提供(Master 不再绑定具体 SubAgent 类型)。bootstrap 注入默认 SubAgent,
+        // persona/tools 由 MainAgent 派单时注入。
         result = await this.executeTaskGraph(graph, sessionId, userId, request);
       } finally {
         offTaskEvents();

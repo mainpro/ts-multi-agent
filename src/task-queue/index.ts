@@ -52,12 +52,13 @@ export class TaskQueue {
   }
 
   /**
-   * Replace the task executor. Exposed for VirtualEmployee routing — the agent
-   * can swap the executor per request to route tasks to a selected employee.
+   * Replace the task executor. Reserved for future routing use cases —
+   * the agent can swap the executor per request to route tasks to a
+   * different handler (e.g. a specialized executor).
    *
    * Note: the new executor is NOT auto-restored. The sole caller
    * (MainAgent._processRequirementInner) deliberately lets the swap persist so
-   * subsequent requests re-resolve and re-swap to a fresh employee.
+   * subsequent requests re-resolve and re-swap to a fresh executor.
    */
   setExecutor(executor: TaskExecutor): void {
     this.executor = executor;
