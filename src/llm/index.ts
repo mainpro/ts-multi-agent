@@ -215,6 +215,12 @@ interface GLMResponse {
 
 type LLMProvider = 'siliconflow' | 'haier';
 
+export interface LLMClientOptions {
+  provider?: LLMProvider;
+  temperature?: number;
+  maxTokens?: number;
+}
+
 interface ProviderCapabilities {
   supportsReasoning: boolean;
   supportsStreaming: boolean;
@@ -249,8 +255,9 @@ export class LLMClient implements ILLMClient {
   private maxRetries: number;
   private provider: LLMProvider;
   private capabilities: ProviderCapabilities;
-  
-  
+  private maxTokensOverride?: number;
+
+
   // Semaphore for limiting concurrent LLM requests
   private static semaphore = {
     max: CONFIG.LLM_MAX_CONCURRENT_REQUESTS,
@@ -262,9 +269,10 @@ export class LLMClient implements ILLMClient {
   /**
    * Create a new LLM client
    * @param apiKey - API key (defaults to SILICONFLOW_API_KEY or HAIER_API_KEY env var)
+   * @param options - 可选 override(provider / temperature / maxTokens),用于 employee-level 配置
    */
-  constructor(apiKey?: string) {
-    this.provider = (process.env.LLM_PROVIDER || 'siliconflow') as LLMProvider;
+  constructor(apiKey?: string, options: LLMClientOptions = {}) {
+    this.provider = (options.provider ?? (process.env.LLM_PROVIDER || 'siliconflow')) as LLMProvider;
     this.capabilities = PROVIDER_CONFIGS[this.provider];
 
     if (apiKey) {
@@ -280,9 +288,11 @@ export class LLMClient implements ILLMClient {
     // 优先级:LLM_BASE_URL 环境变量(proxy 场景) > provider 的默认 endpoint
     this.baseUrl = (CONFIG.LLM_BASE_URL || PROVIDER_CONFIGS[this.provider].defaultBaseUrl).replace(/\/$/, '');
     this.model = CONFIG.LLM_MODEL;
-    this.temperature = CONFIG.LLM_TEMPERATURE;
+    // temperature:options 优先,CONFIG 兜底
+    this.temperature = options.temperature ?? CONFIG.LLM_TEMPERATURE;
     this.timeoutMs = CONFIG.LLM_TIMEOUT_MS;
     this.maxRetries = 3;
+    this.maxTokensOverride = options.maxTokens;
 
     if (!this.apiKey) {
       throw new LLMError(
@@ -382,7 +392,7 @@ export class LLMClient implements ILLMClient {
         return msg;
       }),
       temperature: this.temperature,
-      max_tokens: CONFIG.LLM_MAX_TOKENS || 4096,
+      max_tokens: this.maxTokensOverride ?? (CONFIG.LLM_MAX_TOKENS || 4096),
     };
 
     if (this.capabilities.supportsReasoning) {
