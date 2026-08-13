@@ -70,8 +70,14 @@ export class UnifiedPlanner {
   /**
    * 执行统一规划
    * 一次 LLM 调用完成：需求分析 + 技能匹配 + 任务规划
+   *
+   * @param requirement 用户需求
+   * @param opts 可选参数, hint 为拆解偏好,会注入到 userPrompt 末尾的【拆解偏好】段落
    */
-  async plan(requirement: string): Promise<PlanResult> {
+  async plan(
+    requirement: string,
+    opts: { hint?: string } = {},
+  ): Promise<PlanResult> {
     log.info('开始统一规划', { requirement });
 
     const allSkills = this.skillRegistry.getAllMetadata();
@@ -88,7 +94,7 @@ export class UnifiedPlanner {
 
   const systemPrompt = buildTaskPlannerPrompt(allSkills);
 
-  const userPrompt = `需求: "${requirement}"`;
+  const userPrompt = this.buildPrompt(requirement, opts.hint);
 
   try {
     log.info('发送统一规划请求');
@@ -162,6 +168,16 @@ export class UnifiedPlanner {
         clarificationPrompt: `抱歉，处理请求时发生错误。请稍后重试或换一种方式描述您的需求。`,
       };
     }
+  }
+
+  /**
+   * 构造 user prompt,仅在末尾追加【拆解偏好】段落(若 hint 存在),
+   * 不改动原有 base 部分(保持与未传 hint 时的兼容行为)。
+   */
+  private buildPrompt(requirement: string, hint?: string): string {
+    const base = `需求: "${requirement}"`;
+    const hintSection = hint ? `\n\n【拆解偏好】\n${hint}` : '';
+    return base + hintSection;
   }
 }
 
