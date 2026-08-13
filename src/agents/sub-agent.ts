@@ -26,16 +26,11 @@ import {
 import { UnknownToolLoopGuard } from './unknown-tool-guard';
 import { attributionCounter } from '../observability/attribution';
 import { skillCalls, skillLatency, skillErrors } from '../observability/metrics';
+import { DEFAULT_SAFE_TOOLS as DEFAULT_SAFE_TOOL_LIST } from './employee/tools';
+import type { PersonaContext } from './employee/types';
 
-// P0-1: 默认安全工具白名单（仅包含 ToolRegistry 中实际注册的只读工具）
-const DEFAULT_SAFE_TOOLS = new Set([
-  'conversation-get',
-  'read',
-  'glob',
-  'grep',
-  'ask_user',  // 新增：ask_user 工具为只读工具
-  'append_improvement',  // SubAgent 自我审查：记录技能执行中发现的质量问题
-]);
+// P0-1: 默认安全工具白名单（单一定义在 employee/tools.ts，此处只做 Set 化）
+const DEFAULT_SAFE_TOOLS = new Set(DEFAULT_SAFE_TOOL_LIST);
 
 /** 子智能体执行结果（内部使用，包含断点续执行所需的上下文） */
 interface SubAgentInternalResult extends SkillExecutionResult {
@@ -160,53 +155,20 @@ export class SubAgent {
   }
 
   /**
-   * ===== VirtualEmployee template hooks (default no-op for SubAgent) =====
-   * Subclasses (VirtualEmployee) override these to express business personality.
-   * Default implementations preserve SubAgent behavior bit-for-bit:
-   *   - no persona prefix
-   *   - no skill whitelist (null = allow all)
-   *   - no result rewriting (null = passthrough)
+   * 执行任务。
+   *
+   * persona / 工具白名单 / skill 白名单 / 结果改写全部由 MainAgent(Master)负责:
+   *   - persona 通过 `task._personaContext` 注入
+   *   - 允许的工具通过 `task.allowedTools` 注入
+   *   - skill 白名单在 MainAgent 派单前校验
+   *   - 结果改写在 ResultAggregator 汇总时执行
+   * SubAgent 只是纯粹的"执行器",不再持有任何员工身份。
    */
-  protected systemPromptPrefix(): string {
-    return '';
-  }
-
-  protected allowedSkillNames(): Set<string> | null {
-    return null;
-  }
-
-  protected resultRewriter(): ((rawResult: string) => string) | null {
-    return null;
-  }
-
-  /**
-   * 用于日志/错误消息中的员工标识。SubAgent 默认无员工概念,返回 'unknown'。
-   * VirtualEmployee 重写此 hook 返回其 config.id。
-   */
-  protected configId(): string {
-    return 'unknown';
-  }
-
   async execute(task: Task, signal?: AbortSignal): Promise<TaskResult> {
     const previousAgent = llmEvents.getAgent();
     llmEvents.setAgent('SubAgent');
 
     try {
-      // ===== VirtualEmployee template hook: skill 白名单校验 =====
-      // 子类可通过 override allowedSkillNames() 加白名单;默认 null = 放行所有
-      const allowed = this.allowedSkillNames();
-      if (allowed instanceof Set && task.skillName && !allowed.has(task.skillName)) {
-        const empId = this.configId();
-        this.log.warn('虚拟员工 skill 白名单拒绝', {
-          employeeId: empId,
-          skillName: task.skillName,
-        });
-        throw new SkillError(
-          'SKILL_NOT_ALLOWED',
-          `虚拟员工 ${empId} 不允许调用 skill: ${task.skillName}`,
-        );
-      }
-
       this.log.debug('任务入口', { taskId: task.id, skillName: task.skillName, userId: task.userId, params: task.params ? Object.keys(task.params) : [] });
 
       // ===== v2: 断点续执行检测 =====
@@ -236,6 +198,8 @@ export class SubAgent {
         task.questionHistory,
         task.conversationContext,   // v2: 传入保存的对话上下文
         task.completedToolCalls,    // v2: 传入已完成的工具调用
+        task._personaContext,       // Master 注入的 persona 上下文
+        task.allowedTools,          // Master 注入的工具白名单
         signal
       );
 
@@ -267,13 +231,8 @@ export class SubAgent {
       // 旧 remember(procedural) 已由 L3 summarizeRequest 在请求完成时统一处理,
       // 此处不再单独调用(避免重复写入且无 sessionId 归属)。
 
-      // ===== VirtualEmployee template hook: result 改写器 =====
-      const rewriter = this.resultRewriter();
-      // 仅在 completed 状态改写(避免对 waiting_user_input 的提问内容追加"转人工"尾注)
-      const shouldRewrite = rewriter && cleanResult.status !== 'waiting_user_input';
-      const finalResult = shouldRewrite ? rewriter!(cleanResult.response ?? '') : cleanResult.response;
-
-      return { success: true, data: { ...cleanResult, response: finalResult } };
+      // 结果改写(转人工尾注等)已上移到 ResultAggregator,SubAgent 原样返回。
+      return { success: true, data: cleanResult };
     } catch (error) {
       throw mapSubAgentError(error);
     } finally {
@@ -304,6 +263,8 @@ export class SubAgent {
     questionHistory?: QuestionHistoryEntry[],
     conversationContext?: Message[],          // v2: 断点续执行上下文
     completedToolCalls?: CompletedToolCall[], // v2: 已完成的工具调用
+    personaContext?: PersonaContext,          // Master 注入的 persona(无则退化为纯 skill body)
+    taskAllowedTools?: string[],              // Master 注入的工具白名单(优先于 skill.allowedTools)
     signal?: AbortSignal
   ): Promise<SubAgentInternalResult> {
     const skillRootDir = resolveResource('skills', skill.name);
@@ -362,11 +323,15 @@ export class SubAgent {
       this.log.warn('上下文加载失败，继续执行', { error: (err as Error).message });
     }
 
-    // ===== VirtualEmployee template hook: persona prefix =====
-    const personaPrefix = this.systemPromptPrefix() ?? '';
+    // ===== persona 上下文(由 MainAgent 通过 task._personaContext 注入) =====
+    const personaPrefix = personaContext?.prefix ?? '';
+    const personaAdditions = [
+      personaContext?.style ? `\n\n【风格】${personaContext.style}` : '',
+      personaContext?.boundaries ? `\n\n【边界】${personaContext.boundaries}` : '',
+    ].join('');
     const skillBodyWithPersona = personaPrefix
-      ? `${personaPrefix}\n\n${skill.body}`
-      : skill.body;
+      ? `${personaPrefix}\n\n${skill.body}${personaAdditions}`
+      : `${skill.body}${personaAdditions}`;
 
     // ===== v2: 构建增强的 system prompt =====
     const systemPrompt = await buildSubAgentPrompt(
@@ -382,10 +347,13 @@ export class SubAgent {
 
     const allTools = this.toolRegistry.list();
 
-    // P0-1: 根据 allowedTools 过滤工具（直接使用 execute 中已加载的 skill，避免重复加载）
-    const allowedToolNames = (skill.allowedTools && skill.allowedTools.length > 0)
-      ? new Set(skill.allowedTools)
-      : DEFAULT_SAFE_TOOLS;
+    // P0-1: 工具过滤。优先级:task.allowedTools(Master 已按员工策略过滤)
+    //       > skill.allowedTools > DEFAULT_SAFE_TOOLS
+    const allowedToolNames = (taskAllowedTools && taskAllowedTools.length > 0)
+      ? new Set(taskAllowedTools)
+      : (skill.allowedTools && skill.allowedTools.length > 0)
+        ? new Set(skill.allowedTools)
+        : DEFAULT_SAFE_TOOLS;
 
     const filteredTools = allTools.filter((tool: any) => allowedToolNames.has(tool.name));
 

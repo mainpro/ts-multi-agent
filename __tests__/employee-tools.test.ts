@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { computeAllowedTools } from '../src/agents/employee/tools';
 
-const DEFAULT_SAFE = ['conversation-get', 'read', 'glob', 'grep', 'ask_user'];
+const DEFAULT_SAFE = ['conversation-get', 'read', 'glob', 'grep', 'ask_user', 'append_improvement'];
 
 describe('computeAllowedTools', () => {
   test('skill.allowedTools 存在，无 employee tools → 用 skill 白名单', () => {

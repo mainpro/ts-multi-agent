@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as dotenv from 'dotenv';
 import { resolveResource } from '../utils/app-root';
 import type { TaskExecutor } from '../task-queue';
+import type { PersonaContext } from '../agents/employee/types';
 
 // ============================================================================
 // Tool System Types (re-exported for convenience)
@@ -321,6 +322,21 @@ export interface Task {
   // P3 race fix: per-task executor, 让 executor 跟随 task 而不是 process-global。
   // 未设置时,TaskQueue 回退到默认 this.executor(back-compat)。
   executor?: TaskExecutor;
+
+  // ===== 数字员工上下文(由 MainAgent 注入,SubAgent 只读) =====
+
+  /**
+   * Master 注入的 persona 上下文(可选,无 persona 时为 undefined)。
+   * SubAgent 读取此字段拼接 system prompt,不再有 persona hook。
+   * 下划线前缀表示"内部传输字段",不参与业务语义。
+   */
+  _personaContext?: PersonaContext;
+
+  /**
+   * Master 注入的过滤后工具列表(skill.allowedTools ∩ employee.tools 的结果)。
+   * 存在且非空时优先于 skill.allowedTools。
+   */
+  allowedTools?: string[];
 }
 
 /**

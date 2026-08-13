@@ -1,16 +1,18 @@
 import type { ToolPolicy } from './json-types';
 
 /**
- * 工具白名单（主入口的最小安全集合）。
- * 与 src/agents/sub-agent.ts 的 DEFAULT_SAFE_TOOLS 基本一致（只读工具集合），
- * 此处独立定义避免循环依赖（tools.ts 不依赖 SubAgent）。
+ * 工具白名单(默认安全集合 = 只读工具 + 自我审查工具)。
+ *
+ * 这是全局唯一定义:`src/agents/sub-agent.ts` 直接 import 本常量,
+ * 避免两处副本漂移。tools.ts 不依赖 SubAgent,故无循环依赖。
  */
 export const DEFAULT_SAFE_TOOLS: readonly string[] = [
   'conversation-get',
   'read',
   'glob',
   'grep',
-  'ask_user',
+  'ask_user',           // 只读:向用户提问
+  'append_improvement', // SubAgent 自我审查:记录技能执行中发现的质量问题
 ];
 
 /**
