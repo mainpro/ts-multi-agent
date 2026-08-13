@@ -133,6 +133,7 @@ export class MainAgent {
       llm, memoryService, sessionStore,
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
+      this.employee.outputBehavior?.resultRewriter,
     );
     this.gate = new SessionGate(sessionStore);
     // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.

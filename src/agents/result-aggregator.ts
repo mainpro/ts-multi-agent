@@ -7,6 +7,7 @@ import { fireAndForget } from '../utils/fire-and-forget';
 import { taskEvents } from '../events/task-events';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
+import type { ResultRewriter } from './employee/types';
 
 const log = createLogger({ module: 'ResultAggregator' });
 import {
@@ -29,6 +30,8 @@ import {
  * MainAgent.processNormalRequirement，通过构造函数注入的回调实现。
  */
 export class ResultAggregator {
+  private rewriter?: ResultRewriter;
+
   constructor(
     private llm: ILLMClient,
     private memoryService: MemoryService,
@@ -36,7 +39,28 @@ export class ResultAggregator {
     private onNeedsIntentReclassification: (
       request: Request, userId: string, sessionId: string,
     ) => Promise<TaskResult>,
-  ) {}
+    rewriter?: ResultRewriter,
+  ) {
+    this.rewriter = rewriter;
+  }
+
+  /**
+   * 应用 ResultRewriter.transform。
+   * 三种 transform:
+   *  - append: text + value
+   *  - passthrough: text 原样返回
+   *  - replace: value 替换 text
+   */
+  private applyRewriter(text: string, rewriter: ResultRewriter): string {
+    switch (rewriter.transform) {
+      case 'append':
+        return text + (rewriter.value ?? '');
+      case 'passthrough':
+        return text;
+      case 'replace':
+        return rewriter.value ?? text;
+    }
+  }
 
   /**
    * 处理任务完成
@@ -162,7 +186,7 @@ export class ResultAggregator {
    */
   async summarizeResults(
     originalRequirement: string,
-    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string }>,
+    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string; status?: string }>,
     userId: string,
     sessionId: string,
     request: Request,
@@ -198,7 +222,7 @@ ${resultsContext}
         tasksCount: taskResults.length,
       });
 
-      const judgment = await this.llm.generateStructured(prompt, z.object({
+      let judgment = await this.llm.generateStructured(prompt, z.object({
         completed: z.boolean(),
         summary: z.string(),
       }));
@@ -231,6 +255,20 @@ ${resultsContext}
           'summarizeRequest (summarizeResults)',
           (err) => log.error('请求摘要生成失败', { error: err }),
         );
+      }
+
+      // 应用 resultRewriter(若配置)
+      // 双重门控,既匹配 match.status(默认 'completed'),又显式排除 'waiting_user_input'
+      // 后者复现 Task 7 删除的 SubAgent 守卫:防止给提问追加 "转人工" 后缀(Final Review Minor #1)
+      if (this.rewriter) {
+        const targetStatus = this.rewriter.match?.status ?? 'completed';
+        const lastTaskStatus = taskResults[0]?.status ?? 'completed';
+        if (lastTaskStatus === targetStatus && lastTaskStatus !== 'waiting_user_input') {
+          judgment = {
+            ...judgment,
+            summary: this.applyRewriter(judgment.summary, this.rewriter),
+          };
+        }
       }
 
       return judgment;
