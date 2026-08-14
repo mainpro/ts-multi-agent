@@ -37,10 +37,20 @@ export const LLMConfigSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
 });
 
+export const ExecutionSchema = z.object({
+  maxRetries: z.number().int().min(0).max(10).optional().default(2),
+  retryableErrorTypes: z.array(z.string()).optional()
+    .default(['TIMEOUT', 'NETWORK_ERROR', 'API_ERROR']),
+  transferOnPartialFailure: z.boolean().optional().default(false),
+});
+
+export type ExecutionConfig = z.infer<typeof ExecutionSchema>;
+
 export const CapabilitiesSchema = z.object({
   skillWhitelist: SkillWhitelistSchema.optional(),
   tools: ToolPolicySchema.optional(),
   llm: LLMConfigSchema,
+  execution: ExecutionSchema.optional(),
 });
 
 // ── 规划层 ──
