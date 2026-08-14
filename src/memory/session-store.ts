@@ -370,7 +370,13 @@ export class SessionStore {
   /**
    * 完成请求
    */
-  async completeRequest(userId: string, sessionId: string, requestId: string, result: string): Promise<void> {
+  async completeRequest(
+    userId: string,
+    sessionId: string,
+    requestId: string,
+    result: string,
+    options?: { partialFailure?: boolean; failedTaskIds?: string[] },
+  ): Promise<void> {
     const session = await this.loadSession(userId, sessionId);
     const request = session.requests.find(r => r.requestId === requestId);
     if (!request) return;
@@ -378,11 +384,24 @@ export class SessionStore {
     request.result = result;
     request.updatedAt = new Date().toISOString();
 
+    // P5: 部分失败标志(只在显式提供 options 时设置,避免污染已有数据)
+    if (options?.partialFailure !== undefined) {
+      request.partialFailure = options.partialFailure;
+    }
+    if (options?.failedTaskIds !== undefined) {
+      request.failedTaskIds = options.failedTaskIds;
+    }
+
     // Use syncRequestStatus to derive status from tasks instead of hardcoding 'completed'.
     // This prevents race conditions where a task was set to waiting_user_input
     // (with currentQuestion) but completeRequest overwrote it to 'completed',
     // causing subsequent user messages to not find the waiting request.
-    if (request.tasks.length > 0) {
+    //
+    // P5: 部分失败时,保留 status='completed'(partialFailure flag 传达细节),
+    // 避免 syncRequestStatus 因 some task failed 而推成 'failed'。
+    if (options?.partialFailure === true) {
+      request.status = 'completed';
+    } else if (request.tasks.length > 0) {
       this.syncRequestStatus(request);
     } else {
       request.status = 'completed';
@@ -406,7 +425,7 @@ export class SessionStore {
     }
 
     await this.saveSession(userId, sessionId, session);
-    log.info('完成请求', { requestId, status: request.status });
+    log.info('完成请求', { requestId, status: request.status, partialFailure: request.partialFailure });
   }
 
   /**
