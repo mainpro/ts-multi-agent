@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
 import { AppError } from '../errors';
+import { LLMError } from '../llm';
 import { createLogger } from '../observability/logger';
 
 const log = createLogger({ module: 'TaskQueue' });
@@ -17,6 +18,11 @@ export type TaskExecutor = (task: Task, signal?: AbortSignal) => Promise<unknown
  * - State machine: pending → running → completed/failed
  */
 export class TaskQueue {
+  // NOTE: spec mandates production backoff = base 2000ms / max 60000ms with
+  // ±1s jitter. Tests pass smaller values via the constructor's `retryBackoff`
+  // option so retry waits stay fast (50-200ms total). The exponential-backoff
+  // algorithm itself (base * 2^(attempt-1), capped at max) is unchanged.
+
   private readonly MAX_RESULT_SIZE = 1024 * 1024; // 1MB
   private tasks: Map<string, Task> = new Map();
   private running: Set<string> = new Set();
@@ -28,6 +34,8 @@ export class TaskQueue {
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private cleanupIntervalMs: number;
   private retentionTimeMs: number;
+  private retryBaseDelayMs: number;
+  private retryMaxDelayMs: number;
   private emitter = new EventEmitter();
 
   private metrics = {
@@ -42,11 +50,14 @@ export class TaskQueue {
     executor: TaskExecutor,
     cleanupIntervalMs?: number,
     retentionTimeMs?: number,
+    retryBackoff?: { baseMs?: number; maxMs?: number },
   ) {
     this.executor = executor;
     this.cleanupIntervalMs =
       cleanupIntervalMs ?? CONFIG.TASK_CLEANUP_INTERVAL_MS;
     this.retentionTimeMs = retentionTimeMs ?? CONFIG.TASK_RETENTION_TIME_MS;
+    this.retryBaseDelayMs = retryBackoff?.baseMs ?? 2000;
+    this.retryMaxDelayMs = retryBackoff?.maxMs ?? 60000;
 
     this.startCleanupInterval();
   }
@@ -453,6 +464,25 @@ export class TaskQueue {
     return { tasks: ready, hasReady: ready.length > 0 };
   }
 
+  private shouldRetry(err: unknown, retryableTypes: Set<string>): boolean {
+    if (err instanceof LLMError) {
+      if (!retryableTypes.has(err.type)) return false;
+      // API_ERROR 仅在 statusCode >= 500 时重试(4xx 是客户端错,无意义)
+      if (err.type === 'API_ERROR' && (err.statusCode ?? 0) < 500) return false;
+      return true;
+    }
+    return false;
+  }
+
+  private getRetryBackoffMs(attempt: number): number {
+    // attempt = 1 表示第 1 次重试,2 表示第 2 次
+    const base = this.retryBaseDelayMs;
+    const max = this.retryMaxDelayMs;
+    const exp = Math.min(base * Math.pow(2, attempt - 1), max);
+    // ±1s jitter per spec
+    return exp + Math.random() * 1000;
+  }
+
   private async executeTask(task: Task): Promise<void> {
     task.status = "running";
     task.startedAt = new Date();
@@ -469,22 +499,67 @@ export class TaskQueue {
     }, CONFIG.TASK_TIMEOUT_MS);
     this.timeoutHandles.set(task.id, timeoutHandle);
 
+    // P5: 重试配置(从 task 取,无则用全局默认值)
+    const retryEnabled = CONFIG.PARTIAL_FAILURE_ENABLED;
+    const maxRetries = retryEnabled ? (task.maxRetries ?? 2) : 0;
+    const retryableTypes = new Set(
+      task.retryableErrorTypes ?? ['TIMEOUT', 'NETWORK_ERROR', 'API_ERROR'],
+    );
+    // 确保 retryCount 是 number(首次执行时为 0,executor 内部可读取)
+    if (task.retryCount === undefined) {
+      task.retryCount = 0;
+    }
+
+    let lastError: unknown;
+    let retryExhausted = false;
+
     try {
-      log.info('开始执行任务', { taskId: task.id });
-      // P3 race fix: 优先用 task 自带的 executor(),fall back 到 this.executor。
-      // 这样 executor 跟随 task 而不是 process-global,跨请求并发时不会互相覆盖。
-      const executor = task.executor ?? this.executor;
-      const result = await executor(task, controller.signal);
-      log.info('executor 返回成功', { taskId: task.id });
+      // 重试循环
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (attempt > 0) {
+          // 重试前:更新 retryCount + 退避
+          task.retryCount = (task.retryCount ?? 0) + 1;
+          const backoff = this.getRetryBackoffMs(attempt);
+          log.warn('task retry', {
+            taskId: task.id,
+            attempt,
+            maxRetries,
+            backoffMs: backoff,
+            previousError: lastError instanceof Error ? lastError.message : String(lastError),
+          });
+          await new Promise(r => setTimeout(r, backoff));
+        }
 
-      clearTimeout(timeoutHandle);
-      this.timeoutHandles.delete(task.id);
+        try {
+          log.info('开始执行任务', { taskId: task.id, attempt: attempt + 1 });
+          // P3 race fix: 优先用 task 自带的 executor(),fall back 到 this.executor。
+          // 这样 executor 跟随 task 而不是 process-global,跨请求并发时不会互相覆盖。
+          const executor = task.executor ?? this.executor;
+          const result = await executor(task, controller.signal);
+          log.info('executor 返回成功', { taskId: task.id, attempt: attempt + 1 });
 
-      const executionTime = Date.now() - startTime;
-      log.info('任务完成', { taskId: task.id, executionTime });
-      this.completeTask(task.id, result, executionTime);
+          clearTimeout(timeoutHandle);
+          this.timeoutHandles.delete(task.id);
+
+          const executionTime = Date.now() - startTime;
+          log.info('任务完成', { taskId: task.id, executionTime, attempts: attempt + 1 });
+          this.completeTask(task.id, result, executionTime);
+          return;
+        } catch (err) {
+          lastError = err;
+          if (!this.shouldRetry(err, retryableTypes) || attempt >= maxRetries) {
+            if (this.shouldRetry(err, retryableTypes) && attempt >= maxRetries) {
+              retryExhausted = true;
+            }
+            break;
+          }
+        }
+      }
+
+      // 走到这里说明重试耗尽或不可重试
+      throw lastError;
     } catch (error) {
-      log.error('executor 抛出异常', { taskId: task.id, error });
+      log.error('executor 抛出异常', { taskId: task.id, error, retryExhausted });
       clearTimeout(timeoutHandle);
       this.timeoutHandles.delete(task.id);
 
@@ -496,28 +571,40 @@ export class TaskQueue {
       if (isTimeout) {
         log.warn('任务超时', { taskId: task.id, executionTime });
       } else {
-        log.warn('任务失败', { taskId: task.id, executionTime });
+        log.warn('任务失败', { taskId: task.id, executionTime, retryExhausted });
       }
 
       // Preserve original AppError (type/code/statusCode) so downstream layers
       // (TaskGraphExecutor + global error handler) can honor the invariant
       // "thrown AppError → envelope with original type/code".
-      const taskError: TaskError =
-        error instanceof AppError
-          ? {
-              type: error.type,
-              code: error.code,
-              message: error.message,
-              statusCode: error.statusCode,
-              stack: error.stack,
-              originalError: error,
-            }
-          : {
-              type: "RETRYABLE",
-              message: error instanceof Error ? error.message : String(error),
-              stack: error instanceof Error ? error.stack : undefined,
-            };
-      this.failTask(task.id, taskError, isTimeout);
+      // LLMError is treated similarly (type/code mirrored) so retry exhaustion
+      // doesn't lose the original error classification. retryExhausted is
+      // tracked separately on the event payload, NOT mutated into code, so
+      // downstream consumers see the original classification.
+      const taskError: TaskError = error instanceof AppError
+        ? {
+            type: error.type,
+            code: error.code,
+            message: error.message,
+            statusCode: error.statusCode,
+            stack: error.stack,
+            originalError: error,
+          }
+        : error instanceof LLMError
+        ? {
+            type: error.type as unknown as TaskError['type'],
+            code: error.type,
+            message: error.message,
+            statusCode: error.statusCode,
+            stack: error.stack,
+            originalError: error,
+          }
+        : {
+            type: "RETRYABLE",
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+          };
+      this.failTask(task.id, taskError, isTimeout, retryExhausted);
     } finally {
       this.running.delete(task.id);
       this.processQueue();
@@ -570,6 +657,7 @@ export class TaskQueue {
     taskId: string,
     error: TaskError,
     isTimeout: boolean = false,
+    retryExhausted: boolean = false,
   ): void {
     const task = this.tasks.get(taskId);
     if (!task) {
@@ -586,7 +674,7 @@ export class TaskQueue {
       this.metrics.tasksFailed++;
     }
 
-    this.emitter.emit('task-failed', { taskId, error });
+    this.emitter.emit('task-failed', { taskId, error, retryExhausted });
     this.failDependents(taskId, error);
   }
 
