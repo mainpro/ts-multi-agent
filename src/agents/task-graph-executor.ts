@@ -474,10 +474,26 @@ export class TaskGraphExecutor {
       };
     }
 
-    // P5: 部分失败改为返回 hasPartialFailure,不再 throw
-    // 旧行为:throw SkillError(让上层走 catch)
-    // 新行为:返回 success: false + hasPartialFailure: true,让上层 MainAgent 决定路由
+    // P5: 区分全失败 vs 部分失败(spec §7.1)
+    // - 全失败(零成功):throw SkillError,保留 error-propagation-e2e 等测试期望的错误事件路径
+    // - 部分失败(部分成功):返回 hasPartialFailure=true,MainAgent 走汇总阶段
     if (layerResult.failedTasks.length > 0) {
+      const totalTasks = layerResult.failedTasks.length + allResults.length;
+      if (layerResult.failedTasks.length === totalTasks) {
+        // ALL failed → 保留 throw 行为(spec §7.1 failed 状态)
+        const firstFailure = layerResult.failedTasks[0];
+        // Preserve original AppError so the global error handler envelope
+        // (type/code/statusCode) reflects the upstream cause, not the wrapping layer.
+        if (firstFailure.error.originalError instanceof AppError) {
+          throw firstFailure.error.originalError;
+        }
+        throw new SkillError(
+          firstFailure.error.code || 'TASK_GRAPH_EXECUTION_FAILED',
+          firstFailure.error.message || 'Task graph execution failed',
+          { cause: firstFailure.error }
+        );
+      }
+      // 部分失败 → 返回 hasPartialFailure,MainAgent 走汇总
       log.warn('TaskGraph 部分失败,进入汇总阶段', {
         failedCount: layerResult.failedTasks.length,
         successCount: allResults.length,

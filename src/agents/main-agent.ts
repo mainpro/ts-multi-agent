@@ -129,11 +129,19 @@ export class MainAgent {
     this.employee = options?.employee ?? defaultEmptyEmployee();
 
     // resultAggregator 需要 processNormalRequirement 回调，循环依赖 → MainAgent 内创建
+    // P5: ResultAggregator 注入 transferHook(本期 noop)
+    // TODO(Task 13): 接外部工单系统时实现真实 hook
+    const transferHook: import('./result-aggregator').TransferToHumanHook = (_results) => {
+      // noop — 等真实转人工实现
+      return false;
+    };
+
     this.resultAggregator = new ResultAggregator(
       llm, memoryService, sessionStore,
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
       this.employee.outputBehavior?.resultRewriter,
+      transferHook,
     );
     this.gate = new SessionGate(sessionStore);
     // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.
@@ -1261,7 +1269,19 @@ export class MainAgent {
 
       // 检查是否有任务需要等待用户输入
       const resultData = result.data as any;
-      const taskResults = resultData?.results || [];
+      // P5: 合并成功 + 失败 task,让下游 taskList / summarizeResults 看到完整状态
+      // 修复:之前 taskResults 仅含成功 task,单 task 全失败时 taskList=[],
+      //     导致走入"多任务空数组"分支,summarizeResults LLM 收到空上下文。
+      const successResults = resultData?.results || [];
+      const failedAsResults = (resultData?.failedTasks || []).map((t: any) => ({
+        taskId: t.taskId,
+        skillName: t.skillName || '',
+        requirement: '',
+        response: '',
+        status: 'failed',
+        error: t.error,
+      }));
+      const taskResults = [...successResults, ...failedAsResults];
 
       // P0 闭环修复:R1 在 checkpoint 让位给了 R2,跳过后续汇总 / completeRequest。
       // R1.result 保持现状(null),R1.status='checkpoint_reached' 由 onTaskGraphCheckpoint
@@ -1282,6 +1302,17 @@ export class MainAgent {
             results: taskResults,
           },
         };
+      }
+
+      // P5: 部分失败 → 不走 throw 路径,继续到汇总
+      if (resultData?.hasPartialFailure) {
+        MainAgent.log.info('部分任务失败,进入汇总阶段', {
+          succeeded: resultData.results?.length || 0,
+          failed: resultData.failedTasks?.length || 0,
+          failedTaskIds: resultData.failedTasks?.map((t: any) => t.taskId) || [],
+        });
+        // 设置 result.success = true(因为请求本身没彻底失败),让汇总分支正常走
+        result = { ...result, success: true };
       }
 
       // 检查 executeTaskGraph 返回的 waitingTaskId
@@ -1363,8 +1394,15 @@ export class MainAgent {
         if (!finalResponse) {
           finalResponse = JSON.stringify(result.data);
         }
-        isCompleted = true;
-        await this.sessionStore.completeRequest(userId, sessionId, request.requestId, finalResponse);
+        isCompleted = taskList[0].status !== 'failed'; // P5: 部分失败时不算完成
+
+        // P5: 单任务也可能失败(TaskGraphExecutor 返回 failedTasks)
+        const failedIds = (resultData?.failedTasks || []).map((t: any) => t.taskId);
+        const isPartial = failedIds.length > 0;
+        await this.sessionStore.completeRequest(userId, sessionId, request.requestId, finalResponse, {
+          partialFailure: isPartial,
+          failedTaskIds: isPartial ? failedIds : undefined,
+        });
       } else {
         // 多任务：调用 LLM 汇总判断
         const summary = await this.summarizeResults(
@@ -1376,6 +1414,18 @@ export class MainAgent {
         );
         finalResponse = summary.summary;
         isCompleted = summary.completed;
+
+        // P5: 部分失败时,带 partialFailure 标志写入 completeRequest
+        if (summary.failedTaskIds.length > 0) {
+          try {
+            await this.sessionStore.completeRequest(userId, sessionId, request.requestId, finalResponse, {
+              partialFailure: true,
+              failedTaskIds: summary.failedTaskIds,
+            });
+          } catch (e) {
+            MainAgent.log.error('partial failure completeRequest 失败', { error: e });
+          }
+        }
       }
 
       // P2-1 修复:hasTransferRequest 已在前面短路返回,这里不再拼接 "转人工" 前缀
@@ -1527,14 +1577,16 @@ export class MainAgent {
 
   /**
    * 汇总任务结果，判断是否满足用户原始需求（委托给 ResultAggregator）
+   *
+   * P5: 返回 4 字段 — 包含 failedTaskIds / transferTriggered
    */
   private async summarizeResults(
     originalRequirement: string,
-    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string }>,
+    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string; status?: string }>,
     userId: string,
     sessionId: string,
     request: Request,
-  ): Promise<{ completed: boolean; summary: string }> {
+  ): Promise<{ completed: boolean; summary: string; failedTaskIds: string[]; transferTriggered: boolean }> {
     return this.resultAggregator.summarizeResults(originalRequirement, taskResults, userId, sessionId, request);
   }
 
