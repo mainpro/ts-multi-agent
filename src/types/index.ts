@@ -160,6 +160,16 @@ export interface Request {
   suspendedReason: string | null;
   questions: QAEntry[];
   currentQuestion: QAEntry | null;
+  /**
+   * P5: 部分失败标志。即使有 task 失败,只要经过重试+汇总就为 true。
+   * Request.status 仍是 'completed',本字段区分纯成功 vs 部分失败。
+   */
+  partialFailure?: boolean;
+  /**
+   * P5: 失败 task ID 列表(供前端展示 + 转人工用)。
+   * 仅在 partialFailure=true 时填充。
+   */
+  failedTaskIds?: string[];
   tasks: RequestTask[];
   result: string | null;
   /** 执行进度（用于断点续传，仅内存） */
@@ -272,6 +282,10 @@ export interface Task {
   startedAt?: Date;
   completedAt?: Date;
   createdAt?: Date;
+  /**
+   * P5: 当前已重试次数(首次执行为 0,每次重试 +1)
+   * TaskQueue 内部维护,不持久化
+   */
   retryCount?: number;
   params?: Record<string, unknown>;
   sessionId?: string;
@@ -331,6 +345,18 @@ export interface Task {
   // P3 race fix: per-task executor, 让 executor 跟随 task 而不是 process-global。
   // 未设置时,TaskQueue 回退到默认 this.executor(back-compat)。
   executor?: TaskExecutor;
+
+  /**
+   * P5: 主智能体注入的最大重试次数(来自 employee.execution.maxRetries)
+   * 0 = 不重试
+   */
+  maxRetries?: number;
+
+  /**
+   * P5: 可重试错误类型白名单(来自 employee.execution.retryableErrorTypes)
+   * undefined 时 TaskQueue 用默认值
+   */
+  retryableErrorTypes?: string[];
 
   // ===== 数字员工上下文(由 MainAgent 注入,SubAgent 只读) =====
 
@@ -624,6 +650,8 @@ export const CONFIG = {
   LLM_FALLBACK_CONFIG_PATH: process.env.LLM_FALLBACK_CONFIG_PATH || resolveResource('config', 'llm-fallback.json'),
   /** Whether LLM fallback chain is enabled (set false to disable) */
   LLM_FALLBACK_ENABLED: process.env.LLM_FALLBACK_ENABLED !== 'false',
+  /** P5: 是否启用部分失败处理(retry + mixed summary + transfer hook) */
+  PARTIAL_FAILURE_ENABLED: process.env.PARTIAL_FAILURE_ENABLED !== 'false',
   /** Embedding API base URL (e.g. https://api.siliconflow.cn/v1) */
   EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || '',
   /** Embedding API key (defaults to SILICONFLOW_API_KEY if not set) */
