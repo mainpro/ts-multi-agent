@@ -287,12 +287,17 @@ describe('ResultAggregator', () => {
       );
 
       const results = [
-        { taskId: 't-1', skillName: 'a', requirement: 'req1', response: 'ans1' },
-        { taskId: 't-2', skillName: 'b', requirement: 'req2', response: 'ans2' },
+        { taskId: 't-1', skillName: 'a', requirement: 'req1', response: 'ans1', status: 'completed' },
+        { taskId: 't-2', skillName: 'b', requirement: 'req2', response: 'ans2', status: 'completed' },
       ];
       const out = await agg.summarizeResults('orig', results, 'u', 's', request);
 
-      expect(out).toEqual({ completed: true, summary: 'final summary' });
+      expect(out).toEqual({
+        completed: true,
+        summary: 'final summary',
+        failedTaskIds: [],
+        transferTriggered: false,
+      });
       expect(state.llmCalls).toHaveLength(1);
       expect(state.llmCalls[0].prompt).toContain('ans1');
       expect(state.llmCalls[0].prompt).toContain('ans2');

@@ -29,8 +29,11 @@ import {
  * 注意：handleTaskCompletion 中遇到 needs_intent_reclassification 时需要回调
  * MainAgent.processNormalRequirement，通过构造函数注入的回调实现。
  */
+export type TransferToHumanHook = (taskResults: TaskResult[]) => boolean;
+
 export class ResultAggregator {
   private rewriter?: ResultRewriter;
+  private transferHook: TransferToHumanHook;
 
   constructor(
     private llm: ILLMClient,
@@ -40,8 +43,10 @@ export class ResultAggregator {
       request: Request, userId: string, sessionId: string,
     ) => Promise<TaskResult>,
     rewriter?: ResultRewriter,
+    transferHook?: TransferToHumanHook,
   ) {
     this.rewriter = rewriter;
+    this.transferHook = transferHook ?? (() => false);  // 默认 noop
   }
 
   /**
@@ -190,12 +195,19 @@ export class ResultAggregator {
     userId: string,
     sessionId: string,
     request: Request,
-  ): Promise<{ completed: boolean; summary: string }> {
+  ): Promise<{ completed: boolean; summary: string; failedTaskIds: string[]; transferTriggered: boolean }> {
     log.info(`📊 汇总 ${taskResults.length} 个任务结果...`);
 
-    const resultsContext = taskResults
-      .map((t, idx) => `任务${idx + 1} [${t.skillName}]: ${t.response}`)
-      .join('\n\n');
+    // P5: 拆分状态
+    const completedTasks = taskResults.filter(t => t.status === 'completed');
+    const failedTasks = taskResults.filter(t => t.status === 'failed');
+    const waitingTasks = taskResults.filter(t => t.status === 'waiting_user_input');
+
+    const resultsContext = [
+      ...completedTasks.map((t, idx) => `任务${idx + 1} [${t.skillName}]: ✅ ${t.response}`),
+      ...failedTasks.map((t, idx) => `任务${completedTasks.length + idx + 1} [${t.skillName}]: ❌ ${t.response || '执行失败'}`),
+      ...(waitingTasks.length > 0 ? [`⏸ 等待用户输入: ${waitingTasks.map(t => t.skillName).join(', ')}`] : []),
+    ].join('\n\n');
 
     const prompt = `用户原始需求: ${originalRequirement}
 
@@ -204,13 +216,13 @@ ${resultsContext}
 
 请判断:
 1. 所有子任务的结果是否已经完整满足了用户的需求？
-2. 如果满足，请生成一段简洁自然的汇总回复（直接回复用户，不要说"根据执行结果"等机械用语）
-3. 如果不满足，说明还需要执行什么操作
+2. 如果满足，请生成一段简洁自然的汇总回复
+3. 如果有失败任务，明确告知用户哪些成功、哪些失败，并建议回复"转人工"获取人工协助
 
 输出 JSON:
 {
   "completed": true/false,
-  "summary": "汇总文本（completed=true时）或 说明还需要什么（completed=false时）"
+  "summary": "汇总文本"
 }`;
 
     try {
@@ -220,6 +232,7 @@ ${resultsContext}
         type: 'aggregate',
         requestId: request.requestId,
         tasksCount: taskResults.length,
+        failedCount: failedTasks.length,
       });
 
       let judgment = await this.llm.generateStructured(prompt, z.object({
@@ -227,21 +240,38 @@ ${resultsContext}
         summary: z.string(),
       }));
 
-      log.info('llm.response', {
-        traceId,
-        completed: judgment.completed,
-      });
+      log.info('llm.response', { traceId, completed: judgment.completed });
+      log.info(`📊 汇总判断: completed=${judgment.completed}, failed=${failedTasks.length}`);
 
-      log.info(`📊 汇总判断: completed=${judgment.completed}`);
+      // P5: 防御纵深 —— 有失败 task 时强制 completed=false
+      // (即使 LLM 误判 completed=true 也覆盖,避免标"完成")
+      if (failedTasks.length > 0 && judgment.completed) {
+        log.warn('LLM 把部分失败误判为 completed,已修正', {
+          failedCount: failedTasks.length,
+          llmJudgment: judgment.completed,
+        });
+        judgment = { ...judgment, completed: false };
+      }
 
-      // 应用 resultRewriter(若配置)——必须在持久化之前完成,保证落库的 summary 与
-      // 返回给调用方的 summary 一致,避免重放丢失后缀(Final Review Minor #1 衍生)
-      // 双重门控:既匹配 match.status(默认 'completed'),又显式排除 'waiting_user_input'
-      // 后者复现 Task 7 删除的 SubAgent 守卫:防止给提问追加 "转人工" 后缀
-      if (this.rewriter) {
+      // P5: Transfer hook(预留)
+      let transferTriggered = false;
+      if (failedTasks.length > 0 && this.transferHook) {
+        transferTriggered = this.transferHook(taskResults as unknown as TaskResult[]);
+        if (transferTriggered) {
+          judgment = {
+            ...judgment,
+            summary: `${judgment.summary}\n\n> 💡 检测到部分任务执行失败,如需人工协助请回复"转人工"。`,
+          };
+        }
+      }
+
+      // P5: Rewriter gate 修复 —— 必须基于 every(completed),不再用 taskResults[0] 或 [N-1]
+      // 旧行为(B-1 bug):taskResults[0]?.status === 'completed'
+      // 新行为:全成功 + 无 waiting 才追加
+      const allCompleted = completedTasks.length === taskResults.length && waitingTasks.length === 0;
+      if (this.rewriter && allCompleted) {
         const targetStatus = this.rewriter.match?.status ?? 'completed';
-        const lastTaskStatus = taskResults[0]?.status ?? 'completed';
-        if (lastTaskStatus === targetStatus && lastTaskStatus !== 'waiting_user_input') {
+        if (targetStatus === 'completed') {
           judgment = {
             ...judgment,
             summary: this.applyRewriter(judgment.summary, this.rewriter),
@@ -250,8 +280,6 @@ ${resultsContext}
       }
 
       if (judgment.completed) {
-        // L1+L4 同步写入助手最终回复(多任务汇总)
-        // 此时 judgment.summary 已经是改写后的版本,确保落库与返回一致
         try {
           await this.memoryService.saveAssistantMessage(userId, sessionId, judgment.summary, {
             requestId: request.requestId,
@@ -262,7 +290,6 @@ ${resultsContext}
             { cause: error });
         }
         await this.sessionStore.completeRequest(userId, sessionId, request.requestId, judgment.summary);
-        // L3 请求级摘要(异步,失败不阻塞)
         fireAndForget(
           this.memoryService.summarizeRequest({
             userId, sessionId, requestId: request.requestId,
@@ -273,7 +300,12 @@ ${resultsContext}
         );
       }
 
-      return judgment;
+      return {
+        completed: judgment.completed,
+        summary: judgment.summary,
+        failedTaskIds: failedTasks.map(t => t.taskId),
+        transferTriggered,
+      };
     } catch (error) {
       if (error instanceof LLMError) {
         throw new LlmError(error.type, error.message, { cause: error });
