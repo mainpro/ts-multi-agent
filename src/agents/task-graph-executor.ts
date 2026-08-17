@@ -648,32 +648,55 @@ export class TaskGraphExecutor {
       }
     }
 
+    // P5: 区分全失败 vs 部分失败(与 executeTaskGraph 一致)
     if (layerResult.failedTasks.length > 0) {
-      const firstFailure = layerResult.failedTasks[0];
-      throw new SkillError(
-        firstFailure.error?.code || 'TASK_GRAPH_EXECUTION_FAILED',
-        firstFailure.error?.message || 'Task graph execution failed',
-        { cause: firstFailure.error },
-      );
+      const totalTasks = layerResult.failedTasks.length + allResults.length;
+      if (layerResult.failedTasks.length === totalTasks) {
+        // ALL failed → throw(保留原 AppError cause)
+        const firstFailure = layerResult.failedTasks[0];
+        if (firstFailure.error?.originalError instanceof AppError) {
+          throw firstFailure.error.originalError;
+        }
+        throw new SkillError(
+          firstFailure.error?.code || 'TASK_GRAPH_EXECUTION_FAILED',
+          firstFailure.error?.message || 'Task graph execution failed',
+          { cause: firstFailure.error },
+        );
+      }
+      // 部分失败 → 返回 hasPartialFailure,留给调用方(MainAgent)走汇总
+      log.warn('Resume TaskGraph 部分失败,进入汇总阶段', {
+        failedCount: layerResult.failedTasks.length,
+        successCount: allResults.length,
+      });
+      return {
+        success: true,
+        data: {
+          planId: graph.id,
+          results: allResults,
+          failedTasks: layerResult.failedTasks,
+          hasPartialFailure: true,
+        },
+      };
     }
 
     // 所有层执行完毕 → 汇总结果
-    const taskList = allResults.map(tr => ({
+    // P5: 加 status 字段让 summarizeResults 走 every(completed) 正确判断(B-1 真正的修法)
+    const successResults = allResults.map(tr => ({
       taskId: tr.taskId,
       skillName: tr.skillName,
       requirement: tr.requirement,
       response: getSkillData(tr.result)?.response || '',
+      status: 'completed',
     }));
-
-    if (taskList.length === 1) {
+    if (successResults.length === 1) {
       log.info(`✅ 断点续传-单任务完成`);
     }
-    const summary = await this.resultAggregator.summarizeResults(request.content, taskList, userId, sessionId, request);
+    const summary = await this.resultAggregator.summarizeResults(request.content, successResults, userId, sessionId, request);
 
     return {
       success: true,
       data: {
-        results: taskList,
+        results: successResults,
         type: 'skill_task',
         requestId: request.requestId,
         completed: summary.completed,
