@@ -1276,7 +1276,7 @@ export class MainAgent {
       const failedAsResults = (resultData?.failedTasks || []).map((t: any) => ({
         taskId: t.taskId,
         skillName: t.skillName || '',
-        requirement: '',
+        requirement: t.requirement || '',
         response: '',
         status: 'failed',
         error: t.error,

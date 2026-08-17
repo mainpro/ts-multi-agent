@@ -25,6 +25,8 @@ import {
 interface FailedTaskInfo {
   taskId: string;
   skillName: string | null;
+  /** P5: task 需求文本,让汇总 LLM 看到失败 task 的 context */
+  requirement?: string;
   error: TaskError;
 }
 
@@ -334,6 +336,7 @@ export class TaskGraphExecutor {
           failedTasks.push({
             taskId,
             skillName: node.skillName,
+            requirement: node.content,
             // Prefer task.error (set by TaskQueue with original AppError code/type).
             // Fall back to result?.error or hardcoded TASK_FAILED only if both unavailable.
             error: taskRecord?.error || result?.error || { type: 'FATAL', message: `任务 ${taskId} 执行失败`, code: 'TASK_FAILED' },
@@ -343,6 +346,7 @@ export class TaskGraphExecutor {
           failedTasks.push({
             taskId,
             skillName: node.skillName,
+            requirement: node.content,
             error: taskRecord?.error || { type: 'FATAL', message: `任务 ${taskId} ${status}`, code: `TASK_${status.toUpperCase()}` },
           });
         }

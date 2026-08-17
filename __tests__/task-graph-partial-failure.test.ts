@@ -97,6 +97,43 @@ describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
     // 应 throw(SkillError 包裹)
     await expect(executor.executeTaskGraph(graph, 'sess-1', 'user-1', req)).rejects.toBeDefined();
   });
+
+  it('failedTasks carry requirement for summary context', async () => {
+    // 场景:layer 0 有 2 个 task,t1 成功 + t2 失败。
+    // 期望:failedTasks[0].requirement 是失败 task 的 node.content,
+    //     让 main-agent 汇总 LLM 能看到失败 task 的意图(避免混合状态时丢失 context)。
+    const llm = {} as any;
+    const memSvc = {} as any;
+    const sessionStore = {} as any;
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+
+    const taskQueue = new TaskQueue(async (task: any) => {
+      if (task.id === 'plan-1-task-1') return { success: true, data: { response: 'ok' } };
+      throw new Error('boom');
+    });
+    const executor = new TaskGraphExecutor(taskQueue, resultAgg, sessionStore);
+
+    const graph = {
+      id: 'plan-1',
+      requirement: 'test',
+      nodes: [
+        { taskId: 'plan-1-task-1', content: '任务 1 的成功需求', skillName: 'test-skill', dependencies: [] },
+        { taskId: 'plan-1-task-2', content: '失败 task 的需求文本', skillName: 'test-skill', dependencies: [] },
+      ],
+      layers: [['plan-1-task-1', 'plan-1-task-2']],
+    };
+    const req = { requestId: 'r1', content: 'r', status: 'processing', createdAt: '', updatedAt: '',
+      suspendedAt: null, suspendedReason: null, questions: [], currentQuestion: null,
+      tasks: [], result: null } as any;
+
+    const result = await executor.executeTaskGraph(graph, 'sess-1', 'user-1', req);
+    expect(result.success).toBe(false);
+    expect(result.data?.hasPartialFailure).toBe(true);
+    expect(result.data?.failedTasks).toHaveLength(1);
+    // P5 fix:失败 task 必须携带 requirement,否则汇总 LLM 看不到失败意图
+    expect(result.data?.failedTasks[0].taskId).toBe('plan-1-task-2');
+    expect(result.data?.failedTasks[0].requirement).toBe('失败 task 的需求文本');
+  });
 });
 
 describe('TaskGraphExecutor.resumeFromBreakpoint partial failure', () => {
