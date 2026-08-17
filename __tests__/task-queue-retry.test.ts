@@ -1,5 +1,6 @@
 import { TaskQueue } from '../src/task-queue';
 import { LLMError } from '../src/llm';
+import { LlmError } from '../src/errors';
 
 describe('TaskQueue retry logic', () => {
   let queue: TaskQueue;
@@ -112,5 +113,40 @@ describe('TaskQueue retry logic', () => {
     await new Promise(r => setTimeout(r, 1500));
     expect(events).toHaveLength(1);
     expect(events[0].error.code).toBe('TIMEOUT');  // 原始错误类型保留
+  });
+
+  it('retries LlmError (SubAgent wrap) up to maxRetries', async () => {
+    let attempts = 0;
+    const executor = async () => {
+      attempts++;
+      if (attempts < 3) throw new LlmError('TIMEOUT', 'timeout');
+      return { success: true };
+    };
+    const q = new TaskQueue(executor as any, 60000, 60000, { baseMs: 10, maxMs: 50 });
+    q.addTask({
+      id: 't1', requirement: 'r', skillName: 's',
+      dependencies: [], dependents: [], createdAt: new Date(),
+      status: 'pending',
+      maxRetries: 2, retryableErrorTypes: ['TIMEOUT'],
+    });
+    await new Promise(r => setTimeout(r, 3000));
+    expect(attempts).toBe(3); // 1 initial + 2 retries
+  });
+
+  it('does not retry LlmError with non-retryable type', async () => {
+    let attempts = 0;
+    const executor = async () => {
+      attempts++;
+      throw new LlmError('INVALID_KEY', 'bad key');
+    };
+    const q = new TaskQueue(executor as any, 60000, 60000, { baseMs: 10, maxMs: 50 });
+    q.addTask({
+      id: 't1', requirement: 'r', skillName: 's',
+      dependencies: [], dependents: [], createdAt: new Date(),
+      status: 'pending',
+      maxRetries: 5, retryableErrorTypes: ['TIMEOUT', 'NETWORK_ERROR'],
+    });
+    await new Promise(r => setTimeout(r, 50));
+    expect(attempts).toBe(1); // INVALID_KEY 不在 retryableErrorTypes,不重试
   });
 });

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Task, TaskStatus, TaskError, TaskResult, CONFIG } from "../types";
-import { AppError } from '../errors';
+import { AppError, LlmError } from '../errors';
 import { LLMError } from '../llm';
 import { createLogger } from '../observability/logger';
 
@@ -465,13 +465,26 @@ export class TaskQueue {
   }
 
   private shouldRetry(err: unknown, retryableTypes: Set<string>): boolean {
+    // 同时识别 LLMError(原始)和 LlmError(wrap 后的 AppError)。
+    // SubAgent.execute 在 catch 块调用 mapSubAgentError,把 LLMError 转成 LlmError;
+    // 生产路径抛出的都是 LlmError,所以这里必须两种都认,否则 retry 机制在生产中是死的。
+    let llmType: string | undefined;
+    let statusCode: number | undefined;
     if (err instanceof LLMError) {
-      if (!retryableTypes.has(err.type)) return false;
-      // API_ERROR 仅在 statusCode >= 500 时重试(4xx 是客户端错,无意义)
-      if (err.type === 'API_ERROR' && (err.statusCode ?? 0) < 500) return false;
-      return true;
+      llmType = err.type;
+      statusCode = err.statusCode;
+    } else if (err instanceof LlmError) {
+      // LlmError extends AppError;LLMErrorType 存在 .llmErrorType(type 固定为 'RETRYABLE')
+      llmType = err.llmErrorType;
+      statusCode = err.statusCode;
+    } else {
+      return false;
     }
-    return false;
+
+    if (!retryableTypes.has(llmType)) return false;
+    // API_ERROR 仅在 statusCode >= 500 时重试(4xx 是客户端错,无意义)
+    if (llmType === 'API_ERROR' && (statusCode ?? 0) < 500) return false;
+    return true;
   }
 
   private getRetryBackoffMs(attempt: number): number {
