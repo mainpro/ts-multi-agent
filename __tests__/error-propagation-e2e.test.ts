@@ -290,7 +290,19 @@ describe('End-to-end error propagation', () => {
     }
   });
 
-  test('E2E-2a: multi-task t1 fails → dependent t2/t3 do not execute', async () => {
+  // Partial-failure contract (spec §7.1):
+  //   - ALL tasks fail → throw SkillError → SSE `error` event
+  //   - PARTIAL failure (some succeed, some fail) → return hasPartialFailure=true
+  //     → MainAgent summarizes → SSE `complete` event with results[] containing
+  //     status='failed' entries for the failed tasks
+  //
+  // Note: `$taskId.result` in task params is a *parameter substitution* marker,
+  // not a *dependency edge*. TaskGraph layers are built from `task.dependencies`,
+  // not from `$ref` patterns in params. So E2E-2a/2b have all 3 tasks in
+  // Layer 0 executing in parallel — a single LLM failure becomes a partial
+  // failure, not an all-failed cascade.
+
+  test('E2E-2a: multi-task t1 fails → t2/t3 still execute (no dep edge) → partial failure complete event', async () => {
     const stack = await buildStackedAgent({
       failingTaskIds: new Set(['t1']),
       intentResult: {
@@ -310,17 +322,34 @@ describe('End-to-end error propagation', () => {
       });
       expect(headers['x-trace-id']).toBeTruthy();
 
-      const errorEvent = events.find((e) => e.event === 'error');
-      expect(errorEvent).toBeDefined();
-      expect(errorEvent!.data.code).toMatch(/^LLM_/);
-      expect(errorEvent!.data.type).toBe('RETRYABLE');
-      expect(events.find((e) => e.event === 'complete')).toBeUndefined();
+      // Partial failure → no error event (all-failed → throw was preserved in E2E-1)
+      expect(events.find((e) => e.event === 'error')).toBeUndefined();
+
+      // Partial failure → complete event with success=true
+      const completeEvent = events.find((e) => e.event === 'complete');
+      expect(completeEvent).toBeDefined();
+      expect(completeEvent!.data.success).toBe(true);
+
+      // results[] carries per-task status; t1 failed, t2/t3 completed
+      // SSE shape: { success, data: { success, data: { results, type, requestId } } }
+      const results = completeEvent!.data.data?.data?.results;
+      expect(Array.isArray(results)).toBe(true);
+      expect(results).toHaveLength(3);
+
+      const failed = results.filter((r: any) => r.status === 'failed');
+      const succeeded = results.filter((r: any) => r.status === 'completed');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].taskId).toContain('-t1');
+      expect(succeeded).toHaveLength(2);
+      expect(succeeded.map((r: any) => r.taskId).sort()).toEqual(
+        expect.arrayContaining([expect.stringContaining('-t2'), expect.stringContaining('-t3')]),
+      );
     } finally {
       await stack.close();
     }
   });
 
-  test('E2E-2b: multi-task t1 ok → t2 fails → t3 dependent on t2 is skipped', async () => {
+  test('E2E-2b: multi-task t1 ok → t2 fails → t3 still executes (no dep edge) → partial failure complete event', async () => {
     const stack = await buildStackedAgent({
       failingTaskIds: new Set(['t2']),
       intentResult: {
@@ -339,10 +368,26 @@ describe('End-to-end error propagation', () => {
         userId: 'u1',
       });
 
-      const errorEvent = events.find((e) => e.event === 'error');
-      expect(errorEvent).toBeDefined();
-      expect(errorEvent!.data.code).toMatch(/^LLM_/);
-      expect(errorEvent!.data.type).toBe('RETRYABLE');
+      // Partial failure → no error event (only t2 failed; t1 and t3 succeeded)
+      expect(events.find((e) => e.event === 'error')).toBeUndefined();
+
+      // Partial failure → complete event
+      const completeEvent = events.find((e) => e.event === 'complete');
+      expect(completeEvent).toBeDefined();
+      expect(completeEvent!.data.success).toBe(true);
+
+      const results = completeEvent!.data.data?.data?.results;
+      expect(Array.isArray(results)).toBe(true);
+      expect(results).toHaveLength(3);
+
+      const failed = results.filter((r: any) => r.status === 'failed');
+      const succeeded = results.filter((r: any) => r.status === 'completed');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].taskId).toContain('-t2');
+      expect(succeeded).toHaveLength(2);
+      expect(succeeded.map((r: any) => r.taskId).sort()).toEqual(
+        expect.arrayContaining([expect.stringContaining('-t1'), expect.stringContaining('-t3')]),
+      );
     } finally {
       await stack.close();
     }
