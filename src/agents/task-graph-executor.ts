@@ -270,7 +270,7 @@ export class TaskGraphExecutor {
     userId: string,
     startLayerIdx: number,
     completedResults: Map<string, any>,
-    allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }>,
+    allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any; employeeId?: string }>,
     executorFactory?: TaskExecutorFactory,
   ): Promise<LayerExecutionResult> {
     const failedTasks: FailedTaskInfo[] = [];
@@ -426,7 +426,7 @@ export class TaskGraphExecutor {
     executorFactory?: TaskExecutorFactory,
   ): Promise<TaskResult> {
     const completedResults: Map<string, any> = new Map();
-    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
+    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any; employeeId?: string }> = [];
 
     const layerResult = await this.executeLayers(graph, sessionId, userId, 0, completedResults, allResults, executorFactory);
 
@@ -656,7 +656,7 @@ export class TaskGraphExecutor {
 
     request.executionProgress = undefined;
 
-    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }> = [];
+    const allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any; employeeId?: string }> = [];
     for (const [taskId, result] of completedResults) {
       const node = graph.nodes.find(n => n.taskId === taskId);
       if (node) {
