@@ -35,6 +35,7 @@ export interface IntentResult {
   intent: IntentType;
   confidence?: number;
   tasks: TaskItem[];
+  employeeId?: string;  // 新增:由 LLM 从可用员工列表中选择
   question?: {
     type: 'system_confirm' | 'skill_confirm';
     content: string;
@@ -79,6 +80,7 @@ export class IntentRouter {
     _userId?: string,
     persona?: PersonaConfig,
     displayName?: string,
+    availableEmployees?: Array<{ id: string; brief: string }>,  // 新增:可用员工列表
   ): Promise<IntentResult> {
     const startTime = Date.now();
 
@@ -91,6 +93,7 @@ export class IntentRouter {
         recentHistory,
         sessionId,
         systemPrompt,
+        availableEmployees,
       );
 
       const elapsed = Date.now() - startTime;
@@ -143,6 +146,7 @@ export class IntentRouter {
     recentHistory?: Array<{ role?: string; content?: string; skill?: string; system?: string }>,
     sessionId?: string,
     personaSystemPrompt?: string,
+    availableEmployees?: Array<{ id: string; brief: string }>,  // 新增
   ): Promise<IntentResult> {
     const skills = this.skillRegistry.getAllMetadata();
     const baseSystemPrompt = buildSkillMatcherPrompt(skills);
@@ -157,6 +161,8 @@ export class IntentRouter {
         .describe('意图类型'),
       confidence: z.number().min(0).max(1).optional().default(0.8)
         .describe('置信度 0-1'),
+      employeeId: z.string().optional()  // 新增
+        .describe('员工 ID，从可用员工列表中选择；无法判断时省略'),
       tasks: z.array(z.object({
         requirement: z.string().describe('任务描述'),
         skillName: z.string().optional().describe('匹配的技能名，无技能时省略'),
@@ -210,6 +216,13 @@ export class IntentRouter {
 
     prompt += `【用户当前输入】\n${userInput}`;
 
+    // 可用员工列表(给 LLM 识别 employeeId)
+    if (availableEmployees && availableEmployees.length > 0) {
+      prompt += '\n\n【可用员工列表】\n';
+      prompt += availableEmployees.map(e => `- ${e.id}: ${e.brief}`).join('\n');
+      prompt += '\n请同时返回 employeeId 字段(从上述列表中选择,无法判断时省略)';
+    }
+
     // 调用 LLM
     const traceId = `intent-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     log.info('llm.request', {
@@ -241,6 +254,7 @@ export class IntentRouter {
    */
   private processLLMResult(result: z.infer<ReturnType<typeof z.object>>): IntentResult {
     const allSkills = this.skillRegistry.getAllMetadata();
+    const employeeId = result.employeeId;  // 透传 LLM 返回的 employeeId
 
     // small_talk: 使用 LLM 生成的友好回复
     if (result.intent === 'small_talk') {
@@ -249,6 +263,7 @@ export class IntentRouter {
         intent: 'small_talk',
         confidence: result.confidence || 0.9,
         tasks: [],
+        employeeId,
         question: {
           type: 'skill_confirm',
           content,
@@ -275,6 +290,7 @@ export class IntentRouter {
         intent: 'confirm_system',
         confidence: result.confidence || 0.9,
         tasks: [],
+        employeeId,
         question: {
           type: 'system_confirm',
           content,
@@ -290,6 +306,7 @@ export class IntentRouter {
         intent: 'unclear',
         confidence: result.confidence || 0.7,
         tasks: [],
+        employeeId,
         question: {
           type: 'skill_confirm',
           content,
@@ -332,6 +349,7 @@ export class IntentRouter {
       intent: 'skill_task',
       confidence: result.confidence || 0.8,
       tasks,
+      employeeId,
     };
   }
 
