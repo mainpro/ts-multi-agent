@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { EmployeeRegistry } from '../src/agents/employee/registry';
 import { EmployeeAgent } from '../src/agents/employee/agent';
+import { routeIntentToEmployee } from '../src/agents/employee/router';
 import type { EmployeeConfig } from '../src/agents/employee/json-types';
 
 const enabled = (id: string): EmployeeConfig => ({
@@ -90,5 +91,52 @@ describe('EmployeeRegistry', () => {
       expect(ll).toContainEqual({ id: 'legal', brief: 'legal' });
       expect(ll).toContainEqual({ id: 'it', brief: 'IT 运维' });
     });
+  });
+});
+
+describe('routeIntentToEmployee', () => {
+  it('LLM 返回有效 employeeId → 返回对应 EmployeeAgent', () => {
+    const reg = new EmployeeRegistry();
+    const legalAgent = new EmployeeAgent(enabled('legal-assistant'), mockDeps);
+    const fallbackAgent = new EmployeeAgent(fallback(), mockDeps);
+    reg.register(legalAgent);
+    reg.register(fallbackAgent);
+    const result = routeIntentToEmployee(
+      { intent: 'skill_task', tasks: [], employeeId: 'legal-assistant' },
+      reg,
+    );
+    expect(result.id).toBe('legal-assistant');
+  });
+
+  it('LLM 不返回 employeeId → 兜底到 fallback', () => {
+    const reg = new EmployeeRegistry();
+    reg.register(new EmployeeAgent(enabled('legal'), mockDeps));
+    reg.register(new EmployeeAgent(fallback(), mockDeps));
+    const result = routeIntentToEmployee(
+      { intent: 'small_talk', tasks: [] },
+      reg,
+    );
+    expect(result.id).toBe('fallback-service-desk');
+  });
+
+  it('LLM 返回不存在的 employeeId → 兜底到 fallback + 打 warn', () => {
+    const reg = new EmployeeRegistry();
+    reg.register(new EmployeeAgent(fallback(), mockDeps));
+    const result = routeIntentToEmployee(
+      { intent: 'skill_task', tasks: [], employeeId: 'unknown' },
+      reg,
+    );
+    expect(result.id).toBe('fallback-service-desk');
+  });
+
+  it('intent === "unclear" → 兜底到 fallback', () => {
+    const reg = new EmployeeRegistry();
+    reg.register(new EmployeeAgent(enabled('legal'), mockDeps));
+    reg.register(new EmployeeAgent(fallback(), mockDeps));
+    const result = routeIntentToEmployee(
+      { intent: 'unclear', tasks: [] },
+      reg,
+    );
+    expect(result.id).toBe('fallback-service-desk');
   });
 });
