@@ -14,6 +14,7 @@ import { SkillRegistry } from '../src/skill-registry';
 import { SystemSkillLoader, ExecutorRegistry } from '../src/system-skills';
 import { TaskQueue } from '../src/task-queue';
 import { requestLifecycle } from '../src/events/request-lifecycle';
+import { buildTestMainAgent } from './_helpers/build-test-agent';
 
 describe('MainAgent queue integration', () => {
   let dataDir: string;
@@ -41,19 +42,21 @@ describe('MainAgent queue integration', () => {
     systemSkillLoader.loadAll();
     const executorRegistry = new ExecutorRegistry();
 
-    mainAgent = new MainAgent({
-      llm: mockLLM,
-      skillRegistry: mockRegistry,
-      taskQueue: new TaskQueue(async () => null),
-      intentRouter,
-      userProfileService,
-      memoryService,
-      dynamicContextBuilder,
-      sessionStore,
-      askAgent,
-      systemSkillLoader,
-      executorRegistry,
-    });
+    ({ mainAgent } = buildTestMainAgent({
+      mocks: {
+        llm: mockLLM,
+        skillRegistry: mockRegistry,
+        taskQueue: new TaskQueue(async () => null),
+        intentRouter,
+        userProfileService,
+        memoryService,
+        dynamicContextBuilder,
+        sessionStore,
+        askAgent,
+        systemSkillLoader,
+        executorRegistry,
+      },
+    }));
   });
 
   test('processRequirement with active processing request returns queued=true and emits request_queued', async () => {

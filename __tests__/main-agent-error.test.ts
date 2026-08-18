@@ -1,5 +1,4 @@
-import { MainAgent } from '../src/agents/main-agent';
-import { LlmError, BusinessError, SkillError, AppError } from '../src/errors';
+import { BusinessError } from '../src/errors';
 import { LLMError } from '../src/llm';
 import { MemoryService } from '../src/memory/memory-service';
 import { SessionStore } from '../src/memory/session-store';
@@ -13,6 +12,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as assert from 'assert';
+import { buildTestMainAgent } from './_helpers/build-test-agent';
 
 let passed = 0;
 let failed = 0;
@@ -64,13 +64,15 @@ async function createAgent(generateTextImpl: () => Promise<string>) {
   const systemSkillLoader = new SystemSkillLoader();
   const executorRegistry = new ExecutorRegistry();
   const taskQueue = new MockTaskQueue();
-  const agent = new MainAgent({
-    llm: mockLLM, skillRegistry, taskQueue: taskQueue as any, intentRouter,
-    userProfileService, memoryService, dynamicContextBuilder,
-    sessionStore, askAgent, systemSkillLoader, executorRegistry,
+  const { mainAgent } = buildTestMainAgent({
+    mocks: {
+      llm: mockLLM, skillRegistry, taskQueue: taskQueue as any, intentRouter,
+      userProfileService, memoryService, dynamicContextBuilder,
+      sessionStore, askAgent, systemSkillLoader, executorRegistry,
+    },
   });
   return {
-    agent,
+    agent: mainAgent,
     cleanup: async () => { try { await fs.rm(dataDir, { recursive: true, force: true }); } catch {} },
   };
 }

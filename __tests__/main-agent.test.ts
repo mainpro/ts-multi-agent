@@ -20,6 +20,7 @@ import { UserProfileService } from '../src/user-profile';
 import { SystemSkillLoader, ExecutorRegistry } from '../src/system-skills';
 import { TaskQueue } from '../src/task-queue';
 import { Request, QAEntry, TaskResult } from '../src/types';
+import { buildTestMainAgent } from './_helpers/build-test-agent';
 
 let passed = 0;
 let failed = 0;
@@ -163,7 +164,7 @@ async function createAgent(
   const executorRegistry = new ExecutorRegistry();
   const taskQueue = new MockTaskQueue();
 
-  const deps: MainAgentDependencies = {
+  const deps: Partial<MainAgentDependencies> = {
     llm: mockLLM,
     skillRegistry,
     taskQueue,
@@ -183,7 +184,8 @@ async function createAgent(
     } catch {}
   };
 
-  return { agent: new MainAgent(deps), dataDir, cleanup };
+  const { mainAgent } = buildTestMainAgent({ mocks: deps });
+  return { agent: mainAgent, dataDir, cleanup };
 }
 
 // ============================================================================
