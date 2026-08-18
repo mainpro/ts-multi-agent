@@ -31,7 +31,8 @@ import { taskEvents } from "../events/task-events";
 import { BusinessError, AppError, SkillError } from '../errors';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { CONFIG } from '../types';
-import type { EmployeeConfig } from './employee/types';
+import type { EmployeeRegistry } from './employee/registry';
+import { routeIntentToEmployee } from './employee/router';
 import { computeAllowedTools } from './employee/tools';
 
 /**
@@ -52,35 +53,8 @@ export interface MainAgentDependencies {
   askAgent: AskAgent;
   systemSkillLoader: SystemSkillLoader;
   executorRegistry: ExecutorRegistry;
-}
-
-/**
- * 兜底最小 EmployeeConfig(仅测试场景使用):
- *   - 生产环境必须由 bootstrap 加载并显式传入 options.employee
- *   - 测试场景(MainAgent 构造无 options 参数)使用此 fixture,跳过下游 skill/persona 路径
- */
-function defaultEmptyEmployee(): EmployeeConfig {
-  return {
-    employee: { id: '__test_default__', displayName: 'Test Default', enabled: false },
-    capabilities: { llm: { provider: 'haier' } },
-  };
-}
-
-/**
- * MainAgent 构造选项
- *
- * Task 8 起 MainAgent 必须持有一个 EmployeeConfig(由 bootstrap 加载并注入),
- * 负责把员工身份派发给下游:
- *   - IntentRouter.classify(): persona + displayName
- *   - UnifiedPlanner.plan(): planning.decompositionHint
- *   - task._personaContext / task.allowedTools:每个 task 构造时填充
- *   - employee.capabilities.skillWhitelist:派单前 SKILL_NOT_ALLOWED 校验
- *
- * options 在生产环境为必填;测试 helper 不传时使用 defaultEmptyEmployee 占位,
- * 让现有未触及 persona/skills 路径的测试继续工作。
- */
-export interface MainAgentOptions {
-  employee: EmployeeConfig;
+  /** 进程级员工注册表,启动期一次性 register,运行期只读 */
+  employeeRegistry: EmployeeRegistry;
 }
 
 export class MainAgent {
@@ -99,16 +73,17 @@ export class MainAgent {
   private taskGraphExecutor: TaskGraphExecutor;
   private resultAggregator: ResultAggregator;
   private gate: SessionGate;
-  /** 注入的员工配置(personal / capabilities / planning / outputBehavior)。 */
-  private employee: EmployeeConfig;
+  /** 进程级员工注册表。MainAgent 不再持有单一 employee,运行期通过 routeIntentToEmployee 选择。 */
+  private employeeRegistry: EmployeeRegistry;
 
-  constructor(deps: MainAgentDependencies, options?: MainAgentOptions) {
+  constructor(deps: MainAgentDependencies) {
     const {
       llm, skillRegistry, taskQueue,
       intentRouter, userProfileService, memoryService,
       dynamicContextBuilder,
       sessionStore, askAgent,
       systemSkillLoader, executorRegistry,
+      employeeRegistry,
     } = deps;
 
     this.llm = llm;
@@ -123,14 +98,17 @@ export class MainAgent {
     this.systemSkillLoader = systemSkillLoader;
     this.executorRegistry = executorRegistry;
 
-    // Task 8:options 在生产为必填(bootstrap 必须显式传入);
-    // 测试场景(MainAgent 构造无 second arg)走 defaultEmptyEmployee 占位,
-    // 保留现有 un-related-to-persona/skills 的测试集继续工作。
-    this.employee = options?.employee ?? defaultEmptyEmployee();
+    if (!employeeRegistry) {
+      throw new Error('MainAgent: employeeRegistry is required');
+    }
+    this.employeeRegistry = employeeRegistry;
 
-    // resultAggregator 需要 processNormalRequirement 回调，循环依赖 → MainAgent 内创建
+    // resultAggregator 需要 processNormalRequirement 回调,循环依赖 → MainAgent 内创建
     // P5: ResultAggregator 注入 transferHook(本期 noop)
     // TODO(Task 13): 接外部工单系统时实现真实 hook
+    // T7: ResultAggregator 接受 per-employee rewriter — 本期统一从 fallback 员工读取,
+    // T7 会切换为按 task.employeeId 注入。
+    const fallbackRewriter = this.employeeRegistry.defaultFallback().resultRewriter;
     const transferHook: import('./result-aggregator').TransferToHumanHook = (_results) => {
       // noop — 等真实转人工实现
       return false;
@@ -140,7 +118,7 @@ export class MainAgent {
       llm, memoryService, sessionStore,
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
-      this.employee.outputBehavior?.resultRewriter,
+      fallbackRewriter,
       transferHook,
     );
     this.gate = new SessionGate(sessionStore);
@@ -1013,11 +991,19 @@ export class MainAgent {
           }));
       } catch (e) { MainAgent.log.error('召回过程性记忆失败', { error: e }); }
 
+      // Task 5: 路由选择 EmployeeAgent,后续 employee.X 替换 this.employee.X
+      // IntentRouter.classify 同时接收 availableEmployees(LLM 据此选择 employeeId)
+      // 注意:此处 classify 调用不传 persona/displayName,因为路由前不知道选哪个员工;
+      // 路由后 employee.persona 已用于下游 _personaContext 注入。
+      // persona system prompt 的缺失由后续迭代(把 classify 拆为「粗分类」+「细分类」)解决。
       const intentResult = await this.intentRouter.classify(
         requirement, userProfile, recentHistory, sessionId, proceduralExperience, userId,
-        this.employee.persona,                                              // Task 8: 注入 persona
-        this.employee.employee.displayName,                                // Task 8: 用于模板替换
+        undefined,                                                    // persona 由 route 后的 employee 提供
+        undefined,                                                    // displayName 同上
+        this.employeeRegistry.listForLLM(),                           // Task 5: 新增第 9 参数
       );
+
+      const employee = routeIntentToEmployee(intentResult, this.employeeRegistry);
 
       await hookManager.emit(HookEvent.AFTER_INTENT_CLASSIFY, {
         userId, sessionId, data: { intent: intentResult.intent, confidence: intentResult.confidence, tasks: intentResult.tasks }
@@ -1096,9 +1082,11 @@ export class MainAgent {
         };
       } else {
         const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
-        // Task 8: 把员工的规划偏好(decompositionHint)注入 planner
+        // Task 5: 把 route 后员工的规划偏好(decompositionHint)注入 planner
+        // 注意:UnifiedPlanner.plan() 签名为 (input, options) — options 形态不变,
+        // T8 会把 planner 重构为接受 EmployeeAgent,届时再调整此处。
         const planResult = await planner.plan(enrichedRequirement, {
-          hint: this.employee.planning?.decompositionHint,
+          hint: employee.decompositionHint,
         });
         if (!planResult.success || !planResult.plan) {
           await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
@@ -1135,6 +1123,9 @@ export class MainAgent {
       // 注册任务到请求中(Task 8 同步注入 persona/allowedTools 并执行 skill 白名单校验)
       for (const taskDef of plan.tasks) {
         const uniqueTaskId = `${plan.id}-${taskDef.id}`;
+        // Task 6 会把 task.employeeId 写入 + TaskGraphExecutor.executorFactory 用此 id
+        // 从 employeeRegistry 查 EmployeeAgent。本期仅 set up 字段,字段类型定义
+        // 推迟到 T6(同步 git rebase 可避免类型不一致)。
 
         // Task 7 移交:SubAgent.execute 不再校验 skill 白名单,改在 MainAgent 派单前完成。
         // 规则(与 Task 3 旧 SubAgent 行为一致):
@@ -1143,16 +1134,16 @@ export class MainAgent {
         //   - skillWhitelist.type === 'allowlist' → skillName 必须在 skills 列表里
         // 没有 skillName 的任务(IntentRouter 标注 unclear 等)直接放过。
         if (taskDef.skillName) {
-          const whitelist = this.employee.capabilities.skillWhitelist;
+          const whitelist = employee.config.capabilities.skillWhitelist;
           if (whitelist && whitelist.type === 'allowlist' && !whitelist.skills.includes(taskDef.skillName)) {
             MainAgent.log.warn('SKILL_NOT_ALLOWED: task 被员工策略拦截', {
-              employeeId: this.employee.employee.id,
+              employeeId: employee.id,
               skillName: taskDef.skillName,
               whitelistType: whitelist.type,
             });
             throw new SkillError(
               'SKILL_NOT_ALLOWED',
-              `skill "${taskDef.skillName}" 不在员工 "${this.employee.employee.id}" 的白名单中`,
+              `skill "${taskDef.skillName}" 不在员工 "${employee.id}" 的白名单中`,
             );
           }
         }
@@ -1175,13 +1166,11 @@ export class MainAgent {
             // ignore
           }
         }
-        const allowed = computeAllowedTools(skillAllowedTools, this.employee.capabilities.tools);
+        const allowed = computeAllowedTools(skillAllowedTools, employee.config.capabilities.tools);
 
         // 构造 personaContext:把 ${displayName} 模板替换为员工 displayName
-        const displayName = this.employee.employee.displayName ?? '';
-        const personaPrefix = this.employee.persona?.prefix
-          ? this.employee.persona!.prefix.replace(/\$\{displayName\}/g, displayName)
-          : '';
+        // Task 5: employee.personaPrefix 已经由 EmployeeAgent 在 getter 中完成模板替换
+        const personaPrefix = employee.personaPrefix ?? '';
 
         // Task 8 (fix): 把 Master 注入的 persona/tools 写回 plan.tasks[i] 而不是只写 RequestTask。
         // 原因:buildTaskGraph 从 plan.tasks 构建 TaskGraphNode,如果只挂在 RequestTask 上,
@@ -1191,8 +1180,8 @@ export class MainAgent {
         const personaContext = personaPrefix
           ? {
               prefix: personaPrefix,
-              style: this.employee.persona?.style,
-              boundaries: this.employee.persona?.boundaries,
+              style: employee.persona?.style,
+              boundaries: employee.persona?.boundaries,
             }
           : undefined;
         taskDef._personaContext = personaContext;
