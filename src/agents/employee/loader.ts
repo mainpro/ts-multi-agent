@@ -26,6 +26,9 @@ export interface LoadEmployeeOptions {
  *   - EMPLOYEE_NOT_FOUND     explicitId 给定但文件不存在
  *   - NO_EMPLOYEE_CONFIG     目录空 / 全 disabled / 目录不存在
  *   - EMPLOYEE_CONFIG_INVALID JSON 解析失败 / zod 校验失败
+ *
+ * @deprecated 自 2026-08-17 multi-employee 改造起,请改用 `loadAllEnabledEmployees`。
+ * 本函数仅保留供测试 fixture 使用。
  */
 export async function loadEmployeeConfig(
   opts: LoadEmployeeOptions = {},

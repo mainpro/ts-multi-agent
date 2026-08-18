@@ -1,0 +1,20 @@
+{
+  "employee": {
+    "id": "fallback-service-desk",
+    "displayName": "兜底服务台",
+    "enabled": true
+  },
+  "persona": {
+    "prefix": "我是 ${displayName},处理未被其他员工匹配的请求"
+  },
+  "capabilities": {
+    "llm": { "provider": "haier" },
+    "skillWhitelist": { "type": "unrestricted" }
+  },
+  "outputBehavior": {
+    "resultRewriter": {
+      "transform": "append",
+      "value": "\n\n如需转人工请回复「人工」"
+    }
+  }
+}

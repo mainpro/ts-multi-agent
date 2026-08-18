@@ -22,24 +22,22 @@ import { migrateMemoryIfNeeded } from './memory/migrate';
 import { AskAgent } from './agents/ask-agent';
 import { SystemSkillLoader, ExecutorRegistry } from './system-skills';
 import { BootstrapError } from './errors';
-import { loadEmployeeConfig } from './agents/employee/loader';
+import { loadAllEnabledEmployees } from './agents/employee/all-loader';
 
 /**
- * 解析命令行参数,提取 --employee=<id> 或 --employee <id>。
+ * 解析命令行参数,提取 --employees-dir=<path> 或 --employees-dir <path>。
  * 不存在返回 undefined。
  *
  * 暴露为 export 供测试。
  */
-export function parseEmployeeArg(argv: string[]): string | undefined {
+export function parseEmployeeDirArg(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg.startsWith('--employee=')) {
-      const value = arg.slice('--employee='.length).trim();
-      return value || undefined;
+    if (arg.startsWith('--employees-dir=')) {
+      return arg.slice('--employees-dir='.length).trim() || undefined;
     }
-    if (arg === '--employee' && i + 1 < argv.length) {
-      const value = argv[i + 1].trim();
-      return value || undefined;
+    if (arg === '--employees-dir' && i + 1 < argv.length) {
+      return argv[i + 1].trim() || undefined;
     }
   }
   return undefined;
@@ -152,14 +150,15 @@ async function bootstrap() {
 
     // 8. Create MainAgent（通过 DI 注入所有依赖）
     console.log('🧠 Initializing MainAgent...');
-    // Task 10: parse --employee=<id> CLI arg,fallback to first enabled JSON
-    const employeeId = parseEmployeeArg(process.argv);
-    const { resolveResource: resolveAppResource } = await import('./utils/app-root');
-    const employee = await loadEmployeeConfig({
-      explicitId: employeeId,
-      directory: resolveAppResource('employees'),
+    // Task 9: 加载所有 enabled 员工,构造 EmployeeRegistry
+    const employeesDir = parseEmployeeDirArg(process.argv) ?? resolveResource('employees');
+    const employeeRegistry = await loadAllEnabledEmployees({
+      directory: employeesDir,
+      deps: { llm: llmClient, memoryService, sessionStore, skillRegistry },
     });
-    console.log(`✅ Employee loaded (id=${employee.employee.id}${employeeId ? ` via --employee=${employeeId}` : ' via fallback'})\n`);
+    const fallbackEmployee = employeeRegistry.defaultFallback();
+    console.log(`✅ Loaded ${employeeRegistry.list().length} employees: ${employeeRegistry.list().map((a) => a.id).join(', ')}`);
+    console.log(`   Fallback: ${fallbackEmployee.id}\n`);
 
     const mainAgentDeps: MainAgentDependencies = {
       llm: llmClient,
@@ -173,8 +172,9 @@ async function bootstrap() {
       askAgent,
       systemSkillLoader,
       executorRegistry,
+      employeeRegistry,
     };
-    const mainAgent = new MainAgent(mainAgentDeps, { employee });
+    const mainAgent = new MainAgent(mainAgentDeps);
     console.log('✅ MainAgent initialized\n');
 
     // 9. Create and start API Server
