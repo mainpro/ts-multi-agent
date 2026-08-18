@@ -1,14 +1,14 @@
 # PRD - 数字员工协作系统
 
-> **版本**: v1.0  
-> **文档定位**: 产品需求文档(基于当前代码真实实现)  
+> **版本**: v1.1(2026-08-18,同步单进程多员工并存架构)
+> **文档定位**: 产品需求文档(基于当前代码真实实现)
 > **配套文档**: `详细设计.md`(架构/模块设计),`分析报告.md`(风险/优化建议)
 
 ---
 
 ## 1. 文档目的
 
-本文档描述 `ts-multi-agent` 项目的**产品需求**: 系统是什么、为谁服务、解决什么问题、提供哪些能力、不做什么。文档基于仓库当前代码(截至 2026-08-14)的事实,确保"实现的每一行都对得上 PRD 的需求"。
+本文档描述 `ts-multi-agent` 项目的**产品需求**: 系统是什么、为谁服务、解决什么问题、提供哪些能力、不做什么。文档基于仓库当前代码(截至 2026-08-18)的事实,确保"实现的每一行都对得上 PRD 的需求"。
 
 读者:
 - 产品/业务方: 理解产品形态、能力边界
@@ -38,7 +38,7 @@
 - 处理跨系统任务编排(DAG 分层执行)
 - 支持断点续执行(参数追问 / 系统重启后恢复)
 
-**单进程 = 一个数字员工**(`employees/*.json` 描述身份),多进程部署即可横向扩展员工团队。
+**单进程 = 多员工并存**:`EmployeeRegistry` 在启动时一次性 register 所有 enabled 员工,运行期只读;每个员工是 `EmployeeAgent` 实例(组合 `EmployeeConfig` + 内部 `SubAgent`)。`IntentRouter.classify()` 一次返回 `employeeId`,由 `routeIntentToEmployee()` 路由到对应员工。多进程部署仍可横向扩展员工团队(每进程持各自的 registry)。
 
 ---
 
@@ -133,16 +133,20 @@
 | **继续 / 挂起判定** | LLM 判断用户输入是回答还是新请求 | `src/agents/ask-agent.ts:116-150` |
 | **Steer 注入** | 用户中途改口消息注入到工具调用循环 | `src/memory/steering-buffer.ts` + `src/agents/sub-agent.ts:651-675` |
 
-### 4.2 数字员工身份
+### 4.2 数字员工身份(多员工并存)
 
 | 能力 | 描述 | 代码 |
 |---|---|---|
 | **JSON 驱动员工配置** | `employees/*.json` 描述身份/人设/能力/规划/输出加工 | `src/agents/employee/json-types.ts` |
-| **启动时加载** | `--employee=<id>` 或 fallback 到目录第一个 enabled | `src/index.ts:156-162` + `src/agents/employee/loader.ts` |
-| **Persona 注入** | 人设前缀拼到 IntentRouter + SubAgent 的 system prompt | `src/routers/intent-router.ts:124-132` + `src/agents/sub-agent.ts:326-334` |
+| **进程级员工注册表** | `EmployeeRegistry` 启动期一次性 register,运行期只读 | `src/agents/employee/registry.ts` |
+| **多员工启动时加载** | `--employees-dir=<path>` 或 fallback 到 `employees/` 目录,加载全部 `enabled` JSON | `src/index.ts:154-161` + `src/agents/employee/all-loader.ts` |
+| **EmployeeAgent 封装** | `EmployeeConfig` + 内部 `SubAgent` 实例的组合,负责 persona/tools/skills/rewriter/execution 的只读访问 + 委托 sub-task 执行 | `src/agents/employee/agent.ts:46-143` |
+| **意图路由** | `IntentRouter.classify()` 一次 LLM 调用同时返回 `intent` + `employeeId`(零额外 LLM);`routeIntentToEmployee()` 按 employeeId 选 EmployeeAgent,缺失/不存在 → 兜底到 `fallback-service-desk` | `src/routers/intent-router.ts:74-97` + `src/agents/employee/router.ts:17-32` |
+| **兜底员工保证** | `EmployeeRegistry.defaultFallback()` 校验 `fallback-service-desk` 必须存在且 enabled,否则 `BootstrapError`(fail-fast) | `src/agents/employee/registry.ts:46-61` |
+| **Persona 注入** | 人设前缀拼到 IntentRouter + SubAgent 的 system prompt | `src/routers/intent-router.ts:127-135` + `src/agents/sub-agent.ts:326-334` |
 | **Skill 白名单** | 员工只能调用白名单内技能,派单前校验 | `src/agents/main-agent.ts:1137-1150` |
 | **工具 3 段过滤** | skill.allowedTools ∩ employee.tools.enabled − employee.tools.denied | `src/agents/employee/tools.ts:32-57` |
-| **结果改写** | 完成后追加"转人工"尾注(可配) | `src/agents/result-aggregator.ts:54-63,241-250` |
+| **结果改写** | 完成后按 `task.employeeId` 在 registry 拿对应员工的 rewriter,追加"转人工"尾注(可配) | `src/agents/result-aggregator.ts:54-63,241-250` |
 
 ### 4.3 记忆与上下文
 
@@ -246,18 +250,21 @@
 
 ---
 
-## 6. 已交付的 7 个员工 / 技能配置
+## 6. 已交付的 3 个员工 / 7 个技能配置
 
-仓库实际配置 2 个数字员工 + 7 个技能(只读,从 `employees/` 和 `skills/` 目录事实提取):
+仓库实际配置 3 个数字员工 + 7 个技能(只读,从 `employees/` 和 `skills/` 目录事实提取)。3 个员工在**单进程**内并存,通过 `EmployeeRegistry` 路由。
 
-### 6.1 数字员工(2 个)
+### 6.1 数字员工(3 个)
 
-| 员工 ID | displayName | 启用技能数 | 启用工具数 | 拒绝工具 | 温度 | maxTokens | 并发 |
-|---|---|---|---|---|---|---|---|
-| `legal-assistant` | 法务助理·小法 | 1 (fawu) | 4 | send_email, external_api | 0.3 | 2000 | 5 |
-| `it-ops-consultant` | IT 运维顾问·小海 | 7 (全部) | 7 | send_email_external | 0.5 | 4000 | 8 |
+| 员工 ID | displayName | enabled | 启用技能数 | 启用工具数 | 拒绝工具 | 温度 | maxTokens | 并发 |
+|---|---|---|---|---|---|---|---|---|
+| `legal-assistant` | 法务助理·小法 | ✅ true | 1 (fawu) | 4 | send_email, external_api | 0.3 | 2000 | 5 |
+| `it-ops-consultant` | IT 运维顾问·小海 | ✅ true | 7 (全部) | 7 | send_email_external | 0.5 | 4000 | 8 |
+| `fallback-service-desk` | 兜底服务台 | ✅ true | unrestricted | 默认 | — | 默认 | 默认 | 默认 |
 
-`小法` 只处理法务(严谨,低温度,低并发);`小海` 是大堂经理(灵活,涵盖全部 7 个技能,可执行 shell)。
+- `小法` 只处理法务(严谨,低温度,低并发)
+- `小海` 是大堂经理(灵活,涵盖全部 7 个技能,可执行 shell)
+- `兜底服务台` 是必备兜底员工(`EmployeeRegistry.defaultFallback()` 校验其存在 + enabled,缺失或 disabled 则启动 fail-fast);当 `IntentRouter` 未返回 employeeId 或返回的 employeeId 不在 registry 中时,静默兜底到此员工(`src/agents/employee/router.ts:27-32`)
 
 ### 6.2 业务技能(7 个,从 `skills/` 目录事实)
 
@@ -281,15 +288,16 @@
 
 | 项 | 原因 |
 |---|---|
-| **跨进程员工协作** | 当前架构 = 单进程 = 单员工,跨进程协作需独立设计(留待分布式部署) |
 | **员工配置热更新** | 当前需重启进程加载新配置(留待未来需求) |
 | **员工配置 UI / 后台管理** | 当前 JSON 文件手动编辑(运维直接改) |
 | **远程员工配置 provider** | 当前只读本地 `employees/`(不接 config server) |
-| **12 个员工全部实现** | 当前只迁 2 个示例(legal-assistant, it-ops-consultant) |
+| **3 个员工以外的全部员工实现** | 当前交付 3 个示例(legal-assistant / it-ops-consultant / fallback-service-desk),其他员工的配置文件未提供 |
 | **LLM 韧性层 / 记忆系统 / Skill 注册的工具归属重定义** | 已用当前实现,不在本项目重构范围 |
 | **PPT / 讲稿的名称统一** | "虚拟员工" → "数字员工" 的历史命名统一(其他文档已采用) |
 | **员工运行指标看板** | SLA Watcher 已埋点,但无可视化看板(留待 BI 集成) |
 | **LLM provider/temperature 强制按员工 override** | 当前 LLMClient 已支持 options,但 bootstrap 集成仅打 log,完整集成留待 follow-up |
+
+> 注:单进程内多员工并存 + `IntentRouter` 一次返回 `employeeId` 路由已是本期交付能力,**跨进程员工协作 / 分布式 SessionStore** 仍属 Out of Scope(本表不单列)。
 
 ---
 
