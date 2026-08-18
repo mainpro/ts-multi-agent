@@ -5,6 +5,8 @@ import { SessionStore } from '../memory/session-store';
 import { createLogger } from '../observability/logger';
 import { BusinessError, LlmError, AppError, SkillError } from '../errors';
 import { LLMError } from '../llm';
+import { EmployeeRegistry } from './employee/registry';
+import { EmployeeAgent } from './employee/agent';
 
 const log = createLogger({ module: 'TaskGraphExecutor' });
 import {
@@ -95,6 +97,13 @@ export class TaskGraphExecutor {
         requestId: string;
         completedTaskIds: string[];
       }) => Promise<{ shouldStop?: boolean } | void>;
+      /**
+       * Task 6: 员工注册表。注入后,executeLayers 内部用 registry.get(task.employeeId)
+       * 查 EmployeeAgent 并包装为 TaskExecutor 绑到 task.executor(per-task executor,P3 race fix)。
+       * 缺失或不在 registry 时回退到 registry.defaultFallback(),再回退到外部 executorFactory 参数(back-compat)。
+       * 未提供 registry 时,executor 完全由外部 executorFactory 参数提供(back-compat 测试不走新逻辑)。
+       */
+      employeeRegistry?: EmployeeRegistry;
     } = {},
   ) {}
 
@@ -105,6 +114,10 @@ export class TaskGraphExecutor {
    * 透传到 TaskGraphNode,后续 executeLayers 在构造运行时 Task 时再复制到 task,
    * 这样 SubAgent.execute 能读到 Master 注入的 persona/tools(避免 RequestTask
    * 路径上字段被吞)。
+   *
+   * Task 6: 同上,MainAgent 写入的 `employeeId` 也从 plan.tasks[i] 透传到
+   * TaskGraphNode,executeLayers 据此从 EmployeeRegistry 选 EmployeeAgent 并
+   * 绑定为 task.executor。多员工路由的关键字段。
    */
   buildTaskGraph(plan: TaskPlan): TaskGraph {
     const nodes: TaskGraphNode[] = plan.tasks.map(t => ({
@@ -115,6 +128,7 @@ export class TaskGraphExecutor {
       params: t.params || {},
       _personaContext: t._personaContext,
       allowedTools: t.allowedTools,
+      employeeId: t.employeeId,
     }));
 
     const inDegree = new Map<string, number>();
@@ -282,10 +296,14 @@ export class TaskGraphExecutor {
           sessionId,
           userId,
           questionHistory: [],
-          // P3 race fix: 绑定 per-task executor,executor 跟随 task 生命周期而不是
-          // process-global。即使后续 MainAgent 调用 setExecutor 覆盖了原值,
+          // P3 race fix + Task 6: 绑定 per-task executor,executor 跟随 task 生命周期
+          // 而不是 process-global。即使后续 MainAgent 调用 setExecutor 覆盖了原值,
           // 已入队的 task 仍用自己绑定的 executor,避免跨请求并发互相污染。
-          executor: executorFactory ? executorFactory({ id: taskId, requirement: node.content, skillName: node.skillName, dependencies: node.dependencies } as Task) : undefined,
+          //
+          // Task 6 优先:注入 employeeRegistry 时,node.employeeId 决定 wrap 哪个 EmployeeAgent
+          // → task.executor,fallback 路径走 registry.defaultFallback()。
+          // 都未命中时回退到外部 executorFactory(back-compat:TaskGraphExecutor 旧测试)。
+          executor: this.resolveExecutorForTask(taskId, node, executorFactory),
           // Task 8: 把 Master 注入的 persona/tools 从 TaskGraphNode 复制到运行时 Task。
           // SubAgent.execute(task) 读这两个字段拼 system prompt / 过滤工具列表;
           // 没有这个传递链,SubAgent 永远拿不到 Master 的注入,persona prefix 和
@@ -296,6 +314,9 @@ export class TaskGraphExecutor {
         }
         if (node.allowedTools !== undefined) {
           task.allowedTools = node.allowedTools;
+        }
+        if (node.employeeId !== undefined) {
+          task.employeeId = node.employeeId;
         }
 
         this.taskQueue.addTask(task);
@@ -717,6 +738,72 @@ export class TaskGraphExecutor {
       if (graph.layers[i].includes(taskId)) return i;
     }
     return 0;
+  }
+
+  /**
+   * Task 6: 决定当前 task 的 executor。
+   *
+   * 优先级:
+   *   1. options.employeeRegistry 注入 + node.employeeId 在 registry 中 → wrap 该 EmployeeAgent
+   *   2. options.employeeRegistry 注入 + node.employeeId 缺失/未注册 → wrap registry.defaultFallback()
+   *   3. 外部 executorFactory 参数(back-compat:旧 TaskGraphExecutor 测试不传 registry)
+   *   4. 都没 → undefined,TaskQueue 走 this.executor
+   */
+  private resolveExecutorForTask(
+    taskId: string,
+    node: TaskGraphNode,
+    executorFactory?: TaskExecutorFactory,
+  ): TaskExecutor | undefined {
+    const registry = this.options.employeeRegistry;
+    if (registry) {
+      const agent: EmployeeAgent = node.employeeId && registry.has(node.employeeId)
+        ? registry.get(node.employeeId)!
+        : registry.defaultFallback();
+      log.info('Task 6 路由 executor', {
+        taskId,
+        nodeEmployeeId: node.employeeId,
+        resolvedEmployeeId: agent.id,
+        source: node.employeeId && registry.has(node.employeeId) ? 'registry' : 'fallback',
+      });
+      return this.wrapEmployeeAgentAsExecutor(agent);
+    }
+    if (executorFactory) {
+      return executorFactory({
+        id: taskId,
+        requirement: node.content,
+        skillName: node.skillName,
+        dependencies: node.dependencies,
+      } as Task);
+    }
+    return undefined;
+  }
+
+  /**
+   * Task 6: 把 EmployeeAgent 包装成 TaskExecutor 签名(task, signal) => Promise<unknown>。
+   * EmployeeAgent.executeSubTask 需要 SubTaskContext,这里构造最小 context,
+   * sessionId / userId 已在调用 executeLayers 时持有,直接注入即可。
+   *
+   * 包装函数上挂 `__employeeId` 标记,供测试断言"哪个 EmployeeAgent 实际绑了
+   * 这个 task.executor"(回溯路由结果)。
+   */
+  private wrapEmployeeAgentAsExecutor(agent: EmployeeAgent): TaskExecutor {
+    const wrapped = async (task: Task, signal?: AbortSignal) => {
+      const subTask = { ...task };
+      // 包装情况下 AbortSignal 由 TaskQueue 持有,executeSubTask 内部
+      // 通过 SubAgent.execute 链路读取 task 字段;此处不直接传 signal,
+      // 因为 EmployeeAgent.executeSubTask 签名是 (task, ctx) 不是 (task, signal)。
+      // TaskQueue 自己负责 AbortSignal → task lifecycle,P5 任务超时已落地。
+      void signal;
+      const ctx = {
+        sessionId: subTask.sessionId || '',
+        userId: subTask.userId || '',
+        traceId: '',
+      };
+      return agent.executeSubTask(subTask, ctx);
+    };
+    // 测试/调试钩子:挂 employeeId 标记,便于回溯"该 executor 是哪个 EmployeeAgent"。
+    (wrapped as any).__employeeId = agent.id;
+    return wrapped as TaskExecutor;
   }
 }
 

@@ -372,6 +372,15 @@ export interface Task {
    * 存在且非空时优先于 skill.allowedTools。
    */
   allowedTools?: string[];
+
+  /**
+   * Task 6: 目标员工 ID,由 MainAgent 在派单前写入(IntentRouter 路由 + 派单)。
+   * TaskGraphExecutor 读取此字段,从 EmployeeRegistry 查 EmployeeAgent
+   * 并绑定到 task.executor。缺失或 registry 中不存在时回退到 defaultFallback。
+   * 透传链:TaskPlan.tasks[i].employeeId → TaskGraphNode.employeeId →
+   *        运行时 Task.employeeId(由 buildTaskGraph / executeLayers 复制)。
+   */
+  employeeId?: string;
 }
 
 /**
@@ -535,6 +544,11 @@ export interface TaskPlan {
      * Task 8:同上。skill.allowedTools ∩ employee.tools 的最终结果。
      */
     allowedTools?: string[];
+    /**
+     * Task 6:由 MainAgent(IntentRouter 路由 + 派单)写入的目标员工 ID。
+     * 透传到 TaskGraphNode → 运行时 Task,TaskGraphExecutor 据此绑定 executor。
+     */
+    employeeId?: string;
   }>;
 }
 
@@ -563,6 +577,12 @@ export interface TaskGraphNode {
    * Task 8:同上,由 MainAgent 通过 TaskPlan → TaskGraphNode → 运行时 Task 传递。
    */
   allowedTools?: string[];
+  /**
+   * Task 6:目标员工 ID,buildTaskGraph 从 TaskPlan.tasks[i].employeeId 复制,
+   * executeLayers 再复制到运行时 Task.employeeId,TaskGraphExecutor 据此
+   * 从 EmployeeRegistry 查 EmployeeAgent 并绑定为 task.executor。
+   */
+  employeeId?: string;
 }
 
 /**
