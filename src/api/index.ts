@@ -38,8 +38,6 @@ interface SubmitTaskRequest {
   sessionId?: string; // 可选，默认使用 userId
   accessToken?: string; // 可选，透传给技能脚本的认证 token
   draftId?: string; // 可选，幂等键（与 Tasks 6 的 gate.queue 关联）
-  /** 虚拟员工 ID(可选)。不填则走意图识别 + 默认员工 fallback。 */
-  employeeId?: string;
 }
 
 /**
@@ -302,7 +300,6 @@ export function createAPIServer(
     res: Response<ApiResponse<{ status: 'accepted'; message: string; userId: string }> | ApiError>
     ): Promise<void> => {
     const { requirement, userId } = req.body;
-    const employeeId = req.body.employeeId;
     const accessToken = extractAccessToken(req);
 
     // Validate request
@@ -321,7 +318,7 @@ export function createAPIServer(
 
     // 直接由 mainAgent.processRequirement 处理（IntentRouter 识别意图 → 执行技能 → 结果持久化到 SessionStore）
     RequestContext.run({ accessToken }, () => {
-      mainAgent.processRequirement(requirement, undefined, effectiveUserId, undefined, { employeeId }).catch((err) => {
+      mainAgent.processRequirement(requirement, undefined, effectiveUserId).catch((err) => {
         // Persist the failure so it can be retrieved via /tasks/:id/result.
         // The error is a known AppError (or wrapped as one); log with structured context.
         // Note: task failure persistence is owned by the agent layer via sessionStore.failRequest,
@@ -368,7 +365,6 @@ app.post(
     res: Response<ApiError>
   ) => {
     const { requirement } = req.body;
-    const employeeId = req.body.employeeId;
     const userId = req.body.userId || 'default';
     const accessToken = extractAccessToken(req);
     // 在 API 入口生成 traceId,贯穿整条调用链的所有日志
@@ -601,7 +597,7 @@ app.post(
       // 后续 gate 已被跳过,符合设计意图:commit to proceed path).
       const result = await mainAgent.processRequirement(
         requirement, imageAttachment, userId, effectiveSessionId,
-        { draftId: req.body.draftId, gateChecked: true, employeeId },
+        { draftId: req.body.draftId, gateChecked: true },
       );
 
       // NOTE: SSE `step` events from a global `console.log` override were removed.

@@ -32,6 +32,7 @@ import { BusinessError, AppError, SkillError } from '../errors';
 import { slaTracker, reportSlaBreach } from '../observability/sla-watcher';
 import { CONFIG } from '../types';
 import type { EmployeeRegistry } from './employee/registry';
+import type { EmployeeAgent } from './employee/agent';
 import { routeIntentToEmployee } from './employee/router';
 import { computeAllowedTools } from './employee/tools';
 
@@ -205,7 +206,7 @@ export class MainAgent {
     imageAttachment?: { data: Buffer; mimeType: string; originalName?: string },
     userId: string = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     sessionId?: string,
-    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request; employeeId?: string },
+    options?: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request },
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
     const effectiveSessionId = sessionId || userId;
 
@@ -245,7 +246,7 @@ export class MainAgent {
     userId: string,
     sessionId: string | undefined,
     effectiveSessionId: string,
-    options: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request; employeeId?: string } | undefined,
+    options: { planMode?: boolean; draftId?: string; skipGate?: boolean; gateChecked?: boolean; requestOverride?: Request } | undefined,
     switchSlaId: (newId: string) => void,
   ): Promise<TaskResult & { queued?: boolean; queueFull?: boolean; pendingCount?: number; draftId?: string; position?: number }> {
 
@@ -313,13 +314,14 @@ export class MainAgent {
       await this.memoryService.saveUserMessage(userId, effectiveSessionId, requirement);
     } catch (e) { MainAgent.log.error('保存用户消息到记忆失败', { error: e }); }
 
-    // ===== Employee routing(Task 8)=====
-    //   - persona / tools / planning 由 this.employee 统一提供
-    //   - executeTaskGraph 不再需要 executorFactory(TaskQueue 默认 executor 接管)
-    // 注:options.employeeId 仍保留(API 层可能传入 @mention hint),暂时仅作为日志。
-    if (options?.employeeId) {
-      MainAgent.log.debug('收到 employeeId hint(已废弃,仅日志)', { hint: options.employeeId });
-    }
+    // ===== Employee routing =====
+    // 员工由 EmployeeRegistry 统一持有,由 routeIntentToEmployee(intentResult, registry)
+    // 在意图分类之后选出(LLM 返回 employeeId → registry 命中,否则静默兜底到
+    // registry.defaultFallback())。MainAgent 不再绑定单一 this.employee。
+    // 选中的 employee 提供 persona / tools / skillWhitelist / decompositionHint,
+    // 由 injectEmployeeContext 写入每个 plan task(employeeId / allowedTools /
+    // _personaContext),TaskGraphExecutor 据 task.employeeId 绑定实际 executor。
+    // executeTaskGraph 不再需要 executorFactory(EmployeeRegistry 接管路由)。
 
     // ========== 步骤 1: 图片分析 ==========
     if (imageAttachment) {
@@ -882,6 +884,81 @@ export class MainAgent {
   }
 
   /**
+   * 把选中员工的上下文注入单个 plan task(原地修改并返回同一对象)。
+   *
+   * 单任务快路径与多任务 planner 路径共用此方法 —— 早期版本只在多任务循环里做注入,
+   * 导致单任务请求的 task.employeeId 永远是 undefined,resolveExecutorForTask 一律
+   * 回退到 registry.defaultFallback(),LLM 选出的员工被静默丢弃(白名单 / persona /
+   * tools 同样失效)。
+   *
+   * 注入内容:
+   *   1. skill 白名单校验(不合规直接抛 SkillError,派单前 fail-fast)
+   *      - skillWhitelist 缺失 → 全部放行(向后兼容)
+   *      - type === 'unrestricted' → 全部放行
+   *      - type === 'allowlist'    → skillName 必须在 skills 列表里
+   *      - 没有 skillName 的任务(IntentRouter 标注 unclear 等)直接放过
+   *   2. employeeId —— TaskGraphExecutor 据此从 EmployeeRegistry 绑定 executor
+   *   3. allowedTools —— skill 声明 ∩ 员工 ToolPolicy
+   *   4. _personaContext —— 员工 persona 前缀 / style / boundaries
+   *
+   * 注意必须写回 plan.tasks[i] 本身:buildTaskGraph 从 plan.tasks 构建 TaskGraphNode,
+   * 只挂在 RequestTask 上时 executeLayers 构造运行时 Task 拿不到这些字段。
+   */
+  private async injectEmployeeContext(
+    taskDef: TaskPlan['tasks'][number],
+    employee: EmployeeAgent,
+  ): Promise<TaskPlan['tasks'][number]> {
+    if (taskDef.skillName) {
+      const whitelist = employee.config.capabilities.skillWhitelist;
+      if (whitelist && whitelist.type === 'allowlist' && !whitelist.skills.includes(taskDef.skillName)) {
+        MainAgent.log.warn('SKILL_NOT_ALLOWED: task 被员工策略拦截', {
+          employeeId: employee.id,
+          skillName: taskDef.skillName,
+          whitelistType: whitelist.type,
+        });
+        throw new SkillError(
+          'SKILL_NOT_ALLOWED',
+          `skill "${taskDef.skillName}" 不在员工 "${employee.id}" 的白名单中`,
+        );
+      }
+    }
+
+    // 计算 task 的最终 allowedTools(skill 声明 ∩ 员工 tools 策略)
+    //   1. skill metadata 优先(轻量);失败则降级到 loadFullSkill
+    //   2. 员工 ToolPolicy(白/黑名单)叠加
+    let skillAllowedTools: string[] | undefined;
+    try {
+      const meta = this.skillRegistry.getSkillMetadata?.(taskDef.skillName ?? '');
+      skillAllowedTools = meta?.allowedTools;
+    } catch {
+      // ignore - fall through to loadFullSkill
+    }
+    if (!skillAllowedTools && taskDef.skillName) {
+      try {
+        const full = await this.skillRegistry.loadFullSkill?.(taskDef.skillName);
+        skillAllowedTools = full?.allowedTools;
+      } catch {
+        // ignore
+      }
+    }
+    const allowed = computeAllowedTools(skillAllowedTools, employee.config.capabilities.tools);
+
+    // employee.personaPrefix 已经由 EmployeeAgent 在 getter 中完成 ${displayName} 模板替换
+    const personaPrefix = employee.personaPrefix ?? '';
+    taskDef._personaContext = personaPrefix
+      ? {
+          prefix: personaPrefix,
+          style: employee.persona?.style,
+          boundaries: employee.persona?.boundaries,
+        }
+      : undefined;
+    taskDef.allowedTools = Array.from(allowed);
+    taskDef.employeeId = employee.id;
+
+    return taskDef;
+  }
+
+  /**
    * 处理正常的请求（无等待问题的情况）
    */
   private async processNormalRequirement(
@@ -1064,6 +1141,9 @@ export class MainAgent {
       }
 
       if (tasksToExecute.length === 1) {
+        // 单任务快路径:跳过 UnifiedPlanner(省一次 LLM),但员工上下文注入不能跳过 ——
+        // employeeId / allowedTools / _personaContext 统一由下面的 injectEmployeeContext
+        // 循环补齐(与多任务路径同一入口)。
         plan = {
           id: `plan-${Date.now()}`,
           requirement: enrichedRequirement,
@@ -1115,72 +1195,16 @@ export class MainAgent {
         };
       }
 
-      // 注册任务到请求中(Task 8 同步注入 persona/allowedTools 并执行 skill 白名单校验)
+      // 注册任务到请求中。
+      // 派单前统一注入员工上下文(employeeId / allowedTools / _personaContext)并
+      // 执行 skill 白名单校验 —— 单任务快路径与多任务 planner 路径都走这里,避免
+      // 快路径漏注入导致所有单任务请求被路由到兜底员工。
+      // 注:injectEmployeeContext 原地修改 plan.tasks[i],因为 buildTaskGraph 从
+      // plan.tasks 构建 TaskGraphNode;RequestTask 上冗余保存一份用于持久化/兼容。
       for (const taskDef of plan.tasks) {
         const uniqueTaskId = `${plan.id}-${taskDef.id}`;
-        // Task 6 会把 task.employeeId 写入 + TaskGraphExecutor.executorFactory 用此 id
-        // 从 employeeRegistry 查 EmployeeAgent。本期仅 set up 字段,字段类型定义
-        // 推迟到 T6(同步 git rebase 可避免类型不一致)。
 
-        // Task 7 移交:SubAgent.execute 不再校验 skill 白名单,改在 MainAgent 派单前完成。
-        // 规则(与 Task 3 旧 SubAgent 行为一致):
-        //   - skillWhitelist 缺失 → 全部放行(向后兼容)
-        //   - skillWhitelist.type === 'unrestricted' → 全部放行
-        //   - skillWhitelist.type === 'allowlist' → skillName 必须在 skills 列表里
-        // 没有 skillName 的任务(IntentRouter 标注 unclear 等)直接放过。
-        if (taskDef.skillName) {
-          const whitelist = employee.config.capabilities.skillWhitelist;
-          if (whitelist && whitelist.type === 'allowlist' && !whitelist.skills.includes(taskDef.skillName)) {
-            MainAgent.log.warn('SKILL_NOT_ALLOWED: task 被员工策略拦截', {
-              employeeId: employee.id,
-              skillName: taskDef.skillName,
-              whitelistType: whitelist.type,
-            });
-            throw new SkillError(
-              'SKILL_NOT_ALLOWED',
-              `skill "${taskDef.skillName}" 不在员工 "${employee.id}" 的白名单中`,
-            );
-          }
-        }
-
-        // 计算 task 的最终 allowedTools(skill 声明 ∩ 员工 tools 策略)
-        //   1. skill metadata 优先(轻量);失败则降级到 loadFullSkill
-        //   2. 员工 ToolPolicy(白/黑名单)叠加
-        let skillAllowedTools: string[] | undefined;
-        try {
-          const meta = this.skillRegistry.getSkillMetadata?.(taskDef.skillName ?? '');
-          skillAllowedTools = meta?.allowedTools;
-        } catch {
-          // ignore - fall through to loadFullSkill
-        }
-        if (!skillAllowedTools && taskDef.skillName) {
-          try {
-            const full = await this.skillRegistry.loadFullSkill?.(taskDef.skillName);
-            skillAllowedTools = full?.allowedTools;
-          } catch {
-            // ignore
-          }
-        }
-        const allowed = computeAllowedTools(skillAllowedTools, employee.config.capabilities.tools);
-
-        // 构造 personaContext:把 ${displayName} 模板替换为员工 displayName
-        // Task 5: employee.personaPrefix 已经由 EmployeeAgent 在 getter 中完成模板替换
-        const personaPrefix = employee.personaPrefix ?? '';
-
-        // Task 8 (fix): 把 Master 注入的 persona/tools 写回 plan.tasks[i] 而不是只写 RequestTask。
-        // 原因:buildTaskGraph 从 plan.tasks 构建 TaskGraphNode,如果只挂在 RequestTask 上,
-        // executeLayers 构造运行时 Task 时拿不到这些字段,SubAgent.execute 永远读到 undefined,
-        // persona prefix 与员工白/黑名单失效。RequestTask 同样保留这两个字段(用于持久化和兼容),
-        // 但真正喂给 SubAgent 的是 plan.tasks → TaskGraphNode → 运行时 Task 这条链。
-        const personaContext = personaPrefix
-          ? {
-              prefix: personaPrefix,
-              style: employee.persona?.style,
-              boundaries: employee.persona?.boundaries,
-            }
-          : undefined;
-        taskDef._personaContext = personaContext;
-        taskDef.allowedTools = Array.from(allowed);
+        await this.injectEmployeeContext(taskDef, employee);
 
         const requestTask: RequestTask = {
           taskId: uniqueTaskId,
@@ -1192,8 +1216,8 @@ export class MainAgent {
           result: null,
           questions: [],
           currentQuestion: null,
-          _personaContext: personaContext,
-          allowedTools: Array.from(allowed),
+          _personaContext: taskDef._personaContext,
+          allowedTools: taskDef.allowedTools,
         };
 
         await this.sessionStore.addTaskToRequest(userId, sessionId, request.requestId, requestTask);

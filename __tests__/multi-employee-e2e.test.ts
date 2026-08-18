@@ -30,6 +30,7 @@ import { SkillRegistry } from '../src/skill-registry';
 import { SystemSkillLoader, ExecutorRegistry } from '../src/system-skills';
 import { TaskQueue } from '../src/task-queue';
 import { SessionStore } from '../src/memory/session-store';
+import { TaskGraphExecutor } from '../src/agents/task-graph-executor';
 import type { ILLMClient } from '../src/llm';
 import { buildTestMainAgent } from './_helpers/build-test-agent';
 
@@ -190,5 +191,135 @@ describe('多员工并存 E2E', () => {
       registry,
     );
     expect(agent.id).toBe('fallback-service-desk');
+  });
+});
+
+/**
+ * 回归:单任务快路径(tasksToExecute.length === 1,跳过 UnifiedPlanner)必须和
+ * 多任务路径一样注入员工上下文。
+ *
+ * 修复前:快路径构造的 inline plan 不写 employeeId / allowedTools / _personaContext,
+ * 也不做 skill 白名单校验 → buildTaskGraph 读到 undefined,resolveExecutorForTask
+ * 一律回退到 registry.defaultFallback(),LLM 选中的员工被静默丢弃。
+ */
+describe('单任务快路径注入员工上下文(回归)', () => {
+  /**
+   * 构造一个 MainAgent:mock LLM 固定返回「1 个 skill 任务 + 指定 employeeId」,
+   * 并把 executeTaskGraph 换成捕获桩(不真正执行),便于断言 TaskGraph 上的字段。
+   */
+  async function buildAgentForSingleTask(opts: {
+    employeeId?: string;
+    skillName?: string;
+    legalWhitelist?: { type: 'allowlist' | 'unrestricted'; skills: string[] };
+  } = {}) {
+    const dataDir = path.join(os.tmpdir(), `mem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+    await fs.mkdir(path.join(dataDir, 'memory'), { recursive: true });
+
+    const generateStructured = mock(async () => ({
+      intent: 'skill_task',
+      confidence: 0.9,
+      employeeId: opts.employeeId ?? 'legal-assistant',
+      tasks: [
+        { skillName: opts.skillName ?? 'contract-review', requirement: '审一份合同', intent: 'execute', params: {} },
+      ],
+    }));
+    const mockLLM = {
+      generateStructured,
+      generateText: async () => '',
+      generateWithTools: async () => ({ content: '', toolCalls: [] }),
+    } as any as ILLMClient;
+
+    const sessionStore = new SessionStore(100, dataDir);
+    const built = buildTestMainAgent({
+      mocks: {
+        llm: mockLLM,
+        skillRegistry: new SkillRegistry({ skillsDir: './skills', autoLoad: false }),
+        taskQueue: new TaskQueue(async () => null),
+        intentRouter: realIntentRouterWithMockLLM(mockLLM),
+        userProfileService: new UserProfileService(dataDir),
+        memoryService: new MemoryService(dataDir, mockLLM),
+        dynamicContextBuilder: new DynamicContextBuilder(new MemoryService(dataDir, mockLLM)),
+        sessionStore,
+        askAgent: new AskAgent(sessionStore, mockLLM),
+        systemSkillLoader: (() => { const l = new SystemSkillLoader(); l.loadAll(); return l; })(),
+        executorRegistry: new ExecutorRegistry(),
+      },
+    });
+
+    built.registry.register(new EmployeeAgent({
+      employee: { id: 'legal-assistant', displayName: '法务助理', enabled: true },
+      capabilities: {
+        llm: { provider: 'haier' },
+        ...(opts.legalWhitelist ? { skillWhitelist: opts.legalWhitelist } : {}),
+      },
+      persona: { prefix: '我是 ${displayName},专答法律问题' },
+    }, mockEmployeeDeps));
+
+    // 捕获 TaskGraph,不真正执行(TaskQueue 是空壳)
+    let capturedGraph: any;
+    (built.mainAgent as any).executeTaskGraph = async (graph: any) => {
+      capturedGraph = graph;
+      return {
+        success: true,
+        data: {
+          results: [{
+            taskId: graph.nodes[0]?.taskId,
+            skillName: graph.nodes[0]?.skillName,
+            requirement: graph.nodes[0]?.content,
+            status: 'completed',
+            employeeId: graph.nodes[0]?.employeeId,
+            result: { success: true, data: { response: 'ok' } },
+          }],
+        },
+      };
+    };
+
+    return { mainAgent: built.mainAgent, registry: built.registry, getGraph: () => capturedGraph };
+  }
+
+  it('单任务请求把 LLM 选中的 employeeId 写入 TaskGraph(不再被兜底吞掉)', async () => {
+    const { mainAgent, getGraph } = await buildAgentForSingleTask();
+
+    await mainAgent.processRequirement('帮我审一份合同', undefined, 'user-single', 'sess-single');
+
+    const graph = getGraph();
+    expect(graph).toBeDefined();
+    expect(graph.nodes.length).toBe(1);
+    expect(graph.nodes[0].employeeId).toBe('legal-assistant');
+  });
+
+  it('单任务请求同样注入 persona / allowedTools', async () => {
+    const { mainAgent, getGraph } = await buildAgentForSingleTask();
+
+    await mainAgent.processRequirement('帮我审一份合同', undefined, 'user-single2', 'sess-single2');
+
+    const node = getGraph().nodes[0];
+    // persona 模板 ${displayName} 已被 EmployeeAgent 替换
+    expect(node._personaContext?.prefix).toContain('法务助理');
+    expect(Array.isArray(node.allowedTools)).toBe(true);
+  });
+
+  it('单任务图节点经 resolveExecutorForTask 绑到 legal-assistant 而非兜底', async () => {
+    const { mainAgent, registry, getGraph } = await buildAgentForSingleTask();
+
+    await mainAgent.processRequirement('帮我审一份合同', undefined, 'user-single3', 'sess-single3');
+
+    // 用注入了 registry 的 TaskGraphExecutor 复现 executor 解析(Task 6 契约)
+    const tge = new TaskGraphExecutor(
+      new TaskQueue(async () => null), {} as any, {} as any, { employeeRegistry: registry },
+    );
+    const executor = (tge as any).resolveExecutorForTask('t1', getGraph().nodes[0]);
+    expect((executor as any).__employeeId).toBe('legal-assistant');
+    expect((executor as any).__employeeId).not.toBe('fallback-service-desk');
+  });
+
+  it('单任务快路径执行 skill 白名单校验(不在白名单 → SKILL_NOT_ALLOWED)', async () => {
+    const { mainAgent } = await buildAgentForSingleTask({
+      legalWhitelist: { type: 'allowlist', skills: ['other-skill'] },
+    });
+
+    await expect(
+      mainAgent.processRequirement('帮我审一份合同', undefined, 'user-single4', 'sess-single4'),
+    ).rejects.toThrow(/SKILL_NOT_ALLOWED|白名单/);
   });
 });
