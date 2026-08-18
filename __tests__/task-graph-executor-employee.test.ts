@@ -122,7 +122,7 @@ describe('TaskGraphExecutor 多员工路由', () => {
     });
 
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator({} as any, {} as any, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator({} as any, {} as any, sessionStore, async () => ({ success: true }), buildRegistry());
 
     // 关键:配置 employeeRegistry 选项
     const executor = new TaskGraphExecutor(taskQueue, resultAgg, sessionStore, {
@@ -176,7 +176,7 @@ describe('TaskGraphExecutor 多员工路由', () => {
     });
 
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator({} as any, {} as any, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator({} as any, {} as any, sessionStore, async () => ({ success: true }), buildRegistry());
 
     // 不传 employeeRegistry 选项
     const executor = new TaskGraphExecutor(taskQueue, resultAgg, sessionStore);

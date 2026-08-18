@@ -8,6 +8,7 @@ import { taskEvents } from '../events/task-events';
 import { getSkillData } from '../types';
 import { createLogger } from '../observability/logger';
 import type { ResultRewriter } from './employee/types';
+import type { EmployeeRegistry } from './employee/registry';
 
 const log = createLogger({ module: 'ResultAggregator' });
 import {
@@ -32,7 +33,11 @@ import {
 export type TransferToHumanHook = (taskResults: TaskResult[]) => boolean;
 
 export class ResultAggregator {
-  private rewriter?: ResultRewriter;
+  /**
+   * 进程级员工注册表 — Task 7 起 rewriter 从当前 task 的 EmployeeAgent 拿,
+   * 不再由构造期注入单一 rewriter。
+   */
+  private employeeRegistry: EmployeeRegistry;
   private transferHook: TransferToHumanHook;
 
   constructor(
@@ -42,10 +47,10 @@ export class ResultAggregator {
     private onNeedsIntentReclassification: (
       request: Request, userId: string, sessionId: string,
     ) => Promise<TaskResult>,
-    rewriter?: ResultRewriter,
+    employeeRegistry: EmployeeRegistry,
     transferHook?: TransferToHumanHook,
   ) {
-    this.rewriter = rewriter;
+    this.employeeRegistry = employeeRegistry;
     this.transferHook = transferHook ?? (() => false);  // 默认 noop
   }
 
@@ -191,7 +196,7 @@ export class ResultAggregator {
    */
   async summarizeResults(
     originalRequirement: string,
-    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string; status?: string }>,
+    taskResults: Array<{ taskId: string; skillName: string; requirement: string; response: string; status?: string; employeeId?: string }>,
     userId: string,
     sessionId: string,
     request: Request,
@@ -269,12 +274,23 @@ ${resultsContext}
       // 旧行为(B-1 bug):taskResults[0]?.status === 'completed'
       // 新行为:全成功 + 无 waiting 才追加
       const allCompleted = completedTasks.length === taskResults.length && waitingTasks.length === 0;
-      if (this.rewriter && allCompleted) {
-        const targetStatus = this.rewriter.match?.status ?? 'completed';
-        if (targetStatus === 'completed') {
+
+      // Task 7: rewriter 从当前 task 的 EmployeeAgent 拿,而不是构造期注入的单一 rewriter。
+      // 不同 task 可能归属不同员工 → 各自用自己的 rewriter;task 无 employeeId → 兜底员工。
+      // defaultFallback() 缺失/disabled 时抛 BootstrapError,这里向上抛 — 这是 fail-fast 信号,
+      // 不允许静默用别的代理。
+      if (allCompleted) {
+        for (const task of taskResults) {
+          const employee = task.employeeId && this.employeeRegistry.has(task.employeeId)
+            ? this.employeeRegistry.get(task.employeeId)!
+            : this.employeeRegistry.defaultFallback();
+          const rewriter = employee.resultRewriter;
+          if (!rewriter) continue;
+          const targetStatus = rewriter.match?.status ?? 'completed';
+          if (targetStatus !== 'completed') continue;
           judgment = {
             ...judgment,
-            summary: this.applyRewriter(judgment.summary, this.rewriter),
+            summary: this.applyRewriter(judgment.summary, rewriter),
           };
         }
       }

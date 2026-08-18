@@ -1,6 +1,9 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { ResultAggregator } from '../src/agents/result-aggregator';
 import { BusinessError, LlmError, SkillError } from '../src/errors';
+import { EmployeeRegistry } from '../src/agents/employee/registry';
+import { EmployeeAgent } from '../src/agents/employee/agent';
+import type { EmployeeConfig } from '../src/agents/employee/json-types';
 import type { ILLMClient } from '../src/llm';
 import type { MemoryService } from '../src/memory/memory-service';
 import type { SessionStore } from '../src/memory/session-store';
@@ -8,6 +11,18 @@ import type {
   Request, RequestTask, Session,
   Task, TaskResult, SkillExecutionResult, QAEntry,
 } from '../src/types';
+
+// Task 7: ResultAggregator 持有 EmployeeRegistry,旧 fixture 全部改为最小 registry
+const mockEmployeeDeps: any = { llm: {}, memoryService: {}, sessionStore: {}, skillRegistry: {} };
+
+function makeMinimalRegistry(): EmployeeRegistry {
+  const reg = new EmployeeRegistry();
+  reg.register(new EmployeeAgent({
+    employee: { id: 'fallback-service-desk', displayName: '兜底', enabled: true },
+    capabilities: { llm: { provider: 'haier' } },
+  }, mockEmployeeDeps));
+  return reg;
+}
 
 // ---------------------------------------------------------------------------
 // Test doubles — lightweight fakes that satisfy the interfaces we exercise
@@ -151,6 +166,7 @@ describe('ResultAggregator', () => {
       const { deps } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
 
       const skillData = makeSkillData({
@@ -175,6 +191,7 @@ describe('ResultAggregator', () => {
       const { deps } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
       const skillData = makeSkillData({
         question: { type: 'skill_question', content: 'Q?', metadata: { choices: ['a', 'b'] } },
@@ -192,6 +209,7 @@ describe('ResultAggregator', () => {
       const { deps, state } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
 
       const task = makeTask({
@@ -223,6 +241,7 @@ describe('ResultAggregator', () => {
       const { deps, state } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
       const task = makeTask({
         result: {
@@ -246,6 +265,7 @@ describe('ResultAggregator', () => {
       const { deps, state } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
 
       const t = makeTask({
@@ -270,6 +290,7 @@ describe('ResultAggregator', () => {
       const { deps } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
       const t = makeTask({ id: 't-1', result: { success: true, data: makeSkillData({ response: 'r' }) } });
       const out = await agg.handleTaskCompletion(t, 'u', 's', request);
@@ -284,6 +305,7 @@ describe('ResultAggregator', () => {
       const { deps, state } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
 
       const results = [
@@ -310,6 +332,7 @@ describe('ResultAggregator', () => {
       const { deps, state } = makeDeps(session);
       const agg = new ResultAggregator(
         deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
       const out = await agg.summarizeResults('orig', [], 'u', 's', request);
       expect(out.completed).toBe(true);
@@ -326,6 +349,7 @@ describe('ResultAggregator', () => {
       } as unknown as ILLMClient;
       const agg = new ResultAggregator(
         llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
 
       const out = await agg.summarizeResults('orig',
@@ -345,6 +369,7 @@ describe('ResultAggregator', () => {
       } as unknown as ILLMClient;
       const agg = new ResultAggregator(
         llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+        makeMinimalRegistry(),
       );
       await expect(
         agg.summarizeResults('orig', [{ taskId: 't-1', skillName: 'a', requirement: 'r', response: 'x' }],

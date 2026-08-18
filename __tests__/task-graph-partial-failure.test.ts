@@ -2,6 +2,19 @@ import { TaskGraphExecutor } from '../src/agents/task-graph-executor';
 import { TaskQueue } from '../src/task-queue';
 import { SessionStore } from '../src/memory/session-store';
 import { ResultAggregator } from '../src/agents/result-aggregator';
+import { EmployeeRegistry } from '../src/agents/employee/registry';
+import { EmployeeAgent } from '../src/agents/employee/agent';
+
+// Task 7: ResultAggregator 持有 EmployeeRegistry,旧 fixture 改为构造 fallback 员工 registry
+const mockEmployeeDeps: any = { llm: {}, memoryService: {}, sessionStore: {}, skillRegistry: {} };
+function makeMinimalRegistry(): EmployeeRegistry {
+  const reg = new EmployeeRegistry();
+  reg.register(new EmployeeAgent({
+    employee: { id: 'fallback-service-desk', displayName: '兜底', enabled: true },
+    capabilities: { llm: { provider: 'haier' } },
+  }, mockEmployeeDeps));
+  return reg;
+}
 
 describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
   it('returns hasPartialFailure=true when some tasks failed (partial)', async () => {
@@ -9,7 +22,7 @@ describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async (task: any) => {
       if (task.id === 'plan-1-task-1') return { success: true, data: { response: 'ok' } };
@@ -44,7 +57,7 @@ describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async (task: any) => {
       if (task.id === 'plan-1-task-1') return { success: true, data: { response: 'ok' } };
@@ -74,7 +87,7 @@ describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async () => {
       throw new Error('both tasks fail');
@@ -105,7 +118,7 @@ describe('TaskGraphExecutor.executeTaskGraph partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async (task: any) => {
       if (task.id === 'plan-1-task-1') return { success: true, data: { response: 'ok' } };
@@ -187,7 +200,7 @@ describe('TaskGraphExecutor.resumeFromBreakpoint partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async (task: any) => {
       // task-1 已从 completedResults 恢复,不应再执行
@@ -234,7 +247,7 @@ describe('TaskGraphExecutor.resumeFromBreakpoint partial failure', () => {
     const llm = {} as any;
     const memSvc = {} as any;
     const sessionStore = {} as any;
-    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const resultAgg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), makeMinimalRegistry());
 
     const taskQueue = new TaskQueue(async () => {
       throw new Error('all resume tasks fail');

@@ -106,9 +106,7 @@ export class MainAgent {
     // resultAggregator 需要 processNormalRequirement 回调,循环依赖 → MainAgent 内创建
     // P5: ResultAggregator 注入 transferHook(本期 noop)
     // TODO(Task 13): 接外部工单系统时实现真实 hook
-    // T7: ResultAggregator 接受 per-employee rewriter — 本期统一从 fallback 员工读取,
-    // T7 会切换为按 task.employeeId 注入。
-    const fallbackRewriter = this.employeeRegistry.defaultFallback().resultRewriter;
+    // T7: ResultAggregator 持有 EmployeeRegistry,按 task.employeeId 在汇总阶段选 rewriter。
     const transferHook: import('./result-aggregator').TransferToHumanHook = (_results) => {
       // noop — 等真实转人工实现
       return false;
@@ -118,7 +116,7 @@ export class MainAgent {
       llm, memoryService, sessionStore,
       (request, userId, sessionId) =>
         this.processNormalRequirement(request.content, userId, sessionId, request, undefined, undefined, 1),
-      fallbackRewriter,
+      this.employeeRegistry,
       transferHook,
     );
     this.gate = new SessionGate(sessionStore);
@@ -1371,6 +1369,8 @@ export class MainAgent {
         requirement: tr.requirement || '',
         response: tr.result?.data?.response || '',
         status: tr.status || 'completed',
+        // Task 7: 透传 employeeId,ResultAggregator 据此选 per-employee rewriter
+        employeeId: tr.employeeId,
       }));
 
       let finalResponse: string;

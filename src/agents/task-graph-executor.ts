@@ -37,7 +37,7 @@ interface FailedTaskInfo {
  */
 interface LayerExecutionResult {
   /** 所有已完成任务的结果（包含本次和之前累积的） */
-  allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any }>;
+  allResults: Array<{ taskId: string; skillName: string; requirement: string; result: any; employeeId?: string }>;
   /** 是否在执行过程中遇到等待用户输入的任务 */
   waitingTaskId?: string;
   /** 失败任务列表（收集所有失败，而非仅第一个） */
@@ -334,7 +334,14 @@ export class TaskGraphExecutor {
 
         if (status === 'completed' && result) {
           completedResults.set(taskId, result);
-          allResults.push({ taskId, skillName: node.skillName, requirement: node.content, result });
+          // Task 7: 把 task.employeeId 透传到 allResults,汇总阶段 ResultAggregator 据此选 rewriter
+          allResults.push({
+            taskId,
+            skillName: node.skillName,
+            requirement: node.content,
+            result,
+            employeeId: taskRecord?.employeeId,
+          });
 
           // 旧 remember(procedural) 已由 L3 summarizeRequest 在请求完成时统一处理
 
@@ -706,12 +713,14 @@ export class TaskGraphExecutor {
 
     // 所有层执行完毕 → 汇总结果
     // P5: 加 status 字段让 summarizeResults 走 every(completed) 正确判断(B-1 真正的修法)
+    // Task 7: 透传 employeeId,ResultAggregator 按 task 选 per-employee rewriter
     const successResults = allResults.map(tr => ({
       taskId: tr.taskId,
       skillName: tr.skillName,
       requirement: tr.requirement,
       response: getSkillData(tr.result)?.response || '',
       status: 'completed',
+      employeeId: tr.employeeId,
     }));
     if (successResults.length === 1) {
       log.info(`✅ 断点续传-单任务完成`);

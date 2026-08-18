@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'bun:test';
 import { z } from 'zod';
 import { ResultAggregator } from '../src/agents/result-aggregator';
+import { EmployeeRegistry } from '../src/agents/employee/registry';
+import { EmployeeAgent } from '../src/agents/employee/agent';
+import type { EmployeeConfig } from '../src/agents/employee/json-types';
+
+const mockDeps: any = { llm: {}, memoryService: {}, sessionStore: {}, skillRegistry: {} };
+
+const fallbackConfig = (rewriter?: EmployeeConfig['outputBehavior']): EmployeeConfig => ({
+  employee: { id: 'fallback-service-desk', displayName: '兜底', enabled: true },
+  capabilities: { llm: { provider: 'haier' } },
+  ...(rewriter ? { outputBehavior: rewriter } : {}),
+});
 
 describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
   const llm = {
@@ -21,13 +32,22 @@ describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
     completeRequest: async () => {},
   } as any;
 
+  // Task 7: registry 持有 fallback employee + (可选) rewriter
+  const buildRegistry = (rewriterCfg?: EmployeeConfig['outputBehavior']): EmployeeRegistry => {
+    const reg = new EmployeeRegistry();
+    reg.register(new EmployeeAgent(fallbackConfig(rewriterCfg), mockDeps));
+    return reg;
+  };
+
   it('does NOT add rewriter suffix when some tasks failed (B-1 fix)', async () => {
-    const rewriter = {
-      match: { status: 'completed' },
-      transform: 'append' as const,
-      value: '\n\n---\n如有问题请回复「转人工」',
-    };
-    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), rewriter);
+    const reg = buildRegistry({
+      resultRewriter: {
+        match: { status: 'completed' },
+        transform: 'append',
+        value: '\n\n---\n如有问题请回复「转人工」',
+      },
+    });
+    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), reg);
 
     const taskResults = [
       { taskId: 't1', skillName: 'fawu', requirement: '查询', response: 'ok', status: 'completed' },
@@ -40,12 +60,14 @@ describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
   });
 
   it('adds rewriter suffix when ALL tasks completed (regression)', async () => {
-    const rewriter = {
-      match: { status: 'completed' },
-      transform: 'append' as const,
-      value: '\n\n---\n如有问题请回复「转人工」',
-    };
-    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), rewriter);
+    const reg = buildRegistry({
+      resultRewriter: {
+        match: { status: 'completed' },
+        transform: 'append',
+        value: '\n\n---\n如有问题请回复「转人工」',
+      },
+    });
+    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), reg);
 
     const taskResults = [
       { taskId: 't1', skillName: 'fawu', requirement: '查询', response: 'ok', status: 'completed' },
@@ -60,8 +82,9 @@ describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
   it('transferHook is called when partial failure', async () => {
     let hookCalled = false;
     const transferHook = () => { hookCalled = true; return true; };
+    const reg = buildRegistry();
     const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }),
-      undefined, transferHook);
+      reg, transferHook);
 
     const taskResults = [
       { taskId: 't1', skillName: 's', requirement: 'r', response: 'ok', status: 'completed' },
@@ -76,8 +99,9 @@ describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
   it('transferHook is NOT called when all completed', async () => {
     let hookCalled = false;
     const transferHook = () => { hookCalled = true; return true; };
+    const reg = buildRegistry();
     const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }),
-      undefined, transferHook);
+      reg, transferHook);
 
     const taskResults = [
       { taskId: 't1', skillName: 's', requirement: 'r', response: 'ok', status: 'completed' },
@@ -88,7 +112,8 @@ describe('ResultAggregator mixed status + transfer hook + B-1 fix', () => {
   });
 
   it('transferHook default is noop (does not crash without arg)', async () => {
-    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }));
+    const reg = buildRegistry();
+    const agg = new ResultAggregator(llm, memSvc, sessionStore, async () => ({ success: true }), reg);
     const taskResults = [
       { taskId: 't1', skillName: 's', requirement: 'r', response: 'fail', status: 'failed' },
     ];

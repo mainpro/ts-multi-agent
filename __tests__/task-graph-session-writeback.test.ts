@@ -15,6 +15,19 @@ import { TaskQueue } from '../src/task-queue';
 import { TaskGraphExecutor } from '../src/agents/task-graph-executor';
 import { ResultAggregator } from '../src/agents/result-aggregator';
 import { Request, TaskGraph, TaskGraphNode } from '../src/types';
+import { EmployeeRegistry } from '../src/agents/employee/registry';
+import { EmployeeAgent } from '../src/agents/employee/agent';
+
+// Task 7: ResultAggregator 持有 EmployeeRegistry,旧 fixture 改为构造 fallback 员工 registry
+const mockEmployeeDeps: any = { llm: {}, memoryService: {}, sessionStore: {}, skillRegistry: {} };
+function makeMinimalRegistry(): EmployeeRegistry {
+  const reg = new EmployeeRegistry();
+  reg.register(new EmployeeAgent({
+    employee: { id: 'fallback-service-desk', displayName: '兜底', enabled: true },
+    capabilities: { llm: { provider: 'haier' } },
+  }, mockEmployeeDeps));
+  return reg;
+}
 
 describe('TaskGraphExecutor 回写 task 状态', () => {
   let dataDir: string;
@@ -67,6 +80,7 @@ describe('TaskGraphExecutor 回写 task 状态', () => {
     }));
     const resultAggregator = new ResultAggregator(
       {} as any, sessionStore, sessionStore, () => Promise.resolve({} as any),
+      makeMinimalRegistry(),
     );
     executor = new TaskGraphExecutor(taskQueue, resultAggregator, sessionStore);
 
@@ -107,6 +121,7 @@ describe('TaskGraphExecutor 回写 task 状态', () => {
     });
     const resultAggregator = new ResultAggregator(
       {} as any, sessionStore, sessionStore, () => Promise.resolve({} as any),
+      makeMinimalRegistry(),
     );
     executor = new TaskGraphExecutor(taskQueue, resultAggregator, sessionStore);
 
@@ -153,6 +168,7 @@ describe('TaskGraphExecutor 回写 task 状态', () => {
     });
     const resultAggregator = new ResultAggregator(
       {} as any, sessionStore, sessionStore, () => Promise.resolve({} as any),
+      makeMinimalRegistry(),
     );
     executor = new TaskGraphExecutor(taskQueue, resultAggregator, sessionStore);
 

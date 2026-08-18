@@ -5,6 +5,22 @@ import type { MemoryService } from '../src/memory/memory-service';
 import type { SessionStore } from '../src/memory/session-store';
 import type { ResultRewriter } from '../src/agents/employee/types';
 import type { Request, TaskResult } from '../src/types';
+import { EmployeeRegistry } from '../src/agents/employee/registry';
+import { EmployeeAgent } from '../src/agents/employee/agent';
+
+// Task 7: ResultAggregator 持有 EmployeeRegistry,旧 fixture 改为构造 fallback 员工
+// + 可选 rewriter 的 registry,这样在 task 无 employeeId 时走 fallback rewriter。
+const mockEmployeeDeps: any = { llm: {}, memoryService: {}, sessionStore: {}, skillRegistry: {} };
+
+function makeRegistryWithFallbackRewriter(rewriter?: ResultRewriter): EmployeeRegistry {
+  const reg = new EmployeeRegistry();
+  reg.register(new EmployeeAgent({
+    employee: { id: 'fallback-service-desk', displayName: '兜底', enabled: true },
+    capabilities: { llm: { provider: 'haier' } },
+    ...(rewriter ? { outputBehavior: { resultRewriter: rewriter } } : {}),
+  }, mockEmployeeDeps));
+  return reg;
+}
 
 // ---------------------------------------------------------------------------
 // Test doubles — minimal fakes sufficient for ResultAggregator.summarizeResults
@@ -74,6 +90,7 @@ describe('ResultAggregator resultRewriter', () => {
     const deps = makeDeps({ completed: true, summary: '原始答案' });
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
+      makeRegistryWithFallbackRewriter(),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -93,7 +110,7 @@ describe('ResultAggregator resultRewriter', () => {
     };
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -113,7 +130,7 @@ describe('ResultAggregator resultRewriter', () => {
     };
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -131,7 +148,7 @@ describe('ResultAggregator resultRewriter', () => {
     };
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -154,7 +171,7 @@ describe('ResultAggregator resultRewriter', () => {
     };
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -176,7 +193,7 @@ describe('ResultAggregator resultRewriter', () => {
     };
     const agg = new ResultAggregator(
       deps.llm, deps.memoryService, deps.sessionStore, deps.onNeedsIntentReclassification,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
     const summary = await agg.summarizeResults(
       '需求',
@@ -228,7 +245,7 @@ describe('ResultAggregator resultRewriter', () => {
     const agg = new ResultAggregator(
       llm, memoryService, sessionStore,
       async () => ({ success: true, data: { response: '' } }) as TaskResult,
-      rewriter,
+      makeRegistryWithFallbackRewriter(rewriter),
     );
 
     const returned = await agg.summarizeResults(
