@@ -122,8 +122,12 @@ export class MainAgent {
     );
     this.gate = new SessionGate(sessionStore);
     // Rebuild TaskGraphExecutor with the checkpoint callback wired to onTaskGraphCheckpoint.
+    // 关键:必须把 employeeRegistry 注入 options,否则 resolveExecutorForTask 走 back-compat 路径,
+    // task.employeeId 在 planner (T8) 处设置但运行时被丢弃,所有任务都落到 TaskQueue 自身的 executor,
+    // 多员工路由整体失效(T6 契约)。
     this.taskGraphExecutor = new TaskGraphExecutor(taskQueue, this.resultAggregator, sessionStore, {
       onCheckpoint: (info) => this.onTaskGraphCheckpoint(info),
+      employeeRegistry: this.employeeRegistry,
     });
   }
 

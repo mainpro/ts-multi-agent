@@ -323,3 +323,161 @@ describe('单任务快路径注入员工上下文(回归)', () => {
     ).rejects.toThrow(/SKILL_NOT_ALLOWED|白名单/);
   });
 });
+
+/**
+ * 回归:main-agent 构造时必须把 employeeRegistry 注入 TaskGraphExecutor.options。
+ *
+ * 修复前:src/agents/main-agent.ts 构造 TaskGraphExecutor 时只传 onCheckpoint,
+ * employeeRegistry 缺失 → TaskGraphExecutor.resolveExecutorForTask 的 registry 字段为 undefined
+ * → 走 back-compat executorFactory 路径(或 TaskQueue 自身 executor)→ task.employeeId 被吞,
+ * legal-assistant EmployeeAgent 从未被调用,所有任务落到兜底。
+ *
+ * 修复后:options.employeeRegistry === mainAgent.employeeRegistry,
+ * resolveExecutorForTask 读取 registry.get(task.employeeId) → wrap legal-assistant EmployeeAgent
+ * 作为 task.executor,运行时 legal.executeSubTask 被实际调用。
+ */
+describe('回归:TaskGraphExecutor 必须经 MainAgent 注入 employeeRegistry', () => {
+  /**
+   * 构造带 spy 的 MainAgent:
+   *  - legal-assistant EmployeeAgent.executeSubTask 被替换为 spy,记录调用
+   *  - fallback-service-desk 同理
+   *  - 用 buildTestMainAgent(已自动注册 test-employee + fallback),追加 legal-assistant
+   *  - 不接管 executeTaskGraph —— 让真实 TaskGraphExecutor.executeTaskGraph 跑 executeLayers,
+   *    这样 resolveExecutorForTask 被真实调用,不再是空壳断言
+   */
+  async function buildAgentWithSpyExecutors(): Promise<{
+    mainAgent: MainAgent;
+    legalCalls: Array<{ taskId: string; skillName?: string; employeeId?: string }>;
+    fallbackCalls: Array<{ taskId: string; skillName?: string; employeeId?: string }>;
+  }> {
+    const dataDir = path.join(os.tmpdir(), `mem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+    await fs.mkdir(path.join(dataDir, 'memory'), { recursive: true });
+
+    const legalCalls: Array<{ taskId: string; skillName?: string; employeeId?: string }> = [];
+    const fallbackCalls: Array<{ taskId: string; skillName?: string; employeeId?: string }> = [];
+
+    const generateStructured = mock(async () => ({
+      intent: 'skill_task',
+      confidence: 0.9,
+      employeeId: 'legal-assistant',
+      tasks: [
+        { skillName: 'contract-review', requirement: '审一份合同', intent: 'execute', params: {} },
+      ],
+    }));
+    const mockLLM = {
+      generateStructured,
+      generateText: async () => '',
+      generateWithTools: async () => ({ content: '', toolCalls: [] }),
+    } as any as ILLMClient;
+
+    const sessionStore = new SessionStore(100, dataDir);
+    const memoryService = new MemoryService(dataDir, mockLLM);
+    const userProfileService = new UserProfileService(dataDir);
+    const dynamicContextBuilder = new DynamicContextBuilder(memoryService);
+    const intentRouter = realIntentRouterWithMockLLM(mockLLM);
+    const askAgent = new AskAgent(sessionStore, mockLLM);
+    const systemSkillLoader = new SystemSkillLoader();
+    systemSkillLoader.loadAll();
+    const executorRegistry = new ExecutorRegistry();
+    const taskQueue = new TaskQueue(async () => null);
+
+    const built = buildTestMainAgent({
+      mocks: {
+        llm: mockLLM,
+        skillRegistry: new SkillRegistry({ skillsDir: './skills', autoLoad: false }),
+        taskQueue,
+        intentRouter,
+        userProfileService,
+        memoryService,
+        dynamicContextBuilder,
+        sessionStore,
+        askAgent,
+        systemSkillLoader,
+        executorRegistry,
+      },
+    });
+
+    // 覆盖默认的 test-employee,换成 legal-assistant(让 legal 走真实路由)
+    const registry = built.registry;
+    // 注册 legal-assistant(已注册的同名会覆盖,这里先看 registry 内部 API)
+    // EmployeeRegistry 默认行为是覆盖或忽略?—— 检查发现 register 是覆盖语义,我们直接注册新的。
+    registry.register(new EmployeeAgent({
+      employee: { id: 'legal-assistant', displayName: '法务助理', enabled: true },
+      capabilities: { llm: { provider: 'haier' } },
+    }, mockEmployeeDeps));
+
+    // 把所有 EmployeeAgent.executeSubTask 替换为 spy,记录被调用者
+    const legalAgent = registry.get('legal-assistant');
+    const fallbackAgent = registry.get('fallback-service-desk');
+    expect(legalAgent).toBeDefined();
+    expect(fallbackAgent).toBeDefined();
+
+    const originalLegal = legalAgent!.executeSubTask.bind(legalAgent!);
+    const originalFallback = fallbackAgent!.executeSubTask.bind(fallbackAgent!);
+    legalAgent!.executeSubTask = async (task, ctx) => {
+      legalCalls.push({
+        taskId: task.id,
+        skillName: task.skillName,
+        employeeId: task.employeeId,
+      });
+      // 返回一个最小可用的 TaskResult(跳过真实 SubAgent.execute 链路)
+      return {
+        success: true,
+        data: { response: `legal handled ${task.id}` },
+      } as any;
+    };
+    fallbackAgent!.executeSubTask = async (task, ctx) => {
+      fallbackCalls.push({
+        taskId: task.id,
+        skillName: task.skillName,
+        employeeId: task.employeeId,
+      });
+      return {
+        success: true,
+        data: { response: `fallback handled ${task.id}` },
+      } as any;
+    };
+    // 保留下原引用供调试
+    void originalLegal;
+    void originalFallback;
+
+    return { mainAgent: built.mainAgent, legalCalls, fallbackCalls };
+  }
+
+  it('IntentRouter 选 legal-assistant 时,legal EmployeeAgent.executeSubTask 在运行时被调用(不是 fallback)', async () => {
+    const { mainAgent, legalCalls, fallbackCalls } = await buildAgentWithSpyExecutors();
+
+    // 先确认 MainAgent 构造时 employeeRegistry 被注入到 TaskGraphExecutor.options
+    const tgeOptions = (mainAgent as any).taskGraphExecutor.options;
+    expect(tgeOptions.employeeRegistry).toBe((mainAgent as any).employeeRegistry);
+
+    // 触发真实路由:IntentRouter → legal-assistant → executeTaskGraph → executeLayers
+    //   → resolveExecutorForTask → wrapEmployeeAgentAsExecutor(legalAgent)
+    //   → legal.executeSubTask(task, ctx)
+    await mainAgent.processRequirement('帮我审一份合同', undefined, 'u-regress', 's-regress');
+
+    expect(legalCalls.length).toBeGreaterThan(0);
+    expect(legalCalls[0].skillName).toBe('contract-review');
+    // 关键断言:fallback 从未被调用(如果 fix 没生效,所有任务会落到 fallback)
+    expect(fallbackCalls.length).toBe(0);
+  });
+
+  it('MainAgent 没有 employeeRegistry 时构造抛错(契约保护)', () => {
+    // 反向契约:employeeRegistry 是 MainAgent 的必填 deps,
+    // 漏传 → 构造抛错 → 阻止静默走 back-compat 路径,避免再次出现"路由失效"
+    expect(() => new MainAgent({
+      llm: {} as any,
+      skillRegistry: {} as any,
+      taskQueue: {} as any,
+      intentRouter: {} as any,
+      userProfileService: {} as any,
+      memoryService: {} as any,
+      dynamicContextBuilder: {} as any,
+      sessionStore: {} as any,
+      askAgent: {} as any,
+      systemSkillLoader: {} as any,
+      executorRegistry: {} as any,
+      // 故意不传 employeeRegistry
+    } as any)).toThrow(/employeeRegistry/);
+  });
+});
