@@ -4,6 +4,7 @@ import { SkillRegistry } from '../skill-registry';
 import { SkillMetadata, TaskPlan } from '../types';
 import { buildTaskPlannerPrompt } from '../prompts';
 import { createLogger } from '../observability/logger';
+import type { EmployeeAgent } from '../agents/employee/agent';
 
 const log = createLogger({ module: 'UnifiedPlanner' });
 
@@ -71,14 +72,15 @@ export class UnifiedPlanner {
    * 执行统一规划
    * 一次 LLM 调用完成：需求分析 + 技能匹配 + 任务规划
    *
-   * @param requirement 用户需求
-   * @param opts 可选参数, hint 为拆解偏好,会注入到 userPrompt 末尾的【拆解偏好】段落
+   * Task 8: 签名从 (requirement, opts: { hint }) 改为 (requirement, employee: EmployeeAgent)。
+   *   - employee.decompositionHint 注入到 userPrompt 末尾的【拆解偏好】段落
+   *   - 生成的每个 task 自动携带 employeeId = employee.id
    */
   async plan(
     requirement: string,
-    opts: { hint?: string } = {},
+    employee: EmployeeAgent,
   ): Promise<PlanResult> {
-    log.info('开始统一规划', { requirement });
+    log.info('开始统一规划', { requirement, employeeId: employee.id });
 
     const allSkills = this.skillRegistry.getAllMetadata();
     log.debug('可用技能', { skills: allSkills.map(s => s.name).join(', ') });
@@ -94,7 +96,7 @@ export class UnifiedPlanner {
 
   const systemPrompt = buildTaskPlannerPrompt(allSkills);
 
-  const userPrompt = this.buildPrompt(requirement, opts.hint);
+  const userPrompt = this.buildPrompt(requirement, employee.decompositionHint);
 
   try {
     log.info('发送统一规划请求');
@@ -151,6 +153,9 @@ export class UnifiedPlanner {
           skillName: task.skillName || task.skill || selectedSkillNames[0] || '',
           params: task.params || {},
           dependencies: task.dependencies || [],
+          // Task 8: 由 MainAgent(IntentRouter 路由 + 派单)写入的目标员工 ID。
+          // UnifiedPlanner 已持有 EmployeeAgent,直接注入。
+          employeeId: employee.id,
         })),
       };
 

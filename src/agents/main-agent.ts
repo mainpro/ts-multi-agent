@@ -1080,12 +1080,9 @@ export class MainAgent {
         };
       } else {
         const planner = new UnifiedPlanner(this.llm, this.skillRegistry);
-        // Task 5: 把 route 后员工的规划偏好(decompositionHint)注入 planner
-        // 注意:UnifiedPlanner.plan() 签名为 (input, options) — options 形态不变,
-        // T8 会把 planner 重构为接受 EmployeeAgent,届时再调整此处。
-        const planResult = await planner.plan(enrichedRequirement, {
-          hint: employee.decompositionHint,
-        });
+        // Task 8: 传入 EmployeeAgent 实例,planner 内部读取 employee.decompositionHint
+        // 并把 employee.id 写入每个 task 的 employeeId 字段。
+        const planResult = await planner.plan(enrichedRequirement, employee);
         if (!planResult.success || !planResult.plan) {
           await this.updateProfileAfterRequest(userProfile, enrichedRequirement, userId);
           return {
